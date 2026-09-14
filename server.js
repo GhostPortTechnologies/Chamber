@@ -6,6 +6,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');                                            // [new] auth: scrypt hashing, timing-safe compare, session tokens
 const { execFile } = require('child_process');
 
 // Minimal zero-dep .env loader — reads KEY=VALUE lines from ./.env if present,   [new] lets `node server.js` be configured
@@ -45,6 +46,60 @@ const ONLINE_TIMEOUT = 30000; // 30s — sidebar online indicator
 const TICKETS_READ_ENABLED  = !!TICKETS_FILE;                               // [new]
 const TICKETS_WRITE_ENABLED = !!TICKETS_CLI;                                // [new]
 const REPO_ENABLED = !!REPO_ROOT && fs.existsSync(REPO_ROOT);              // [new] reviews-from-git needs a real repo dir
+
+// ── Authentication ─────────────────────────────────────────────────────
+// Zero-dep auth via Node's crypto. Set CHAMBER_PASSWORD (a shared access secret)
+// to require login; it is scrypt-hashed at boot and never stored in the clear.
+// Or supply a pre-hashed CHAMBER_PASSWORD_HASH ("salt:hash") to keep even the
+// plaintext out of the environment. If neither is set, auth is OFF — which is
+// only allowed on loopback (enforced by the startup guard below).
+const SESSION_TTL = 1000 * 60 * 60 * 24 * 7;                                // [new] 7-day sessions
+const COOKIE_SECURE = process.env.CHAMBER_SECURE_COOKIE === '1';           // [new] add "Secure" to the cookie when served over HTTPS
+const IS_LOOPBACK = HOST === '127.0.0.1' || HOST === '::1' || HOST === 'localhost';  // [new]
+let PW_SALT = '', PW_HASH = '';                                             // [new]
+if (process.env.CHAMBER_PASSWORD_HASH) {                                    // [new] pre-hashed "salt:hash"
+  [PW_SALT, PW_HASH] = process.env.CHAMBER_PASSWORD_HASH.split(':');
+} else if (process.env.CHAMBER_PASSWORD) {                                  // [new] plaintext secret -> hash once at boot
+  PW_SALT = crypto.randomBytes(16).toString('hex');
+  PW_HASH = crypto.scryptSync(process.env.CHAMBER_PASSWORD, PW_SALT, 32).toString('hex');
+}
+const AUTH_REQUIRED = !!(PW_SALT && PW_HASH);                               // [new] auth is on iff a password/hash was supplied
+
+function checkPassword(pw) {                                                // [new] constant-time access-secret verify
+  if (!AUTH_REQUIRED) return true;                                         // [new] no secret configured -> open (loopback only)
+  if (typeof pw !== 'string' || !pw) return false;
+  const got = Buffer.from(crypto.scryptSync(pw, PW_SALT, 32).toString('hex'));
+  const want = Buffer.from(PW_HASH);
+  return got.length === want.length && crypto.timingSafeEqual(got, want);  // [new] timing-safe to avoid leaking via response time
+}
+
+const sessions = new Map();                                                 // [new] token -> {username, role, expires} (in-memory)
+function createSession(username, role) {                                    // [new] opaque 256-bit random session token
+  const token = crypto.randomBytes(32).toString('hex');
+  sessions.set(token, { username, role, expires: Date.now() + SESSION_TTL });
+  return token;
+}
+function getSession(req) {                                                  // [new] resolve session from cookie OR bearer/header (browser + API clients)
+  let token = '';
+  const auth = req.headers['authorization'] || '';
+  if (auth.startsWith('Bearer ')) token = auth.slice(7).trim();            // [new] API clients: Authorization: Bearer <token>
+  if (!token) token = (req.headers['x-chamber-token'] || '').trim();       // [new] or X-Chamber-Token header
+  if (!token && req.headers.cookie) {                                      // [new] browsers: HttpOnly cookie
+    const m = req.headers.cookie.match(/(?:^|;\s*)chamber_session=([a-f0-9]+)/);
+    if (m) token = m[1];
+  }
+  if (!token) return null;
+  const s = sessions.get(token);
+  if (!s || s.expires < Date.now()) { sessions.delete(token); return null; }  // [new] expire + sweep on read
+  return { token, ...s };
+}
+const loginHits = new Map();                                                // [new] ip -> {n, resetAt} — brute-force throttle
+function loginThrottled(ip) {                                               // [new]
+  const now = Date.now(), rec = loginHits.get(ip);
+  if (!rec || rec.resetAt < now) { loginHits.set(ip, { n: 1, resetAt: now + 60000 }); return false; }
+  rec.n++;
+  return rec.n > 10;                                                        // [new] >10 login attempts/min/IP -> 429
+}
 
 function loadTickets() {
   if (!TICKETS_READ_ENABLED) return { next_id: 1, tickets: [] };            // [new] no host ticket file → empty (don't read '')
@@ -186,7 +241,10 @@ function parseBody(req) {
 }
 
 function json(res, code, obj) {
-  res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  // Same-origin app: no wildcard CORS. Cross-origin API clients use a Bearer   [changed] dropped Access-Control-Allow-Origin:*
+  // token, which isn't subject to browser CORS — so removing this closes the    so a third-party page can't script the
+  // "any website can script the API" hole without breaking real clients.        authenticated API in a victim's browser.
+  res.writeHead(code, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(obj));
 }
 
@@ -207,20 +265,19 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const method = req.method;
 
-  // CORS preflight
+  // Same-origin app — no cross-origin CORS granted. Answer preflights minimally.  [changed] removed Access-Control-Allow-Origin:*
   if (method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET,POST,DELETE',
-      'Access-Control-Allow-Headers': 'Content-Type'
-    });
+    res.writeHead(204);
     return res.end();
   }
 
   // API routes
   if (url.pathname === '/api/login' && method === 'POST') {
+    const ip = req.socket.remoteAddress || '?';                            // [new] throttle key
+    if (loginThrottled(ip)) return json(res, 429, { error: 'too many attempts — wait a minute' });  // [new]
     const body = await parseBody(req).catch(() => null);
     if (!body?.username) return json(res, 400, { error: 'username required' });
+    if (!checkPassword(body?.password)) return json(res, 401, { error: 'invalid password' });  // [new] shared-secret gate (no-op when auth is off)
     const data = loadData();
     const username = body.username.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24);
     if (!username) return json(res, 400, { error: 'invalid username' });
@@ -247,7 +304,20 @@ const server = http.createServer(async (req, res) => {
       joinedAt: existing?.joinedAt || Date.now()
     };
     saveData(data);
-    return json(res, 200, { ok: true, user: data.users[username] });
+    const token = createSession(username, data.users[username].role);      // [new] issue a session on successful login
+    res.setHeader('Set-Cookie',                                            // [new] HttpOnly + SameSite=Strict cookie for browsers
+      `chamber_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL / 1000}` + (COOKIE_SECURE ? '; Secure' : ''));
+    return json(res, 200, { ok: true, user: data.users[username], token });  // [changed] token also returned for API clients
+  }
+
+  // ── Auth gate ──────────────────────────────────────────────────────────
+  // Login is handled above (no session needed). Every other /api route requires
+  // a valid session when auth is on. /api/health stays open for uptime probes.
+  if (url.pathname === '/api/health' && method === 'GET') {                 // [new] open health check
+    return json(res, 200, { ok: true, auth: AUTH_REQUIRED });
+  }
+  if (url.pathname.startsWith('/api/') && AUTH_REQUIRED && !getSession(req)) {  // [new] gate: reject unauthenticated API access
+    return json(res, 401, { error: 'authentication required' });
   }
 
   if (url.pathname === '/api/messages' && method === 'GET') {
@@ -586,6 +656,14 @@ const server = http.createServer(async (req, res) => {
   json(res, 404, { error: 'not found' });
 });
 
+// Fail closed: never serve to a network without auth. This is the key launch
+// guard — it stops an open board from being accidentally exposed to a LAN/internet.
+if (!IS_LOOPBACK && !AUTH_REQUIRED) {                                        // [new]
+  console.error(`REFUSING TO START: bound to ${HOST} (non-loopback) with no password set.`);  // [new]
+  console.error('Set CHAMBER_PASSWORD (or CHAMBER_PASSWORD_HASH), or bind CHAMBER_HOST=127.0.0.1 behind a proxy.');  // [new]
+  process.exit(1);                                                          // [new]
+}
+
 server.listen(PORT, HOST, () => {                                            // [changed] HOST is now configurable (was '127.0.0.1')
   console.log(`Chamber running on http://${HOST}:${PORT}`);
   // Startup summary so the operator sees which integrations are live.         [new] operability / at-a-glance config check
@@ -594,8 +672,8 @@ server.listen(PORT, HOST, () => {                                            // 
   console.log(`  tickets: ${TICKETS_READ_ENABLED ? TICKETS_FILE : 'disabled'} (write: ${TICKETS_WRITE_ENABLED ? 'on' : 'off'})`);  // [new]
   console.log(`  repo:    ${REPO_ENABLED ? REPO_ROOT : 'disabled'}`);        // [new]
   console.log(`  theme:   ${THEME_FILE || 'default accent'}`);              // [new]
-  if (HOST !== '127.0.0.1') {                                                // [new] loud safety warning: no auth layer exists
-    console.log('  WARNING: bound to a non-loopback address, but Chamber has NO authentication.');  // [new]
-    console.log('           Put it behind a reverse proxy with auth, or add auth, before exposing it.');  // [new]
+  console.log(`  auth:    ${AUTH_REQUIRED ? 'ON (password required)' : 'OFF (loopback only)'}`);  // [changed] report auth status at boot
+  if (!IS_LOOPBACK && AUTH_REQUIRED && !COOKIE_SECURE) {                     // [new] nudge toward TLS when exposed
+    console.log('  NOTE: exposed with auth but CHAMBER_SECURE_COOKIE is off — serve over HTTPS (reverse proxy) and set it to 1.');  // [new]
   }
 });

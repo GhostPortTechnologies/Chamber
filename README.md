@@ -42,33 +42,45 @@ All are **optional** — the defaults give you a working chat + code pad.
 | Variable | Default | Purpose |
 |---|---|---|
 | `CHAMBER_PORT` | `4242` | Listen port |
-| `CHAMBER_HOST` | `127.0.0.1` | Bind address. **Keep loopback unless you add auth** (see Security). |
+| `CHAMBER_HOST` | `127.0.0.1` | Bind address. On a non-loopback address a password is **required** or the app won't start. |
+| `CHAMBER_PASSWORD` | *(off)* | Shared access secret (scrypt-hashed at boot). Enables login. |
+| `CHAMBER_PASSWORD_HASH` | *(off)* | Pre-hashed `salt:hash` — use instead of `CHAMBER_PASSWORD` to keep plaintext out of your config |
+| `CHAMBER_SECURE_COOKIE` | `0` | Set `1` when served over HTTPS |
 | `CHAMBER_DATA` | `./chamber.json` | Chat/user store |
 | `CHAMBER_REVIEWS` | `./reviews.json` | Code-review store |
-| `CHAMBER_ACCENT` | `#39ff8f` | UI accent color |
+| `CHAMBER_ACCENT` | `#00ff88` | Default UI accent (each user can override it live in the app) |
 | `CHAMBER_REPO_ROOT` | *(off)* | Point at a git repo to enable the **Reviews** diff feature |
-| `CHAMBER_THEME_FILE` | *(off)* | JSON file `{ "color": "#rrggbb" }` for live accent theming |
+| `CHAMBER_THEME_FILE` | *(off)* | JSON file `{ "color": "#rrggbb" }` for a server-set default accent |
 | `CHAMBER_TICKETS_FILE` | *(off)* | Host ticket JSON to read into the **Tickets** tab |
 | `CHAMBER_TICKETS_CLI` | *(off)* | CLI invoked to create/mutate tickets |
 
 Any integration left unset simply makes its tab return empty — the app never
-errors on a missing path. See `.env.example`.
+errors on a missing path. See `.env.example`, and **[INSTALL.md](INSTALL.md)** for
+full setup including auth and TLS.
 
 ## What's built in vs. optional
 
 - **Always on:** chat, rooms, presence, activity timeline, the code-review pad
-  (the paste-and-read tool is 100% client-side).
+  (100% client-side), and the **theme picker** — pick an accent in the header
+  (presets or a custom color); it saves per-browser and recolors the whole UI.
 - **Optional (need config):** the Reviews git-diff feature (`CHAMBER_REPO_ROOT`),
-  Tickets (`CHAMBER_TICKETS_FILE`/`CHAMBER_TICKETS_CLI`), live theming
-  (`CHAMBER_THEME_FILE`).
+  Tickets (`CHAMBER_TICKETS_FILE`/`CHAMBER_TICKETS_CLI`), a server-set default
+  accent (`CHAMBER_THEME_FILE`).
 
 ## Security
 
-Chamber currently uses **name-based identity, not authentication** — anyone who
-can reach the port can read and post. That is safe only while it is bound to
-`127.0.0.1` (the default). **Before exposing it on a network**, either put it
-behind a reverse proxy that enforces auth, or add authentication to the app.
-Binding to a non-loopback address prints a startup warning as a reminder.
+- **Authentication.** Set `CHAMBER_PASSWORD` (or `CHAMBER_PASSWORD_HASH`) to
+  require a shared access secret at login. Passwords are hashed with scrypt;
+  sessions are random 256-bit tokens carried in an HttpOnly, `SameSite=Strict`
+  cookie (and returned as a bearer token for API clients). Login is rate-limited.
+- **Fail-closed.** With no password set, Chamber runs **only on loopback**. Bind
+  it to a non-loopback address without a password and it **refuses to start** —
+  so you can't accidentally publish an open board.
+- **Behind HTTPS.** Terminate TLS at a reverse proxy and set
+  `CHAMBER_SECURE_COOKIE=1`. Full walkthrough in [INSTALL.md](INSTALL.md).
+- **Trust model.** Chamber is for a **trusted team behind one shared secret** —
+  authenticated users are trusted (display name and role are honor-system). It's
+  not designed for mutually-distrusting users on a single instance.
 
 ## Data & backups
 

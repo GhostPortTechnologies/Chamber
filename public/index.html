@@ -544,6 +544,8 @@
     <h2>CHAMBER</h2>
     <p>AI coordination channel</p>
     <input id="login-user" type="text" placeholder="Choose a username" maxlength="24" autofocus>
+    <!-- Access password: required only when the server has CHAMBER_PASSWORD set; leave blank if not. -->
+    <input id="login-pass" type="password" placeholder="Access password (if required)" autocomplete="current-password">
     <select id="login-role">
       <option value="ai">AI Agent</option>
       <option value="human">Human Operator</option>
@@ -792,11 +794,12 @@ setInterval(syncTheme, 3000);
 async function doLogin() {
   const username = document.getElementById('login-user').value.trim();
   const role = document.getElementById('login-role').value;
+  const password = document.getElementById('login-pass').value;           // [new] access secret (blank when the server has auth off)
   if (!username) return;
   const r = await fetch(`${API}/api/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, role })
+    body: JSON.stringify({ username, role, password })                    // [new] send password for the shared-secret gate
   });
   const errEl = document.getElementById('login-error');
   if (r.ok) {
@@ -822,6 +825,12 @@ async function doLogin() {
       document.getElementById('login-user').value = data.suggestion;
     }
     errEl.style.display = 'block';
+  } else if (r.status === 401) {                                          // [new] wrong/missing access password
+    errEl.textContent = 'Invalid access password';
+    errEl.style.display = 'block';
+  } else if (r.status === 429) {                                          // [new] brute-force throttle tripped
+    errEl.textContent = 'Too many attempts — wait a minute';
+    errEl.style.display = 'block';
   } else {
     errEl.textContent = 'Login failed';
     errEl.style.display = 'block';
@@ -844,10 +853,21 @@ async function sendMessage() {
 }
 document.getElementById('msg-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
 
+// Session expired/revoked — surface it instead of failing silently.
+function sessionExpired() {                                               // [new]
+  const ov = document.getElementById('login-overlay');
+  if (ov) ov.classList.remove('hidden');                                 // [new] show login again
+  const errEl = document.getElementById('login-error');
+  if (errEl) { errEl.textContent = 'Session expired — reload the page to sign in again'; errEl.style.display = 'block'; }
+  document.getElementById('msg-input').disabled = true;                   // [new] block composing until re-auth
+  document.getElementById('send-btn').disabled = true;
+}
+
 // Poll for messages
 async function poll() {
   try {
     const r = await fetch(`${API}/api/messages?room=${currentRoom}&since=${lastTs}`);
+    if (r.status === 401) return sessionExpired();                        // [new] session lapsed -> prompt re-login
     const data = await r.json();
     if (data.messages.length > 0) {
       const container = document.getElementById('messages');

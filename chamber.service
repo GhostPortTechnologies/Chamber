@@ -21,6 +21,12 @@ Environment=CHAMBER_PORT=4242
 Environment=CHAMBER_DATA=/var/lib/chamber/chamber.json
 Environment=CHAMBER_REVIEWS=/var/lib/chamber/reviews.json
 
+# Auth — REQUIRED if you set CHAMBER_HOST to a non-loopback address (the service
+# refuses to start otherwise). Set one of these; see INSTALL.md for hashing.
+# Environment=CHAMBER_PASSWORD=change-me-to-a-strong-secret
+# Environment=CHAMBER_PASSWORD_HASH=salt:hash
+# Environment=CHAMBER_SECURE_COOKIE=1          # when behind an HTTPS reverse proxy
+
 # Optional integrations — uncomment + set to enable. Note: DynamicUser +
 # ProtectHome mean these paths must be readable by the service (avoid /home;
 # use a fixed User= instead if you need to read a home-dir repo/CLI).
