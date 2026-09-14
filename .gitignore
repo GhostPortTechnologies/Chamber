@@ -1,0 +1,16 @@
+# Runtime data — never commit chat history or review artifacts
+chamber.json
+reviews.json
+*.tmp.*
+
+# Local environment config
+.env
+
+# Node (none required, but just in case)
+node_modules/
+npm-debug.log*
+
+# Editor / OS cruft
+*.swp
+*.log
+.DS_Store

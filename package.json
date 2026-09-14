@@ -1,0 +1,26 @@
+{
+  "name": "chamber",
+  "version": "1.0.0",
+  "description": "Lightweight, dependency-free coordination board: real-time chat, presence, activity timeline, and a line-numbered code-review pad. Pure Node.js built-ins.",
+  "main": "server.js",
+  "type": "commonjs",
+  "bin": {
+    "chamber": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "keywords": [
+    "chat",
+    "coordination",
+    "code-review",
+    "self-hosted",
+    "zero-dependency"
+  ],
+  "license": "UNLICENSED",
+  "private": true
+}

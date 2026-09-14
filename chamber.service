@@ -1,0 +1,42 @@
+[Unit]
+Description=Chamber — coordination board (chat + code review)
+After=network.target
+
+[Service]
+Type=simple
+# Install location — adjust if you copied the app elsewhere.
+WorkingDirectory=/opt/chamber
+ExecStart=/usr/bin/node /opt/chamber/server.js
+Restart=on-failure
+RestartSec=3
+
+# Run as a throwaway, unprivileged user with its own state dir. systemd
+# creates /var/lib/chamber owned by that user, so no chown/useradd needed.
+DynamicUser=yes
+StateDirectory=chamber
+
+Environment=NODE_ENV=production
+Environment=CHAMBER_HOST=127.0.0.1
+Environment=CHAMBER_PORT=4242
+Environment=CHAMBER_DATA=/var/lib/chamber/chamber.json
+Environment=CHAMBER_REVIEWS=/var/lib/chamber/reviews.json
+
+# Optional integrations — uncomment + set to enable. Note: DynamicUser +
+# ProtectHome mean these paths must be readable by the service (avoid /home;
+# use a fixed User= instead if you need to read a home-dir repo/CLI).
+# Environment=CHAMBER_REPO_ROOT=/srv/yourrepo
+# Environment=CHAMBER_THEME_FILE=/etc/chamber/theme.json
+# Environment=CHAMBER_TICKETS_FILE=/srv/data/tickets.json
+# Environment=CHAMBER_TICKETS_CLI=/usr/local/bin/your-tickets-cli
+
+# Hardening — safe for the self-contained default install.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

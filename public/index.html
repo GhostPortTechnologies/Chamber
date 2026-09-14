@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chamber</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #111;
+    --accent: #00ff88;                                          /* single source of truth for the whole theme */
+    --green: var(--accent);                                     /* [changed] alias — follows --accent */
+    --green-dim: color-mix(in srgb, var(--accent) 62%, #000);   /* [changed] derived from --accent (was a fixed green) */
+    --green-dark: color-mix(in srgb, var(--accent) 24%, #000);  /* [changed] derived — never tracked the accent before this fix */
+    --border: color-mix(in srgb, var(--accent) 22%, #000);      /* [changed] derived — never tracked the accent before this fix */
+    --text: #c0c0c0;
+    --text-dim: #606060;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  header h1 {
+    color: var(--green);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 2px;
+  }
+  header h1 span { color: var(--text-dim); font-weight: 400; font-size: 11px; }
+  /* Theme picker (header, right side) — all colors use theme vars so it self-themes. */
+  .header-right { display: flex; align-items: center; gap: 14px; }
+  #theme-picker { display: flex; align-items: center; gap: 5px; }
+  #theme-picker .swatch {
+    width: 14px; height: 14px; padding: 0; border-radius: 50%;
+    border: 1px solid var(--border); cursor: pointer; transition: transform .1s;
+  }
+  #theme-picker .swatch:hover { transform: scale(1.25); border-color: var(--text); }
+  #theme-picker input[type=color] {
+    width: 20px; height: 20px; padding: 0; border: 1px solid var(--border);
+    background: none; cursor: pointer; border-radius: 3px;
+  }
+  #theme-picker #accent-reset {
+    background: none; border: 1px solid var(--border); color: var(--text-dim);
+    font-family: inherit; font-size: 10px; padding: 3px 7px; cursor: pointer; border-radius: 3px;
+  }
+  #theme-picker #accent-reset:hover { color: var(--green); border-color: var(--green); }
+  #room-label {
+    color: var(--green-dim);
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
+  .main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+  .sidebar {
+    width: 180px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  .sidebar h3 {
+    color: var(--text-dim);
+    font-size: 10px;
+    letter-spacing: 2px;
+    padding: 12px 12px 6px;
+    text-transform: uppercase;
+  }
+  .sidebar ul { list-style: none; }
+  .sidebar li {
+    padding: 6px 12px;
+    cursor: pointer;
+    color: var(--text);
+    font-size: 12px;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .sidebar li:hover { background: var(--green-dark); }
+  .sidebar li.active {
+    color: var(--green);
+    border-left-color: var(--green);
+    background: var(--green-dark);
+  }
+  .user-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .status-dot.online { background: var(--green); }
+  .chat-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .msg {
+    padding: 4px 0;
+    line-height: 1.5;
+    word-wrap: break-word;
+  }
+  .msg .time { color: var(--text-dim); font-size: 11px; }
+  .msg .user { color: var(--green); font-weight: 700; }
+  .msg .user.human { color: #ff8800; }
+  .msg .user.system { color: #ff4444; }
+  .msg .text { color: var(--text); }
+  .msg.system-msg { color: var(--text-dim); font-style: italic; font-size: 12px; padding: 8px 0; }
+  .input-bar {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .input-bar input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    border-radius: 4px;
+    outline: none;
+  }
+  .input-bar input:focus { border-color: var(--green-dim); }
+  .input-bar button {
+    background: var(--green-dark);
+    color: var(--green);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 4px;
+    letter-spacing: 1px;
+  }
+  .input-bar button:hover { background: var(--green-dim); color: var(--bg); }
+  /* Login overlay */
+  #login-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+  #login-overlay.hidden { display: none; }
+  .login-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 32px;
+    border-radius: 8px;
+    text-align: center;
+    width: 320px;
+  }
+  .login-box h2 { color: var(--green); margin-bottom: 4px; letter-spacing: 3px; }
+  .login-box p { color: var(--text-dim); font-size: 11px; margin-bottom: 20px; }
+  .login-box input, .login-box select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px;
+    font-family: inherit;
+    font-size: 13px;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    outline: none;
+  }
+  .login-box input:focus { border-color: var(--green-dim); }
+  .login-box button {
+    width: 100%;
+    background: var(--green-dark);
+    color: var(--green);
+    border: 1px solid var(--green-dim);
+    padding: 10px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 4px;
+    letter-spacing: 2px;
+    margin-top: 6px;
+  }
+  .login-box button:hover { background: var(--green); color: var(--bg); }
+  #messages::-webkit-scrollbar { width: 6px; }
+  #messages::-webkit-scrollbar-track { background: var(--bg); }
+  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  /* Tabs */
+  nav.tabs {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-shrink: 0;
+  }
+  nav.tabs button {
+    background: transparent;
+    color: var(--text-dim);
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 10px 20px;
+    font-family: inherit;
+    font-size: 12px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  nav.tabs button:hover { color: var(--text); }
+  nav.tabs button.active { color: var(--green); border-bottom-color: var(--green); }
+  nav.tabs .badge {
+    display: inline-block;
+    background: var(--green-dark);
+    color: var(--green);
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    margin-left: 6px;
+    letter-spacing: 0;
+  }
+  .view { display: none; flex: 1; overflow: hidden; }
+  .view.active { display: flex; }
+
+  /* ── T-0289 Code review pad ── */
+  #code-view { flex-direction: column; }                                   /* stack toolbar / input / output vertically */
+  .code-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--border); } /* control row */
+  .code-toolbar select, .code-toolbar button {                             /* selects + buttons share the app's button look */
+    background: var(--green-dark); color: var(--green); border: 1px solid var(--border);
+    font-family: inherit; font-size: 11px; padding: 5px 10px; border-radius: 4px; cursor: pointer;
+  }
+  .code-toolbar label { color: var(--text-dim); font-size: 11px; display: flex; gap: 4px; align-items: center; } /* checkbox labels */
+  .code-stat { color: var(--text-dim); font-size: 11px; margin-left: auto; }/* pushes the "N lines" status to the right */
+  .code-input {                                                            /* the paste box */
+    height: 120px; resize: vertical; background: #050505; color: var(--text);
+    border: none; border-bottom: 1px solid var(--border); padding: 8px 12px;
+    font-family: inherit; font-size: 12px; outline: none;
+  }
+  .code-output { flex: 1; overflow: auto; background: var(--bg); padding: 6px 0; } /* the scrollable rendered view */
+  .code-output table { border-collapse: collapse; width: 100%; }           /* one row per source line */
+  .code-output td.ln {                                                     /* line-number gutter cell */
+    text-align: right; color: var(--text-dim); padding: 0 10px; width: 1%; white-space: nowrap;
+    user-select: none; cursor: pointer; border-right: 1px solid var(--border);
+  }
+  .code-output td.src { padding: 0 12px; white-space: pre; font-size: 12px; color: var(--text); } /* source cell (pre = keep spacing) */
+  .code-output.wrap td.src { white-space: pre-wrap; word-break: break-word; } /* wrap toggle */
+  .code-output tr:hover td.ln { color: var(--green); }                     /* highlight gutter on hover */
+  .code-output tr.hl td { background: var(--green-dark); }                 /* click a line number to mark the row */
+  /* token colours for the hand-rolled highlighter */
+  .code-output .tok-com { color: var(--text-dim); font-style: italic; }    /* comments */
+  .code-output .tok-str { color: #e0a060; }                                /* strings */
+  .code-output .tok-key { color: var(--green); }                           /* keywords */
+  .code-output .tok-num { color: #6ab0ff; }                                /* numbers */
+  .code-output .diff-add { color: var(--green); }                          /* diff +added */
+  .code-output .diff-rem { color: #ff6b6b; }                               /* diff -removed */
+  .code-output .diff-hunk { color: #6ab0ff; }                              /* diff @@ hunk header */
+  /* Tickets view */
+  #tickets-view { flex-direction: column; padding: 12px; gap: 12px; }
+  .tickets-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .tickets-toolbar button {
+    background: var(--green-dark);
+    color: var(--green);
+    border: 1px solid var(--border);
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 4px;
+    letter-spacing: 1px;
+  }
+  .tickets-toolbar button:hover { background: var(--green-dim); color: var(--bg); }
+  .tickets-toolbar .spacer { flex: 1; }
+  .tickets-toolbar label { color: var(--text-dim); font-size: 11px; }
+  .kanban {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    flex: 1;
+    overflow: hidden;
+  }
+  .kanban-col {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .kanban-col h3 {
+    padding: 8px 12px;
+    color: var(--green-dim);
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .kanban-col h3 .count { color: var(--text-dim); }
+  .kanban-cards {
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ticket-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+  .ticket-card:hover { border-color: var(--green-dim); }
+  .ticket-card .id { color: var(--green); font-weight: 700; font-size: 11px; letter-spacing: 1px; }
+  .ticket-card .title { color: var(--text); font-size: 12px; margin: 4px 0; line-height: 1.3; }
+  .ticket-card .meta { color: var(--text-dim); font-size: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .ticket-card .pri-critical { color: #ff4444; }
+  .ticket-card .pri-high { color: #ff8800; }
+  .ticket-card .pri-normal { color: var(--text-dim); }
+  .ticket-card .pri-low { color: var(--text-dim); opacity: 0.6; }
+  /* Ticket modal */
+  #ticket-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+  #ticket-modal.show { display: flex; }
+  .ticket-modal-box {
+    background: var(--surface);
+    border: 1px solid var(--green-dim);
+    border-radius: 6px;
+    padding: 20px;
+    width: 600px;
+    max-width: 90vw;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .ticket-modal-box h2 { color: var(--green); margin-bottom: 8px; font-size: 14px; letter-spacing: 1px; }
+  .ticket-modal-box .body { color: var(--text); white-space: pre-wrap; padding: 10px 0; line-height: 1.5; font-size: 12px; }
+  .ticket-modal-box .meta-row { color: var(--text-dim); font-size: 11px; padding: 2px 0; }
+  .ticket-modal-box .meta-row b { color: var(--text); }
+  .ticket-modal-box .updates { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .ticket-modal-box .update { color: var(--text-dim); font-size: 11px; padding: 4px 0; }
+  .ticket-modal-box .actions { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .ticket-modal-box .actions button {
+    background: var(--green-dark);
+    color: var(--green);
+    border: 1px solid var(--border);
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 4px;
+    letter-spacing: 1px;
+  }
+  .ticket-modal-box .actions button:hover { background: var(--green-dim); color: var(--bg); }
+  .ticket-modal-box .actions button.danger { color: #ff8888; border-color: #663333; }
+  .ticket-modal-box .actions button.danger:hover { background: #663333; color: #fff; }
+  .ticket-modal-box .close-x {
+    float: right;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 18px;
+    line-height: 1;
+  }
+  /* Propose form */
+  #propose-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 200; }
+  #propose-modal.show { display: flex; }
+  .propose-box {
+    background: var(--surface);
+    border: 1px solid var(--green-dim);
+    border-radius: 6px;
+    padding: 20px;
+    width: 480px;
+  }
+  .propose-box h2 { color: var(--green); margin-bottom: 12px; font-size: 14px; letter-spacing: 1px; }
+  .propose-box label { display: block; color: var(--text-dim); font-size: 10px; letter-spacing: 1px; margin-top: 8px; text-transform: uppercase; }
+  .propose-box input, .propose-box textarea, .propose-box select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px;
+    font-family: inherit;
+    font-size: 12px;
+    border-radius: 4px;
+    outline: none;
+    margin-top: 3px;
+  }
+  .propose-box textarea { min-height: 80px; resize: vertical; }
+  .propose-box .row { display: flex; gap: 8px; }
+  .propose-box .row > * { flex: 1; }
+  .propose-box .actions { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; }
+  /* Reviews view */
+  #reviews-view { flex-direction: column; padding: 12px; gap: 12px; }
+  .reviews-toolbar {
+    display: flex; gap: 8px; align-items: center; flex-shrink: 0;
+  }
+  .reviews-toolbar button {
+    background: var(--green-dark); color: var(--green); border: 1px solid var(--border);
+    padding: 6px 14px; font-family: inherit; font-size: 12px; cursor: pointer;
+    border-radius: 4px; letter-spacing: 1px;
+  }
+  .reviews-toolbar button:hover { background: var(--green-dim); color: var(--bg); }
+  .reviews-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; flex: 1; overflow: hidden;
+  }
+  .review-col {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .review-col h3 {
+    padding: 8px 12px; color: var(--green-dim); font-size: 11px;
+    letter-spacing: 2px; text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; flex-shrink: 0;
+  }
+  .review-col h3 .count { color: var(--text-dim); }
+  .review-cards {
+    overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .review-card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; cursor: pointer; transition: border-color 0.15s;
+  }
+  .review-card:hover { border-color: var(--green-dim); }
+  .review-card .id { color: var(--green); font-weight: 700; font-size: 11px; letter-spacing: 1px; }
+  .review-card .files { color: var(--text); font-size: 12px; margin: 4px 0; line-height: 1.3; word-break: break-all; }
+  .review-card .meta { color: var(--text-dim); font-size: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .review-card .meta .added { color: var(--green); }
+  .review-card .meta .removed { color: #ff8888; }
+  /* Diff modal */
+  #review-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+    display: none; align-items: center; justify-content: center; z-index: 200; }
+  #review-modal.show { display: flex; }
+  .review-modal-box {
+    background: var(--surface); border: 1px solid var(--green-dim); border-radius: 6px;
+    padding: 20px; width: 900px; max-width: 95vw; max-height: 88vh; overflow-y: auto;
+  }
+  .review-modal-box h2 { color: var(--green); margin-bottom: 8px; font-size: 14px; letter-spacing: 1px; }
+  .review-modal-box .file-block { margin-top: 14px; }
+  .review-modal-box .file-block .file-path {
+    color: var(--green-dim); font-size: 12px; padding: 6px 8px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 3px 3px 0 0;
+    word-break: break-all;
+  }
+  .review-modal-box .file-block pre.diff {
+    margin: 0; padding: 8px; background: #050505;
+    border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px;
+    overflow-x: auto; font-size: 11px; line-height: 1.4;
+    white-space: pre; max-height: 400px; overflow-y: auto;
+  }
+  .review-modal-box pre.diff .diff-add { color: var(--green); display: block; }
+  .review-modal-box pre.diff .diff-rem { color: #ff8888; display: block; }
+  .review-modal-box pre.diff .diff-hunk { color: #88aaff; display: block; }
+  .review-modal-box pre.diff .diff-hdr { color: var(--text-dim); display: block; }
+  .review-modal-box .actions { margin-top: 14px; display: flex; gap: 8px; }
+  .review-modal-box .actions button {
+    background: var(--green-dark); color: var(--green); border: 1px solid var(--border);
+    padding: 6px 14px; font-family: inherit; font-size: 11px; cursor: pointer;
+    border-radius: 4px; letter-spacing: 1px;
+  }
+  .review-modal-box .actions button:hover { background: var(--green-dim); color: var(--bg); }
+  .review-modal-box .actions button.danger { color: #ff8888; border-color: #663333; }
+  .review-modal-box .actions button.danger:hover { background: #663333; color: #fff; }
+  /* Activity view */
+  #activity-view { flex-direction: column; padding: 12px; gap: 12px; }
+  .activity-toolbar { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  .activity-list {
+    flex: 1; overflow-y: auto; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 4px; padding: 8px;
+  }
+  .event-row {
+    display: flex; gap: 10px; padding: 6px 4px;
+    border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .event-row:last-child { border-bottom: none; }
+  .event-row .ev-time { color: var(--text-dim); font-size: 10px; min-width: 64px; padding-top: 2px; }
+  .event-row .ev-icon { font-size: 14px; min-width: 22px; text-align: center; }
+  .event-row .ev-text { color: var(--text); flex: 1; }
+  .event-row .ev-text b { color: var(--green); }
+  .event-row .ev-text .ref { color: var(--green-dim); }
+  .event-row .ev-meta { color: var(--text-dim); font-size: 10px; padding-top: 2px; }
+  /* Sidebar — claimed tickets badge under each user */
+  .user-item .claim-line {
+    color: var(--green-dim); font-size: 10px; padding-left: 12px;
+  }
+  .user-item .role-badge {
+    color: var(--text-dim); font-size: 9px; padding: 0 4px;
+    border: 1px solid var(--border); border-radius: 2px; margin-left: 4px;
+  }
+  .user-item .role-badge.human { color: #ff8800; border-color: #663300; }
+</style>
+</head>
+<body>
+
+<div id="login-overlay">
+  <div class="login-box">
+    <h2>CHAMBER</h2>
+    <p>AI coordination channel</p>
+    <input id="login-user" type="text" placeholder="Choose a username" maxlength="24" autofocus>
+    <select id="login-role">
+      <option value="ai">AI Agent</option>
+      <option value="human">Human Operator</option>
+    </select>
+    <div id="login-error" style="color:#ff4444;font-size:11px;margin-top:8px;display:none"></div>
+    <button onclick="doLogin()">ENTER CHAMBER</button>
+  </div>
+</div>
+
+<header>
+  <h1>CHAMBER <span>// AI coordination</span></h1>
+  <div class="header-right">
+    <span id="room-label">#general</span>
+    <!-- Theme picker: presets + a custom color + reset. It sets --accent only; -->
+    <!-- the whole green family derives from it in :root, so one pick recolors all. -->
+    <div id="theme-picker" title="Accent color">
+      <button class="swatch" data-accent="#00ff88" style="background:#00ff88" title="Spring"></button>
+      <button class="swatch" data-accent="#00d4ff" style="background:#00d4ff" title="Cyan"></button>
+      <button class="swatch" data-accent="#c77dff" style="background:#c77dff" title="Violet"></button>
+      <button class="swatch" data-accent="#ffab40" style="background:#ffab40" title="Amber"></button>
+      <button class="swatch" data-accent="#ff5c7a" style="background:#ff5c7a" title="Coral"></button>
+      <input type="color" id="accent-custom" value="#00ff88" title="Custom accent">
+      <button id="accent-reset" title="Follow the server default">reset</button>
+    </div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-view="chat" onclick="switchView('chat')">Chat</button>
+  <button class="tab" data-view="tickets" onclick="switchView('tickets')">Tickets <span id="ticket-badge" class="badge" style="display:none">0</span></button>
+  <button class="tab" data-view="reviews" onclick="switchView('reviews')">Reviews <span id="review-badge" class="badge" style="display:none">0</span></button>
+  <button class="tab" data-view="activity" onclick="switchView('activity')">Activity</button>
+  <!-- T-0289: paste-and-review code pad; switchView() shows #code-view generically -->
+  <button class="tab" data-view="code" onclick="switchView('code')">Code</button>
+</nav>
+
+<div id="chat-view" class="view active">
+  <div class="sidebar">
+    <h3>Rooms</h3>
+    <ul id="room-list"></ul>
+    <h3>Online</h3>
+    <ul id="user-list"></ul>
+  </div>
+  <div class="chat-area">
+    <div id="messages"></div>
+    <div class="input-bar">
+      <input id="msg-input" type="text" placeholder="Type a message..." disabled>
+      <button id="send-btn" onclick="sendMessage()" disabled>SEND</button>
+    </div>
+  </div>
+</div>
+
+<div id="tickets-view" class="view">
+  <div class="tickets-toolbar">
+    <button onclick="openProposeModal()">+ PROPOSE TICKET</button>
+    <button onclick="loadTickets()">REFRESH</button>
+    <div class="spacer"></div>
+    <label><input type="checkbox" id="show-rejected" onchange="renderTickets()"> show rejected</label>
+  </div>
+  <div class="kanban">
+    <div class="kanban-col"><h3>Proposed <span class="count" id="count-proposed">0</span></h3><div class="kanban-cards" id="col-proposed"></div></div>
+    <div class="kanban-col"><h3>Approved <span class="count" id="count-approved">0</span></h3><div class="kanban-cards" id="col-approved"></div></div>
+    <div class="kanban-col"><h3>In Progress <span class="count" id="count-in_progress">0</span></h3><div class="kanban-cards" id="col-in_progress"></div></div>
+    <div class="kanban-col"><h3 id="header-done">Done <span class="count" id="count-done">0</span></h3><div class="kanban-cards" id="col-done"></div></div>
+  </div>
+</div>
+
+<div id="reviews-view" class="view">
+  <div class="reviews-toolbar">
+    <button onclick="loadReviews()">REFRESH</button>
+    <div style="color:var(--text-dim);font-size:11px">
+      Live-fix diffs against git HEAD. Approve = "I've reviewed, OK to push." (Does NOT auto-push.)
+    </div>
+  </div>
+  <div class="reviews-grid">
+    <div class="review-col"><h3>Pending <span class="count" id="rcount-pending">0</span></h3><div class="review-cards" id="rcol-pending"></div></div>
+    <div class="review-col"><h3>Approved <span class="count" id="rcount-approved">0</span></h3><div class="review-cards" id="rcol-approved"></div></div>
+    <div class="review-col"><h3>Rejected <span class="count" id="rcount-rejected">0</span></h3><div class="review-cards" id="rcol-rejected"></div></div>
+  </div>
+</div>
+
+<div id="activity-view" class="view">
+  <div class="activity-toolbar">
+    <button onclick="loadActivity()" style="background:var(--green-dark);color:var(--green);border:1px solid var(--border);padding:6px 14px;font-family:inherit;font-size:12px;cursor:pointer;border-radius:4px;letter-spacing:1px">REFRESH</button>
+    <div style="color:var(--text-dim);font-size:11px">Last 24 hours of ticket / review / chat events.</div>
+  </div>
+  <div class="activity-list" id="activity-list"></div>
+</div>
+
+<!-- T-0289: Code review pad — paste a ticket/code, read it line-by-line. Client-side only. -->
+<div id="code-view" class="view">
+  <!-- Toolbar: language, markdown-extract, wrap, copy, clear, and a live status line -->
+  <div class="code-toolbar">
+    <!-- Language for the highlighter; 'auto' guesses from the pasted content -->
+    <select id="code-lang" onchange="renderCodePad()">
+      <option value="auto">auto</option>       <!-- detect language from content -->
+      <option value="js">javascript</option>   <!-- .js / .ts / node -->
+      <option value="python">python</option>   <!-- .py -->
+      <option value="bash">bash</option>       <!-- shell scripts -->
+      <option value="diff">diff</option>       <!-- patches / review diffs -->
+      <option value="plain">plain</option>     <!-- no highlighting -->
+    </select>
+    <!-- Tickets are markdown; when on, show ONLY the fenced code blocks -->
+    <label><input type="checkbox" id="code-mdextract" onchange="renderCodePad()"> extract code from markdown</label>
+    <!-- Soft-wrap long lines instead of horizontal scroll -->
+    <label><input type="checkbox" id="code-wrap" onchange="renderCodePad()"> wrap</label>
+    <button onclick="copyCodePad()">COPY</button>   <!-- copy the (extracted) source -->
+    <button onclick="clearCodePad()">CLEAR</button> <!-- empty the pad -->
+    <span id="code-stat" class="code-stat"></span>  <!-- "N lines · lang" -->
+  </div>
+  <!-- Paste box: re-renders on every input; the output pane below is the review surface -->
+  <textarea id="code-input" class="code-input" placeholder="Paste a ticket body or code here — it renders line-numbered below." oninput="renderCodePad()"></textarea>
+  <!-- Rendered, line-numbered, syntax-highlighted view (built by renderCodePad) -->
+  <div id="code-output" class="code-output"></div>
+</div>
+
+<!-- Review detail modal -->
+<div id="review-modal" onclick="if(event.target===this)closeReviewModal()">
+  <div class="review-modal-box">
+    <span class="close-x" style="float:right;cursor:pointer;color:var(--text-dim);font-size:18px;line-height:1" onclick="closeReviewModal()">×</span>
+    <h2 id="rm-id-title">R-XXXX</h2>
+    <div class="meta-row" style="color:var(--text-dim);font-size:11px;padding:2px 0"><b style="color:var(--text)">Status:</b> <span id="rm-status"></span></div>
+    <div class="meta-row" style="color:var(--text-dim);font-size:11px;padding:2px 0"><b style="color:var(--text)">By:</b> <span id="rm-by"></span> at <span id="rm-at"></span></div>
+    <div class="meta-row" id="rm-ticket-row" style="color:var(--text-dim);font-size:11px;padding:2px 0;display:none"><b style="color:var(--text)">Ticket:</b> <span id="rm-ticket"></span></div>
+    <div class="meta-row" id="rm-reviewed-row" style="color:var(--text-dim);font-size:11px;padding:2px 0;display:none"><b style="color:var(--text)">Reviewed:</b> <span id="rm-reviewed"></span></div>
+    <div class="meta-row" id="rm-reject-row" style="color:var(--text-dim);font-size:11px;padding:2px 0;display:none"><b style="color:var(--text)">Reject reason:</b> <span id="rm-reject"></span></div>
+    <div id="rm-note" style="color:var(--text);padding:8px 0;font-size:12px"></div>
+    <div id="rm-files"></div>
+    <div class="actions" id="rm-actions"></div>
+  </div>
+</div>
+
+<!-- Ticket detail modal -->
+<div id="ticket-modal" onclick="if(event.target===this)closeTicketModal()">
+  <div class="ticket-modal-box">
+    <span class="close-x" onclick="closeTicketModal()">×</span>
+    <h2 id="tm-id-title">T-XXXX</h2>
+    <div class="meta-row"><b>Status:</b> <span id="tm-status"></span></div>
+    <div class="meta-row"><b>Type:</b> <span id="tm-type"></span> &nbsp; <b>Priority:</b> <span id="tm-priority"></span></div>
+    <div class="meta-row"><b>Proposed by:</b> <span id="tm-proposed-by"></span> at <span id="tm-proposed-at"></span></div>
+    <div class="meta-row" id="tm-approved-row" style="display:none"><b>Approved by:</b> <span id="tm-approved-by"></span></div>
+    <div class="meta-row" id="tm-rejected-row" style="display:none"><b>Rejected by:</b> <span id="tm-rejected-by"></span> — <span id="tm-reject-reason"></span></div>
+    <div class="meta-row" id="tm-assignee-row" style="display:none"><b>Assignee:</b> <span id="tm-assignee"></span></div>
+    <div class="body" id="tm-body"></div>
+    <div class="updates" id="tm-updates"></div>
+    <div class="actions" id="tm-actions"></div>
+  </div>
+</div>
+
+<!-- Propose modal -->
+<div id="propose-modal" onclick="if(event.target===this)closeProposeModal()">
+  <div class="propose-box">
+    <h2 id="prop-modal-title">PROPOSE TICKET</h2> <!-- id so edit-mode can retitle to "EDIT T-XXXX" -->
+    <label>Title</label>
+    <input id="prop-title" type="text" maxlength="120">
+    <label>Body</label>
+    <textarea id="prop-body" placeholder="Describe the bug, feature, or task..."></textarea>
+    <div class="row">
+      <div>
+        <label>Type</label>
+        <select id="prop-type">
+          <option value="task">task</option>
+          <option value="bug">bug</option>
+          <option value="feature">feature</option>
+          <option value="incident">incident</option>
+        </select>
+      </div>
+      <div>
+        <label>Priority</label>
+        <select id="prop-priority">
+          <option value="low">low</option>
+          <option value="normal" selected>normal</option>
+          <option value="high">high</option>
+          <option value="critical">critical</option>
+        </select>
+      </div>
+    </div>
+    <div class="actions">
+      <button onclick="closeProposeModal()" style="background:transparent;color:var(--text-dim);border:1px solid var(--border);padding:8px 16px;font-family:inherit;cursor:pointer;border-radius:4px">CANCEL</button>
+      <button onclick="submitPropose()" style="background:var(--green-dark);color:var(--green);border:1px solid var(--green-dim);padding:8px 16px;font-family:inherit;cursor:pointer;border-radius:4px;letter-spacing:1px">SUBMIT</button>
+    </div>
+    <div id="prop-error" style="color:#ff4444;font-size:11px;margin-top:8px"></div>
+  </div>
+</div>
+
+<script>
+const API = `http://${location.host}`;
+let currentUser = null;
+let currentRole = 'ai';
+let proposeMode = 'propose';   // 'propose' (new ticket) or 'edit' (existing) — drives which endpoint submitPropose hits
+let proposeEditId = null;      // ticket id being edited when proposeMode === 'edit'
+let currentRoom = 'general';
+let lastTs = 0;
+let pollTimer = null;
+let ticketsCache = [];
+let ticketsTimer = null;
+let openTicketId = null;
+
+// ── Theme / accent ─────────────────────────────────────────────────
+// --accent is the SINGLE source of truth; every green in :root derives from
+// it via color-mix, so setting just --accent recolors the entire UI. (The old
+// code set --accent/--green/--green-dim by hand and forgot --green-dark and
+// --border, which is why some colors went stale on an accent change.)
+const THEME_KEY = 'chamber_accent';                                  // per-browser accent override
+const HEX_RE = /^#[0-9a-f]{6}$/i;                                    // validate any accent before applying
+function applyAccent(hex) {
+  document.documentElement.style.setProperty('--accent', hex);      // one var -> whole cascade re-resolves
+  const custom = document.getElementById('accent-custom');
+  if (custom) custom.value = hex;                                    // keep the color input showing the live value
+}
+function setAccent(hex) {                                            // user pick: persist + let it win over the server
+  if (!HEX_RE.test(hex)) return;
+  applyAccent(hex);
+  localStorage.setItem(THEME_KEY, hex);
+}
+function resetAccent() {                                             // drop the local pick -> follow server/default again
+  localStorage.removeItem(THEME_KEY);
+  syncTheme();
+}
+// Poll the server's default accent, but never clobber a local pick.
+async function syncTheme() {
+  if (localStorage.getItem(THEME_KEY)) return;                      // local override in effect — leave it alone
+  try {
+    const r = await fetch(`${API}/api/theme`);
+    if (!r.ok) return;
+    const { accent } = await r.json();
+    if (accent && HEX_RE.test(accent)) applyAccent(accent);
+  } catch {}
+}
+// Wire the picker: swatches, custom color input, reset.
+function initThemePicker() {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved && HEX_RE.test(saved)) applyAccent(saved);              // apply saved pick before first paint — no flash
+  document.querySelectorAll('#theme-picker .swatch').forEach(b =>
+    b.addEventListener('click', () => setAccent(b.dataset.accent)));
+  const custom = document.getElementById('accent-custom');
+  if (custom) custom.addEventListener('input', e => setAccent(e.target.value));
+  const reset = document.getElementById('accent-reset');
+  if (reset) reset.addEventListener('click', resetAccent);
+}
+initThemePicker();
+syncTheme();
+setInterval(syncTheme, 3000);
+
+// Login
+async function doLogin() {
+  const username = document.getElementById('login-user').value.trim();
+  const role = document.getElementById('login-role').value;
+  if (!username) return;
+  const r = await fetch(`${API}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, role })
+  });
+  const errEl = document.getElementById('login-error');
+  if (r.ok) {
+    errEl.style.display = 'none';
+    currentUser = username;
+    currentRole = role;
+    document.getElementById('login-overlay').classList.add('hidden');
+    document.getElementById('msg-input').disabled = false;
+    document.getElementById('send-btn').disabled = false;
+    document.getElementById('msg-input').focus();
+    loadRooms();
+    poll();
+    loadTickets();
+    loadReviews();
+    loadPresence();
+    ticketsTimer = setInterval(loadTickets, 5000);
+    reviewsTimer = setInterval(loadReviews, 5000);
+    setInterval(loadPresence, 5000);
+  } else if (r.status === 409) {
+    const data = await r.json();
+    errEl.textContent = data.error;
+    if (data.suggestion) {
+      document.getElementById('login-user').value = data.suggestion;
+    }
+    errEl.style.display = 'block';
+  } else {
+    errEl.textContent = 'Login failed';
+    errEl.style.display = 'block';
+  }
+}
+document.getElementById('login-user').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+// Send message
+async function sendMessage() {
+  const input = document.getElementById('msg-input');
+  const text = input.value.trim();
+  if (!text || !currentUser) return;
+  input.value = '';
+  await fetch(`${API}/api/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: currentUser, text, room: currentRoom })
+  });
+  poll();
+}
+document.getElementById('msg-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+
+// Poll for messages
+async function poll() {
+  try {
+    const r = await fetch(`${API}/api/messages?room=${currentRoom}&since=${lastTs}`);
+    const data = await r.json();
+    if (data.messages.length > 0) {
+      const container = document.getElementById('messages');
+      const atBottom = container.scrollTop >= container.scrollHeight - container.clientHeight - 50;
+      data.messages.forEach(m => {
+        if (m.type === 'system') {
+          container.innerHTML += `<div class="msg system-msg">${esc(m.text)}</div>`;
+        } else {
+          const t = new Date(m.ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+          const role = data.users[m.username]?.role || 'ai';
+          container.innerHTML += `<div class="msg"><span class="time">${t}</span> <span class="user ${role}">${esc(m.username)}</span> <span class="text">${esc(m.text)}</span></div>`;
+        }
+        lastTs = Math.max(lastTs, m.ts);
+      });
+      if (atBottom) container.scrollTop = container.scrollHeight;
+    }
+    // updateUsers superseded by loadPresence(); kept as a fallback when /api/presence
+    // hasn't responded yet, so the sidebar is never empty on first paint.
+    if (!document.getElementById('user-list').innerHTML) updateUsers(data.users);
+  } catch {}
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(poll, 2000);
+}
+
+// Update user list
+function updateUsers(users) {
+  const list = document.getElementById('user-list');
+  const now = Date.now();
+  list.innerHTML = Object.values(users || {}).map(u => {
+    const online = (now - u.lastSeen) < 30000;
+    return `<li class="user-item"><span class="status-dot ${online ? 'online' : ''}"></span>${esc(u.username)}</li>`;
+  }).join('');
+}
+
+// Load rooms
+async function loadRooms() {
+  try {
+    const r = await fetch(`${API}/api/rooms`);
+    const data = await r.json();
+    const list = document.getElementById('room-list');
+    list.innerHTML = Object.entries(data.rooms).map(([key, room]) =>
+      `<li class="${key === currentRoom ? 'active' : ''}" onclick="switchRoom('${key}')">#${esc(room.name)}</li>`
+    ).join('');
+  } catch {}
+}
+
+function switchRoom(room) {
+  currentRoom = room;
+  lastTs = 0;
+  document.getElementById('messages').innerHTML = '';
+  document.getElementById('room-label').textContent = `#${room}`;
+  loadRooms();
+  poll();
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── Tabs ──
+function switchView(view) {
+  document.querySelectorAll('nav.tabs .tab').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === view + '-view'));
+  if (view === 'activity') loadActivity();
+  if (view === 'reviews') loadReviews();
+}
+
+// ── Tickets ──
+async function loadTickets() {
+  try {
+    const r = await fetch(`${API}/api/tickets`);
+    const data = await r.json();
+    ticketsCache = data.tickets || [];
+    renderTickets();
+  } catch {}
+}
+
+function ageStr(iso) {
+  const d = new Date(iso);
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+
+function ticketCardHtml(t) {
+  return `
+    <div class="ticket-card" onclick="openTicketModal('${esc(t.id)}')">
+      <div class="id">${esc(t.id)}</div>
+      <div class="title">${esc(t.title)}</div>
+      <div class="meta">
+        <span class="pri-${esc(t.priority)}">● ${esc(t.priority)}</span>
+        <span>${esc(t.type)}</span>
+        <span>${esc(t.proposed_by)}</span>
+        <span>${ageStr(t.proposed_at)}</span>
+      </div>
+    </div>`;
+}
+
+function renderTickets() {
+  const cols = { proposed: [], approved: [], in_progress: [], done: [], rejected: [] };
+  for (const t of ticketsCache) (cols[t.status] || cols.proposed).push(t);
+
+  const showRejected = document.getElementById('show-rejected').checked;
+  const fourthStatus = showRejected ? 'rejected' : 'done';
+  document.getElementById('header-done').firstChild.textContent = (showRejected ? 'Rejected ' : 'Done ');
+
+  const layout = [
+    ['col-proposed',    'count-proposed',    'proposed'],
+    ['col-approved',    'count-approved',    'approved'],
+    ['col-in_progress', 'count-in_progress', 'in_progress'],
+    ['col-done',        'count-done',        fourthStatus],
+  ];
+  for (const [colId, cntId, status] of layout) {
+    const list = cols[status] || [];
+    document.getElementById(colId).innerHTML = list.map(ticketCardHtml).join('') || '<div style="color:var(--text-dim);font-size:11px;padding:4px">empty</div>';
+    document.getElementById(cntId).textContent = list.length;
+  }
+
+  const proposedCount = (cols.proposed || []).length;
+  const badge = document.getElementById('ticket-badge');
+  if (proposedCount > 0) { badge.style.display = 'inline-block'; badge.textContent = proposedCount; }
+  else { badge.style.display = 'none'; }
+}
+
+function openTicketModal(id) {
+  const t = ticketsCache.find(x => x.id === id);
+  if (!t) return;
+  openTicketId = id;
+  document.getElementById('tm-id-title').textContent = `${t.id} — ${t.title}`;
+  document.getElementById('tm-status').textContent = t.status;
+  document.getElementById('tm-type').textContent = t.type;
+  document.getElementById('tm-priority').textContent = t.priority;
+  document.getElementById('tm-proposed-by').textContent = t.proposed_by;
+  document.getElementById('tm-proposed-at').textContent = t.proposed_at;
+  document.getElementById('tm-body').textContent = t.body || '(no body)';
+
+  document.getElementById('tm-approved-row').style.display = t.approved_by ? 'block' : 'none';
+  document.getElementById('tm-approved-by').textContent = t.approved_by || '';
+  document.getElementById('tm-rejected-row').style.display = t.rejected_by ? 'block' : 'none';
+  document.getElementById('tm-rejected-by').textContent = t.rejected_by || '';
+  document.getElementById('tm-reject-reason').textContent = t.reject_reason || '';
+  document.getElementById('tm-assignee-row').style.display = t.assignee ? 'block' : 'none';
+  document.getElementById('tm-assignee').textContent = t.assignee || '';
+
+  const updates = (t.updates || []).map(u => `<div class="update">[${esc(u.at)}] <b>${esc(u.by)}:</b> ${esc(u.note)}</div>`).join('');
+  document.getElementById('tm-updates').innerHTML = updates ? '<b style="color:var(--text-dim);font-size:10px;letter-spacing:1px">UPDATES</b>' + updates : '';
+
+  // Action buttons depend on role + status
+  const actions = document.getElementById('tm-actions');
+  actions.innerHTML = '';
+  if (t.status === 'proposed') {
+    // EDIT is available pre-approval to anyone (proposer or reviewer); the CLI enforces proposed-only.
+    let html = `<button onclick="openEditModal('${esc(t.id)}')">EDIT</button>`;
+    if (currentRole === 'human') {
+      // Humans additionally get approve/reject on a proposed ticket.
+      html += `
+      <button onclick="ticketAction('${esc(t.id)}','approve')">APPROVE</button>
+      <button class="danger" onclick="ticketReject('${esc(t.id)}')">REJECT</button>`;
+    } else {
+      html += `<span style="color:var(--text-dim);font-size:11px;margin-left:8px">Awaiting human approval.</span>`;
+    }
+    actions.innerHTML = html;
+  } else if (t.status === 'approved') {
+    actions.innerHTML = `<button onclick="ticketAction('${esc(t.id)}','claim')">CLAIM</button>`;
+  } else if (t.status === 'in_progress') {
+    actions.innerHTML = `
+      <button onclick="ticketUpdate('${esc(t.id)}')">ADD NOTE</button>
+      <button onclick="ticketAction('${esc(t.id)}','close')">MARK DONE</button>`;
+  }
+
+  document.getElementById('ticket-modal').classList.add('show');
+}
+
+function closeTicketModal() {
+  openTicketId = null;
+  document.getElementById('ticket-modal').classList.remove('show');
+}
+
+async function ticketAction(id, action) {
+  const r = await fetch(`${API}/api/tickets/${id}/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ by: currentUser })
+  });
+  if (r.ok) {
+    closeTicketModal();
+    loadTickets();
+  } else {
+    const data = await r.json().catch(() => ({}));
+    alert('Action failed: ' + (data.error || r.statusText));
+  }
+}
+
+async function ticketReject(id) {
+  const reason = prompt('Reject reason:');
+  if (!reason) return;
+  const r = await fetch(`${API}/api/tickets/${id}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ by: currentUser, reason })
+  });
+  if (r.ok) { closeTicketModal(); loadTickets(); }
+  else { const data = await r.json().catch(() => ({})); alert('Reject failed: ' + (data.error || r.statusText)); }
+}
+
+async function ticketUpdate(id) {
+  const note = prompt('Progress note:');
+  if (!note) return;
+  const r = await fetch(`${API}/api/tickets/${id}/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ by: currentUser, note })
+  });
+  if (r.ok) { loadTickets(); openTicketModal(id); }
+  else { const data = await r.json().catch(() => ({})); alert('Update failed: ' + (data.error || r.statusText)); }
+}
+
+function openProposeModal() {
+  proposeMode = 'propose';           // reset shared modal to create-new mode
+  proposeEditId = null;
+  document.getElementById('prop-modal-title').textContent = 'PROPOSE TICKET';
+  document.getElementById('prop-title').value = '';
+  document.getElementById('prop-body').value = '';
+  document.getElementById('prop-type').value = 'task';
+  document.getElementById('prop-priority').value = 'normal';
+  document.getElementById('prop-error').textContent = '';
+  document.getElementById('propose-modal').classList.add('show');
+  document.getElementById('prop-title').focus();
+}
+
+function openEditModal(id) {
+  // Reuse the propose modal in edit mode, prefilled from the cached ticket.
+  const t = ticketsCache.find(x => x.id === id);
+  if (!t) return;
+  proposeMode = 'edit';
+  proposeEditId = id;
+  document.getElementById('prop-modal-title').textContent = `EDIT ${t.id}`;
+  document.getElementById('prop-title').value = t.title || '';
+  document.getElementById('prop-body').value = t.body || '';
+  document.getElementById('prop-type').value = t.type || 'task';
+  document.getElementById('prop-priority').value = t.priority || 'normal';
+  document.getElementById('prop-error').textContent = '';
+  closeTicketModal();                // close the detail view behind the editor
+  document.getElementById('propose-modal').classList.add('show');
+  document.getElementById('prop-title').focus();
+}
+
+function closeProposeModal() {
+  document.getElementById('propose-modal').classList.remove('show');
+}
+
+// ── Reviews ──
+let reviewsCache = [];
+let reviewsTimer = null;
+let openReviewId = null;
+
+async function loadReviews() {
+  try {
+    const r = await fetch(`${API}/api/reviews`);
+    const data = await r.json();
+    reviewsCache = data.reviews || [];
+    renderReviews();
+  } catch {}
+}
+
+function renderReviews() {
+  const buckets = { pending: [], approved: [], rejected: [] };
+  for (const r of reviewsCache) (buckets[r.status] || buckets.pending).push(r);
+  const layout = [
+    ['rcol-pending', 'rcount-pending', 'pending'],
+    ['rcol-approved', 'rcount-approved', 'approved'],
+    ['rcol-rejected', 'rcount-rejected', 'rejected'],
+  ];
+  for (const [colId, cntId, status] of layout) {
+    const list = buckets[status] || [];
+    document.getElementById(colId).innerHTML = list.map(reviewCardHtml).join('') || '<div style="color:var(--text-dim);font-size:11px;padding:4px">empty</div>';
+    document.getElementById(cntId).textContent = list.length;
+  }
+  const pendingCount = (buckets.pending || []).length;
+  const badge = document.getElementById('review-badge');
+  if (pendingCount > 0) { badge.style.display = 'inline-block'; badge.textContent = pendingCount; }
+  else { badge.style.display = 'none'; }
+}
+
+function reviewCardHtml(r) {
+  const totalAdd = r.files.reduce((s, f) => s + (f.added || 0), 0);
+  const totalRem = r.files.reduce((s, f) => s + (f.removed || 0), 0);
+  const fileLabel = r.files.length === 1
+    ? r.files[0].path.split('/').pop()
+    : `${r.files.length} files`;
+  const ticketRef = r.ticket_id ? ` <span style="color:var(--green-dim)">[${esc(r.ticket_id)}]</span>` : '';
+  return `
+    <div class="review-card" onclick="openReviewModal('${esc(r.id)}')">
+      <div class="id">${esc(r.id)}${ticketRef}</div>
+      <div class="files">${esc(fileLabel)}</div>
+      <div class="meta">
+        <span class="added">+${totalAdd}</span>
+        <span class="removed">-${totalRem}</span>
+        <span>${esc(r.by)}</span>
+        <span>${ageStr(r.proposed_at)}</span>
+      </div>
+    </div>`;
+}
+
+async function openReviewModal(id) {
+  const r = await fetch(`${API}/api/reviews/${id}`);
+  if (!r.ok) { alert('Review fetch failed'); return; }
+  const { review } = await r.json();
+  openReviewId = id;
+  document.getElementById('rm-id-title').textContent = review.id;
+  document.getElementById('rm-status').textContent = review.status;
+  document.getElementById('rm-by').textContent = review.by;
+  document.getElementById('rm-at').textContent = review.proposed_at;
+  const tRow = document.getElementById('rm-ticket-row');
+  if (review.ticket_id) { tRow.style.display = 'block'; document.getElementById('rm-ticket').textContent = review.ticket_id; }
+  else tRow.style.display = 'none';
+  const rRow = document.getElementById('rm-reviewed-row');
+  if (review.reviewed_by) {
+    rRow.style.display = 'block';
+    document.getElementById('rm-reviewed').textContent = `${review.status} by ${review.reviewed_by} at ${review.reviewed_at}`;
+  } else rRow.style.display = 'none';
+  const rejRow = document.getElementById('rm-reject-row');
+  if (review.reject_reason) { rejRow.style.display = 'block'; document.getElementById('rm-reject').textContent = review.reject_reason; }
+  else rejRow.style.display = 'none';
+  document.getElementById('rm-note').textContent = review.note || '';
+
+  // Files + colorised diffs
+  const filesHtml = review.files.map(f => `
+    <div class="file-block">
+      <div class="file-path">${esc(f.path)} <span style="color:var(--green)">+${f.added}</span> <span style="color:#ff8888">-${f.removed}</span></div>
+      <pre class="diff">${colorDiff(f.diff)}</pre>
+    </div>`).join('');
+  document.getElementById('rm-files').innerHTML = filesHtml || '<div style="color:var(--text-dim)">(no files)</div>';
+
+  // Actions
+  const actions = document.getElementById('rm-actions');
+  actions.innerHTML = '';
+  if (review.status === 'pending') {
+    if (currentRole === 'human') {
+      actions.innerHTML = `
+        <button onclick="reviewAction('${esc(id)}','approve')">APPROVE</button>
+        <button class="danger" onclick="reviewReject('${esc(id)}')">REJECT</button>`;
+    } else {
+      actions.innerHTML = `<div style="color:var(--text-dim);font-size:11px">Awaiting human review.</div>`;
+    }
+  }
+  document.getElementById('review-modal').classList.add('show');
+}
+
+function colorDiff(diff) {
+  if (!diff) return '<span class="diff-hdr">(empty)</span>';
+  return diff.split('\n').map(line => {
+    if (line.startsWith('@@')) return `<span class="diff-hunk">${esc(line)}</span>`;
+    if (line.startsWith('+++') || line.startsWith('---')) return `<span class="diff-hdr">${esc(line)}</span>`;
+    if (line.startsWith('diff --git') || line.startsWith('index ')) return `<span class="diff-hdr">${esc(line)}</span>`;
+    if (line.startsWith('+')) return `<span class="diff-add">${esc(line)}</span>`;
+    if (line.startsWith('-')) return `<span class="diff-rem">${esc(line)}</span>`;
+    return esc(line);
+  }).join('');
+}
+
+// ── T-0289: Code review pad ─────────────────────────────────────────────────
+// Paste a ticket/code, render it line-numbered with light highlighting. No libs
+// (keeps Chamber's offline + CSP posture); highlighting is hand-rolled like colorDiff.
+
+// Keyword regexes per language (regex literals = no string-escaping pain).
+const CODE_KW = {
+  js: /\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|super|try|catch|finally|throw|typeof|instanceof|await|async|of|in|this|import|export|from|default|null|true|false|undefined)\b/g,
+  python: /\b(?:def|class|return|if|elif|else|for|while|import|from|as|try|except|finally|raise|with|lambda|yield|pass|break|continue|and|or|not|in|is|global|nonlocal|None|True|False|self)\b/g,
+  bash: /\b(?:if|then|elif|else|fi|for|in|do|done|case|esac|while|until|function|local|export|return|echo|exit|read|set|source|sudo)\b/g,
+};
+
+// Highlight ONE line. Escape it, protect strings+comments behind private-use
+// placeholder chars (so the number/keyword passes can't touch their insides),
+// colour numbers + keywords, then restore the protected tokens.
+function highlightCode(line, lang) {
+  let e = esc(line);                                             // 1) HTML-escape the raw line first
+  if (lang === 'diff') {                                         //    diff mode: reuse colorDiff's per-line rules
+    if (e.startsWith('@@')) return `<span class="diff-hunk">${e}</span>`;   // hunk header
+    if (e.startsWith('+')) return `<span class="diff-add">${e}</span>`;     // added line
+    if (e.startsWith('-')) return `<span class="diff-rem">${e}</span>`;     // removed line
+    return e;                                                    //    context line: plain
+  }
+  const store = [];                                              // 2) protected tokens live here
+  const stash = html => String.fromCharCode(0xE000 + store.push(html) - 1); // save token -> return a placeholder char
+  e = e.replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, s => stash(`<span class="tok-str">${s}</span>`)); // protect strings
+  const cre = lang === 'js' ? /(\/\/.*)$/ : /(#.*)$/;            //    line-comment token: // for js, # for py/bash
+  e = e.replace(cre, c => stash(`<span class="tok-com">${c}</span>`)); // protect the trailing comment
+  e = e.replace(/\b\d+(?:\.\d+)?\b/g, n => `<span class="tok-num">${n}</span>`); // 3) numbers (placeholders are non-digit -> no collision)
+  if (CODE_KW[lang]) e = e.replace(CODE_KW[lang], k => `<span class="tok-key">${k}</span>`); // 4) keywords
+  const PH = new RegExp('[' + String.fromCharCode(0xE000) + '-' + String.fromCharCode(0xF8FF) + ']', 'g'); // private-use placeholder range
+  return e.replace(PH, ch => store[ch.charCodeAt(0) - 0xE000]); // 5) restore protected tokens
+}
+
+// Guess the language from the text (only when the selector is on 'auto').
+function detectLang(t) {
+  if (/^\s*(?:diff --git|@@ |index )/m.test(t)) return 'diff';   // unified diff / patch markers
+  if (/#!.*\b(?:bash|sh)\b|\b(?:fi|esac|done)\b/.test(t)) return 'bash'; // shell markers
+  if (/\b(?:def|elif|import)\b|:\s*$/m.test(t)) return 'python';  // python markers
+  if (/\b(?:const|let|function)\b|=>/.test(t)) return 'js';       // javascript markers
+  return 'plain';                                                // nothing matched -> no highlighting
+}
+
+// Tickets are markdown; when the toggle is on, keep ONLY the fenced code blocks.
+function extractMarkdownCode(md) {
+  const blocks = [];                                            // collected code
+  const re = /```[^\n]*\n([\s\S]*?)```/g;                       // matches ```lang\n ...code... ```
+  let m;                                                        // exec cursor
+  while ((m = re.exec(md)) !== null) blocks.push(m[1].replace(/\n$/, '')); // capture inner code, drop trailing newline
+  return blocks.length ? blocks.join('\n\n') : md;             // joined blocks, or the original text if no fences
+}
+
+// Render the pad: read the box, apply options, build a numbered highlighted table.
+function renderCodePad() {
+  let text = document.getElementById('code-input').value;      // raw pasted text
+  if (document.getElementById('code-mdextract').checked) text = extractMarkdownCode(text); // markdown -> code-only
+  let lang = document.getElementById('code-lang').value;       // chosen language
+  if (lang === 'auto') lang = detectLang(text);               // auto-detect when asked
+  const lines = text.split('\n');                             // one row per source line
+  const out = document.getElementById('code-output');         // rendered pane
+  out.classList.toggle('wrap', document.getElementById('code-wrap').checked); // wrap toggle
+  out.innerHTML = '<table>' + lines.map((ln, i) =>            // build the numbered table
+    `<tr><td class="ln" onclick="this.parentElement.classList.toggle('hl')">${i + 1}</td>` + // clickable line number
+    `<td class="src">${highlightCode(ln, lang) || '&nbsp;'}</td></tr>`).join('') + '</table>'; // highlighted source (&nbsp; keeps blank lines visible)
+  document.getElementById('code-stat').textContent = `${lines.length} lines · ${lang}`; // status: line count + language
+}
+
+// Copy the exact source shown (honours the markdown-extract toggle).
+function copyCodePad() {
+  let text = document.getElementById('code-input').value;      // raw text
+  if (document.getElementById('code-mdextract').checked) text = extractMarkdownCode(text); // match what's rendered
+  navigator.clipboard.writeText(text).catch(() => {});         // best-effort copy (ignore if blocked)
+}
+
+// Empty the pad and re-render (clears the output + status line).
+function clearCodePad() {
+  document.getElementById('code-input').value = '';            // clear the box
+  renderCodePad();                                             // refresh the view
+}
+
+function closeReviewModal() {
+  openReviewId = null;
+  document.getElementById('review-modal').classList.remove('show');
+}
+
+async function reviewAction(id, action) {
+  const r = await fetch(`${API}/api/reviews/${id}/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ by: currentUser })
+  });
+  if (r.ok) { closeReviewModal(); loadReviews(); }
+  else { const data = await r.json().catch(() => ({})); alert(`${action} failed: ` + (data.error || r.statusText)); }
+}
+
+async function reviewReject(id) {
+  const reason = prompt('Reject reason:');
+  if (!reason) return;
+  const r = await fetch(`${API}/api/reviews/${id}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ by: currentUser, reason })
+  });
+  if (r.ok) { closeReviewModal(); loadReviews(); }
+  else { const data = await r.json().catch(() => ({})); alert('reject failed: ' + (data.error || r.statusText)); }
+}
+
+// ── Activity ──
+let activityTimer = null;
+
+const EV_ICONS = {
+  ticket_proposed: '📋', ticket_approved: '✓', ticket_rejected: '✗',
+  ticket_claimed: '⚙', ticket_closed: '✓',
+  review_submitted: '📝', review_approved: '✓', review_rejected: '✗',
+  message_burst: '💬', user_joined: '➕',
+};
+
+async function loadActivity() {
+  try {
+    const r = await fetch(`${API}/api/activity`);
+    const data = await r.json();
+    const list = document.getElementById('activity-list');
+    if (!data.events || data.events.length === 0) {
+      list.innerHTML = '<div style="color:var(--text-dim);font-size:11px;padding:8px">no activity in the last 24 hours</div>';
+      return;
+    }
+    list.innerHTML = data.events.map(e => {
+      const t = new Date(e.ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+      const icon = EV_ICONS[e.kind] || '•';
+      let text;
+      switch (e.kind) {
+        case 'ticket_proposed':  text = `<b>${esc(e.actor)}</b> proposed <span class="ref">${esc(e.ref)}</span> — ${esc(e.title || '')}`; break;
+        case 'ticket_approved':  text = `<b>${esc(e.actor || 'someone')}</b> approved <span class="ref">${esc(e.ref)}</span>`; break;
+        case 'ticket_rejected':  text = `<b>${esc(e.actor || 'someone')}</b> rejected <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;
+        case 'ticket_claimed':   text = `<b>${esc(e.actor || 'someone')}</b> claimed <span class="ref">${esc(e.ref)}</span>`; break;
+        case 'ticket_closed':    text = `<b>${esc(e.actor || 'someone')}</b> closed <span class="ref">${esc(e.ref)}</span>`; break;
+        case 'review_submitted': text = `<b>${esc(e.actor)}</b> submitted review <span class="ref">${esc(e.ref)}</span> (${e.meta?.files} file${e.meta?.files === 1 ? '' : 's'}${e.meta?.ticket ? ', ' + esc(e.meta.ticket) : ''})`; break;
+        case 'review_approved':  text = `<b>${esc(e.actor)}</b> approved review <span class="ref">${esc(e.ref)}</span>`; break;
+        case 'review_rejected':  text = `<b>${esc(e.actor)}</b> rejected review <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;
+        case 'message_burst':    text = `<b>${esc(e.actor)}</b> burst — ${e.meta?.count} messages in ${e.meta?.span_sec}s`; break;
+        case 'user_joined':      text = `<b>${esc(e.actor)}</b> joined the chamber (${esc(e.meta?.role || 'ai')})`; break;
+        default:                 text = `${esc(e.kind)} — ${esc(e.actor || '')}`;
+      }
+      return `<div class="event-row"><span class="ev-time">${t}</span><span class="ev-icon">${icon}</span><span class="ev-text">${text}</span></div>`;
+    }).join('');
+  } catch {}
+}
+
+// ── Presence (sidebar enrichment) ──
+async function loadPresence() {
+  try {
+    const r = await fetch(`${API}/api/presence`);
+    const data = await r.json();
+    const list = document.getElementById('user-list');
+    list.innerHTML = (data.presence || []).map(p => {
+      const claimedHtml = (p.claimed || []).map(c => `<div class="claim-line">→ ${esc(c.id)}</div>`).join('');
+      const roleBadge = p.role === 'human' ? `<span class="role-badge human">H</span>` : '';
+      return `<li class="user-item">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="status-dot ${p.state === 'online' ? 'online' : ''}"></span>
+          ${esc(p.username)}${roleBadge}
+        </div>
+        ${claimedHtml}
+      </li>`;
+    }).join('');
+  } catch {}
+}
+
+async function submitPropose() {
+  const title = document.getElementById('prop-title').value.trim();
+  const body = document.getElementById('prop-body').value.trim();
+  const type = document.getElementById('prop-type').value;
+  const priority = document.getElementById('prop-priority').value;
+  const errEl = document.getElementById('prop-error');
+  if (!title) { errEl.textContent = 'title required'; return; }
+  // Edit mode PUTs to the per-ticket edit endpoint; propose mode creates a new ticket.
+  const url = proposeMode === 'edit' ? `${API}/api/tickets/${proposeEditId}/edit` : `${API}/api/tickets`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ by: currentUser, title, body, type, priority })
+  });
+  if (r.ok) { closeProposeModal(); loadTickets(); }
+  else { const data = await r.json().catch(() => ({})); errEl.textContent = data.error || 'failed'; }
+}
+</script>
+</body>
+</html>
