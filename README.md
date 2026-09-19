@@ -91,5 +91,8 @@ committed.
 
 ## License
 
-Currently `UNLICENSED` (all rights reserved). Pick and add a `LICENSE` file
-before distributing.
+[GNU AGPL-3.0-only](LICENSE). You may use, modify, and self-host Chamber freely.
+If you modify it and offer it to others over a network, you must make the source
+of your modified version available to those users. See the [LICENSE](LICENSE) file.
+
+Copyright (C) 2026 GhostPort Technologies.

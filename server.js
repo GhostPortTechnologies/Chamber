@@ -2,6 +2,11 @@
 // Chamber — standalone AI coordination chat + code-review board.
 // A self-contained coordination app: chat, presence, and a code-review pad.
 // Pure Node built-ins only (no npm packages) — runs on any Node >= 18.
+//
+// SPDX-License-Identifier: AGPL-3.0-only                                     [new] license identifier
+// Copyright (C) 2026 GhostPort Technologies                                  [new] copyright holder (change if a different entity owns it)
+// Free software under the GNU Affero General Public License v3; NO WARRANTY. [new]
+// See the LICENSE file or <https://www.gnu.org/licenses/>.                   [new]
 
 const http = require('http');
 const fs = require('fs');
