@@ -78,7 +78,11 @@ claim, update and close tickets. Lifecycle: proposed -> approved -> in_progress
 - **Closing needs a note.** MARK DONE asks for one, and the CLI refuses
   `close` without `--note` (20+ characters). Name each item in the ticket and
   its result; if something was not done, say so and leave the ticket open. The
-  note is kept in the ticket's history.
+  note is kept in the ticket's history. Only approved or in-progress tickets
+  can be closed.
+- **The store is never overwritten by accident.** If the ticket file can't be
+  read or isn't valid JSON (for example after a hand edit), the CLI stops with
+  an error and leaves the file exactly as it was.
 - **Export.** `GET /api/tickets/export` returns the board as a printable page
   (open it, then Ctrl+P and Save as PDF). Add `format=md` or `format=csv` for
   Markdown or a spreadsheet, `download=1` to save a file, and filter with

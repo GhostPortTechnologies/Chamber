@@ -45,9 +45,24 @@ function acquireLock() {                                                       /
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => process.exit(1));  // [new] a kill (e.g. a timeout) must also release it; signals skip 'exit' otherwise
 }
 
+// Only a missing (or empty) file starts a new board. Any other read or parse problem   [fix] store-wipe bug
+// stops the CLI before it writes: the old catch-all returned an empty store, so one
+// hand-edit typo made the next write save a blank board and reissue T-0001.
 function load() {                                                             // [new] read the store
-  try { return JSON.parse(fs.readFileSync(STORE, 'utf8')); }                  // [new] normal case: parse the JSON file
-  catch { return { next_id: 1, tickets: [] }; }                               // [new] first run (no file yet): start empty
+  let raw;                                                                    // [fix] file text; read and parse are separate steps so each failure gets its own message
+  try { raw = fs.readFileSync(STORE, 'utf8'); }                               // [fix] read the file
+  catch (e) {                                                                 // [fix] the read failed: find out why
+    if (e.code === 'ENOENT') return { next_id: 1, tickets: [] };              // [fix] no file yet (first run): the one case that starts empty
+    fail(`cannot read ticket store ${STORE}: ${e.message}\nNothing was changed.`);  // [fix] permissions or disk error: refuse rather than overwrite the board
+  }
+  if (!raw.trim()) return { next_id: 1, tickets: [] };                        // [fix] an empty file (e.g. made with touch) holds no tickets, so starting fresh loses nothing
+  let data;                                                                   // [fix] parsed store
+  try { data = JSON.parse(raw); }                                             // [fix] parse the JSON
+  catch (e) { fail(`ticket store ${STORE} is not valid JSON (${e.message}).\nNothing was changed. Fix the file or restore a backup, then retry.`); }  // [fix] a typo stops here; the file is left exactly as it was
+  if (!data || typeof data !== 'object' || Array.isArray(data) || !Array.isArray(data.tickets)) {  // [fix] valid JSON but not { next_id, tickets: [] }
+    fail(`ticket store ${STORE} is not a ticket store (expected { "next_id": N, "tickets": [...] }).\nNothing was changed.`);  // [fix] was: silently replaced the list with []
+  }
+  return data;                                                                // [fix] a store that is safe to change
 }
 function save(data) {                                                         // [new] write the store without ever leaving a half-written file
   const tmp = STORE + '.tmp.' + process.pid;                 // atomic: temp + fsync + rename
@@ -74,8 +89,11 @@ if (!verb) fail('usage: tickets-cli <verb> [id] [--flags]');                  //
 
 acquireLock();                                                                 // [new] hold the lock from read to write
 const data = load();                                                          // [new] read once; every verb works on this copy
-if (!Array.isArray(data.tickets)) { data.tickets = []; }                      // [new] repair a store missing its list
-if (!data.next_id) data.next_id = 1;                                          // [new] repair a store missing its counter
+{                                                                             // [fix] keep the id counter ahead of every id in use
+  const used = data.tickets.map(t => parseInt(String(t.id).replace(/^T-/, ''), 10)).filter(Number.isFinite);  // [fix] numbers of the ids already taken
+  const after = (used.length ? Math.max(...used) : 0) + 1;                   // [fix] first number past the highest id
+  if (!Number.isInteger(data.next_id) || data.next_id < after) data.next_id = after;  // [fix] a missing or stale counter (hand edit, other tool) can no longer hand out an id that exists; was: reset to 1
+}
 
 function findTicket(id) {                                                     // [new] look up a ticket or exit
   const t = data.tickets.find(x => x.id === id);                              // [new] exact id match
@@ -128,12 +146,16 @@ switch (verb) {                                                               //
     const t = findTicket(pos[1] || fail('update requires a ticket id'));      // [new] id is the second positional
     if (!flags.by) fail('update requires --by');                              // [new] record who wrote it
     if (!flags.note) fail('update requires --note');                          // [new] empty notes are pointless
+    t.updates = t.updates || [];                                              // [fix] stores made elsewhere may lack the list; close already guarded this, update crashed
     t.updates.push({ at: nowISO(), by: flags.by, note: flags.note });         // [new] append to the history
     save(data); console.log(`Updated ${t.id}`); break;                        // [new] persist and report
   }
   case 'close': {                                                             // [new] -> done, with a note
     const t = findTicket(pos[1] || fail('close requires a ticket id'));       // [new] id is the second positional
     if (!flags.by) fail('close requires --by');                               // [new] record who closed it
+    if (t.status !== 'approved' && t.status !== 'in_progress') {              // [fix] lifecycle bug: close used to work from any status
+      fail(`only approved or in-progress tickets can be closed (${t.id} is ${t.status})`);  // [fix] no closing a ticket nobody approved, and no re-close overwriting closed_by
+    }
     // A close must state what it actually covered. The commonest defect in closed
     // tickets is a note that claims more than the work did: a scope item quietly
     // dropped, a check described but never run, a sample generalised into "every".
