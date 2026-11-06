@@ -26,7 +26,7 @@ Open <http://127.0.0.1:4242>, pick a name, and you're in.
 ```bash
 sudo apt update && sudo apt install -y nodejs
 sudo mkdir -p /opt/chamber
-sudo cp -r server.js public /opt/chamber/
+sudo cp -r server.js ticket-export.js tickets-cli.js public /opt/chamber/
 sudo cp chamber.service /etc/systemd/system/chamber.service
 # edit the unit if you changed the path/user, then:
 sudo systemctl daemon-reload
@@ -52,7 +52,7 @@ All are **optional** — the defaults give you a working chat + code pad.
 | `CHAMBER_REPO_ROOT` | *(off)* | Point at a git repo to enable the **Reviews** diff feature |
 | `CHAMBER_THEME_FILE` | *(off)* | JSON file `{ "color": "#rrggbb" }` for a server-set default accent |
 | `CHAMBER_TICKETS_FILE` | *(off)* | Host ticket JSON to read into the **Tickets** tab |
-| `CHAMBER_TICKETS_CLI` | *(off)* | CLI invoked to create/mutate tickets |
+| `CHAMBER_TICKETS_CLI` | *(off)* | CLI invoked to create/mutate tickets. The bundled `tickets-cli.js` works out of the box: point this at it and `CHAMBER_TICKETS_FILE` at where it should keep the store. |
 
 Any integration left unset simply makes its tab return empty — the app never
 errors on a missing path. See `.env.example`, and **[INSTALL.md](INSTALL.md)** for
@@ -66,6 +66,25 @@ full setup including auth and TLS.
 - **Optional (need config):** the Reviews git-diff feature (`CHAMBER_REPO_ROOT`),
   Tickets (`CHAMBER_TICKETS_FILE`/`CHAMBER_TICKETS_CLI`), a server-set default
   accent (`CHAMBER_THEME_FILE`).
+
+## Tickets
+
+Point `CHAMBER_TICKETS_CLI` at the bundled `tickets-cli.js` and
+`CHAMBER_TICKETS_FILE` at a writable path (for example
+`/var/lib/chamber/tickets.json`), and the **Tickets** tab can propose, approve,
+claim, update and close tickets. Lifecycle: proposed -> approved -> in_progress
+-> done (or proposed -> rejected).
+
+- **Closing needs a note.** MARK DONE asks for one, and the CLI refuses
+  `close` without `--note` (20+ characters). Name each item in the ticket and
+  its result; if something was not done, say so and leave the ticket open. The
+  note is kept in the ticket's history.
+- **Export.** `GET /api/tickets/export` returns the board as a printable page
+  (open it, then Ctrl+P and Save as PDF). Add `format=md` or `format=csv` for
+  Markdown or a spreadsheet, `download=1` to save a file, and filter with
+  `open=1`, `status=`, `priority=`, `assignee=` or `q=` (search). `full=1`
+  includes ticket bodies; without it the export is titles and metadata only.
+  It sits behind the same login as the rest of the API.
 
 ## Security
 

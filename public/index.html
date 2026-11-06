@@ -78,6 +78,8 @@
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+    overflow-y: auto;   /* [new] a long user list scrolls instead of running off the bottom of the screen */
+    overflow-x: hidden; /* [new] anything too wide is clipped here, never painted over the chat */
   }
   .sidebar h3 {
     color: var(--text-dim);
@@ -528,8 +530,10 @@
   .event-row .ev-text .ref { color: var(--green-dim); }
   .event-row .ev-meta { color: var(--text-dim); font-size: 10px; padding-top: 2px; }
   /* Sidebar — claimed tickets badge under each user */
+  .user-item { flex-wrap: wrap; } /* [new] claim lines wrap below the name instead of running sideways over the chat */
   .user-item .claim-line {
     color: var(--green-dim); font-size: 10px; padding-left: 12px;
+    flex-basis: 100%; /* [new] each claimed ticket takes a full row, stacked under its user */
   }
   .user-item .role-badge {
     color: var(--text-dim); font-size: 9px; padding: 0 4px;
@@ -1054,10 +1058,16 @@ function closeTicketModal() {
 }
 
 async function ticketAction(id, action) {
+  const payload = { by: currentUser };                                          // [new] request body; close adds a note below
+  if (action === 'close') {                                                     // [new] the server refuses a close without a note
+    const note = prompt('Closing note (min 20 chars): name each item in the ticket and its result.');  // [new] same prompt() pattern as reject / add note
+    if (!note) return;                                                          // [new] Cancel or empty input leaves the ticket open
+    payload.note = note;                                                        // [new] a too-short note still goes through; the server's 400 explains the rule
+  }
   const r = await fetch(`${API}/api/tickets/${id}/${action}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ by: currentUser })
+    body: JSON.stringify(payload)                                               // [changed] was { by: currentUser }; now carries the close note
   });
   if (r.ok) {
     closeTicketModal();

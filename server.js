@@ -9,6 +9,7 @@
 // See the LICENSE file or <https://www.gnu.org/licenses/>.                   [new]
 
 const http = require('http');
+const { exportTickets } = require('./ticket-export');                         // [new] printable HTML / Markdown / CSV ticket export (ticket-export.js)
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');                                            // [new] auth: scrypt hashing, timing-safe compare, session tokens
@@ -287,11 +288,17 @@ const server = http.createServer(async (req, res) => {
     const username = body.username.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24);
     if (!username) return json(res, 400, { error: 'invalid username' });
 
-    // Reject if username is actively in use by another session
+    // Reject a name only while ANOTHER live session holds it.                  [changed] lockout fix
+    // This used to key off the persisted lastSeen alone, but sessions live only in memory:
+    // after a restart the real owner was locked out of their own name for ACTIVE_TIMEOUT,
+    // and a page reload (the UI logs in on every load) hit the same wall.
     const existing = data.users[username];
-    if (existing && (Date.now() - existing.lastSeen) < ACTIVE_TIMEOUT) {
-      // Allow re-login (same user refreshing) by checking if session token matches
-      // But since we don't have tokens, suggest a different name
+    const nowTs = Date.now();                                                  // [new] one clock read for the checks below
+    const mine = getSession(req);                                              // [new] the caller's own session, if their browser still has one
+    const heldByLiveSession = [...sessions.values()]                           // [new] does any unexpired session hold this name...
+      .some(sess => sess.username === username && sess.expires > nowTs);      // [new] ...(sessions are dropped on restart, so none after one)
+    const ownName = !!mine && mine.username === username;                      // [new] reloading your own tab re-claims your own name
+    if (existing && heldByLiveSession && !ownName && (nowTs - existing.lastSeen) < ACTIVE_TIMEOUT) {  // [changed] taken = live session + recent activity + not yours
       const active = Object.values(data.users)
         .filter(u => (Date.now() - u.lastSeen) < ACTIVE_TIMEOUT)
         .map(u => u.username);
@@ -386,6 +393,17 @@ const server = http.createServer(async (req, res) => {
 
   // Ticket endpoints — read from the configured host ticket file, mutate by    [changed] host paths now come from config;
   // shelling out to the configured CLI. Both auto-disable when unset.         endpoints return empty/501 when not wired.
+  if (url.pathname === '/api/tickets/export' && method === 'GET') {          // [new] printable / Markdown / CSV export
+    // Under /api/ deliberately: the auth gate above covers it, and the browser's session
+    // cookie authenticates a pasted URL just as a Bearer token does.
+    const q = Object.fromEntries(url.searchParams.entries());                  // [new] ?format= &full= &status= &priority= &assignee= &open= &q= &download=
+    const out = exportTickets(loadTickets().tickets, q);                        // [new] render from the same store the Tickets tab reads
+    const headers = { 'Content-Type': out.contentType, 'Cache-Control': 'no-store' };  // [new] never serve a stale board from cache
+    if (q.download === '1') headers['Content-Disposition'] = `attachment; filename="${out.filename}"`;  // [new] download=1 saves a file; the name is fixed, never from the request
+    res.writeHead(200, headers);                                                // [new] without download=1, HTML opens in the tab for Ctrl+P -> Save as PDF
+    return res.end(out.body);                                                   // [new] send the rendered export
+  }
+
   if (url.pathname === '/api/tickets' && method === 'GET') {
     const t = loadTickets();
     let tickets = t.tickets;
@@ -421,6 +439,14 @@ const server = http.createServer(async (req, res) => {
     if (action === 'update') {
       if (!body.note) return json(res, 400, { error: 'note required for update' });
       args.push('--note', body.note);
+    }
+    // Close carries a note, as update does, and tickets-cli.js refuses a close without one.
+    // Both sides change together: harden only the CLI and every close made here would fail.
+    if (action === 'close') {                                                   // [new] a close must say what it covered
+      if (!body.note || String(body.note).trim().length < 20) {                 // [new] same 20-char minimum as tickets-cli.js, so the UI gets a clear 400
+        return json(res, 400, { error: 'note required for close: name each item in the ticket body and its result (min 20 chars)' });  // [new] tells the closer what a good note holds
+      }
+      args.push('--note', String(body.note));                                   // [new] forward it; the CLI saves it as a CLOSED update
     }
     if (action === 'edit') {
       // Pass through only the fields present; CLI enforces proposed-only + validation.

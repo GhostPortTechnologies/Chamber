@@ -32,8 +32,10 @@ Environment=CHAMBER_REVIEWS=/var/lib/chamber/reviews.json
 # use a fixed User= instead if you need to read a home-dir repo/CLI).
 # Environment=CHAMBER_REPO_ROOT=/srv/yourrepo
 # Environment=CHAMBER_THEME_FILE=/etc/chamber/theme.json
-# Environment=CHAMBER_TICKETS_FILE=/srv/data/tickets.json
-# Environment=CHAMBER_TICKETS_CLI=/usr/local/bin/your-tickets-cli
+# Tickets with the bundled CLI: the store must be writable, and under ProtectSystem=strict
+# that means the StateDirectory (/var/lib/chamber).
+# Environment=CHAMBER_TICKETS_FILE=/var/lib/chamber/tickets.json
+# Environment=CHAMBER_TICKETS_CLI=/opt/chamber/tickets-cli.js
 
 # Hardening — safe for the self-contained default install.
 NoNewPrivileges=true

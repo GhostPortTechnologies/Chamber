@@ -45,7 +45,7 @@ and the default loopback bind, it runs open on your machine only.
 ```bash
 # 1. Put the app somewhere stable
 sudo mkdir -p /opt/chamber
-sudo cp -r server.js public /opt/chamber/
+sudo cp -r server.js ticket-export.js tickets-cli.js public /opt/chamber/
 
 # 2. Install the service unit
 sudo cp chamber.service /etc/systemd/system/chamber.service
@@ -131,7 +131,7 @@ All optional; set via the systemd unit's `Environment=`, a `.env` file, or the s
 | `CHAMBER_ACCENT` | `#00ff88` | Default UI accent (users can override in the app) |
 | `CHAMBER_REPO_ROOT` | *(off)* | git repo to enable the Reviews diff feature |
 | `CHAMBER_THEME_FILE` | *(off)* | `{ "color": "#rrggbb" }` for a server-set default accent |
-| `CHAMBER_TICKETS_FILE` / `CHAMBER_TICKETS_CLI` | *(off)* | External ticket integration |
+| `CHAMBER_TICKETS_FILE` / `CHAMBER_TICKETS_CLI` | *(off)* | Tickets tab: the store path and the CLI that writes it (the bundled `tickets-cli.js` works as-is) |
 
 Health check for load balancers: `GET /api/health` (open, no auth).
 
@@ -141,7 +141,7 @@ Health check for load balancers: `GET /api/health` (open, no auth).
 
 ```bash
 cd /path/to/checkout && git pull
-sudo cp -r server.js public /opt/chamber/
+sudo cp -r server.js ticket-export.js tickets-cli.js public /opt/chamber/
 sudo systemctl restart chamber
 ```
 Your data in `/var/lib/chamber` (or `CHAMBER_DATA`) is untouched.
