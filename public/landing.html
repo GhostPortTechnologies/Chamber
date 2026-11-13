@@ -405,10 +405,26 @@
         <div class="msg" id="gh-msg"></div>
         </div>
         <h2 class="sec" id="audit">Activity &amp; audit</h2>
-        <p class="sub">Who did what in this workspace: agent writes and administrative actions by people, newest first. Each entry carries a request id you can quote to support.</p>
+        <p class="sub">Who did what in this workspace: agent writes and administrative actions by people, newest first. Each entry carries a request id you can quote to support. The day-to-day timeline of tickets and agent answers, with its own export, is the Activity tab in the app.</p>
         <div class="inline-form"><input id="au-q" placeholder="search (action, ticket, room…)" style="flex:1 1 160px"><select id="au-actor" style="flex:0 1 160px"><option value="">everyone</option></select><button class="btn ghost" type="button" id="au-go">Filter</button><span id="au-export" style="display:none"><a class="btn ghost sm" id="au-csv" href="/account/workspace/audit?format=csv">Export CSV</a> <a class="btn ghost sm" id="au-json" href="/account/workspace/audit?format=json">JSON</a></span></div>
         <div id="audit-list"></div><p class="sub" id="au-count"></p>
         <div class="inline-form"><button class="btn ghost" type="button" id="au-verify">Check the record</button></div><p class="sub" id="au-verify-msg" role="status"></p>
+        <div id="rec-box" style="display:none">
+          <h3 class="sub-h" id="record-keep">How long the record is kept</h3>
+          <p class="sub">The record above is kept for good unless you set a limit here. Tickets are never deleted, and chat has its own setting under Workspace. Older entries are removed once a day. The removal is itself written into the record, and "Check the record" still passes afterwards.</p>
+          <div class="inline-form"><label for="rec-days">Keep the record</label><select id="rec-days" style="flex:0 1 230px"><option value="0">for good (default)</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">1 year</option><option value="custom">a number of days I type</option></select><input id="rec-days-n" type="number" min="7" max="3650" placeholder="days (7 to 3650)" style="display:none;flex:0 1 170px"></div>
+          <label style="display:block;margin-top:10px;font-size:13.5px"><input type="checkbox" id="rec-copy"> Before anything is deleted, save a copy sealed so that only I can open it</label>
+          <div class="inline-form"><button class="btn" type="button" id="rec-save">Save</button></div><p class="msg" id="rec-msg" role="status"></p>
+          <h3 class="sub-h">Passphrase for saved copies</h3>
+          <p class="sub" id="rec-key-state">A saved copy is sealed in a way that only your passphrase opens. The passphrase stays in your browser: we never receive it, so we cannot open a copy and cannot reset the passphrase for you.</p>
+          <div class="inline-form" id="rec-key-new"><input id="rec-pass" type="password" autocomplete="new-password" placeholder="passphrase (12 characters or more)"><input id="rec-pass2" type="password" autocomplete="new-password" placeholder="the same again"><button class="btn ghost" type="button" id="rec-key-make">Set passphrase</button></div>
+          <div class="inline-form" id="rec-key-change" style="display:none"><input id="rec-old" type="password" autocomplete="off" placeholder="current passphrase, or the recovery code"><input id="rec-new" type="password" autocomplete="new-password" placeholder="new passphrase (12 or more)"><button class="btn ghost" type="button" id="rec-key-rewrap">Change passphrase</button> <a href="#" id="rec-key-fresh" class="meta">Lost both? Start over</a></div>
+          <p class="msg" id="rec-key-msg" role="status"></p>
+          <div id="rec-code-box" style="display:none" class="card"><h3>Your recovery code</h3><p>Write it down and keep it somewhere safe. It opens your saved copies if you forget the passphrase. It is shown this once: we do not have it and cannot show it again.</p><p style="margin-top:8px"><code id="rec-code" style="font-size:16px;overflow-wrap:anywhere;color:var(--text)"></code></p></div>
+          <h3 class="sub-h">Saved copies</h3>
+          <div class="inline-form"><input id="rec-open-pass" type="password" autocomplete="off" placeholder="passphrase (or recovery code) to open a copy"><button class="btn ghost" type="button" id="rec-now">Save a sealed copy now</button></div>
+          <div id="rec-saved"></div><p class="msg" id="rec-saved-msg" role="status"></p>
+        </div>
         <p class="sub" style="margin-top:12px">Evidence pack for the tickets closed in a period: the request, approvals, change, commands the agents ran, result and record entries of each, sealed so a change shows.</p>
         <div class="inline-form"><input id="ev-from" type="date" style="flex:0 1 170px"><input id="ev-to" type="date" style="flex:0 1 170px"><button class="btn ghost" type="button" id="ev-open">Open</button><button class="btn ghost" type="button" id="ev-json">Data (JSON)</button></div>
         <h2 class="sec" id="usage">AI usage</h2>
@@ -742,10 +758,11 @@
       catch (err) { show($('ap-msg'), err.message, 'err'); }
     };
     renderAudit();                                                                      // T-0057
+    renderRecords();                                                                    // T-0219
     $('au-verify').onclick = async () => {                                              // T-0194
       show($('au-verify-msg'), 'Checking…');
       try { const v = await api('/account/workspace/audit/verify');
-        if (v.ok) show($('au-verify-msg'), v.checked ? `Intact: all ${v.checked} entries check out${v.before ? ` (and ${v.before} older ones from before the check started)` : ''}. Newest check value: ${String(v.head).slice(0, 16)}… Keep a copy somewhere else; it lets you tell later that nothing was rewritten.` : 'Nothing to check yet: entries get check values from now on.', 'ok');
+        if (v.ok) show($('au-verify-msg'), v.checked ? `Intact: all ${v.checked} entries check out${v.before ? ` (and ${v.before} older ones from before the check started)` : ''}. Newest check value: ${String(v.head).slice(0, 16)}… Keep a copy somewhere else; it lets you tell later that nothing was rewritten.${v.trimmed ? ` Entries up to number ${v.trimmed.upto} (older than ${new Date(v.trimmed.before).toLocaleDateString()}) were removed by your setting for how long the record is kept.` : ''}` : 'Nothing to check yet: entries get check values from now on.', 'ok');
         else show($('au-verify-msg'), `NOT INTACT: ${v.reason}${v.at ? ` (entry ${v.at.n ?? '?'}${v.at.ts ? ', ' + new Date(v.at.ts).toLocaleString() : ''}${v.at.actor ? ', ' + v.at.actor : ''}${v.at.action ? ', ' + v.at.action : ''})` : ''}. Write to support if you did not expect this.`, 'err');
       } catch (err) { show($('au-verify-msg'), err.message, 'err'); }
     };
@@ -789,6 +806,104 @@
     $('rep-off').onclick = () => repCall({ link: 'off' }, 'The link is off.');
     $('rep-save').onclick = () => repCall({ enabled: $('rep-on').checked, recipients: $('rep-to').value }, $('rep-on').checked ? 'Saved. The next report goes out on Monday morning.' : 'Saved.');
   };
+  // ── T-0219: how long the record is kept, and sealed copies that only the owner can open ──────────────────────────────────
+  // The sealing key pair is made HERE, in the owner's browser (RSA-OAEP 3072, WebCrypto). The server gets the public key, and
+  // the private key only wrapped twice: once with a key derived from the passphrase, once with one derived from a recovery
+  // code (PBKDF2-SHA256, 600,000 rounds, AES-256-GCM). Neither secret is ever sent. Opening a copy happens here too.
+  const b64e = buf => { const u = new Uint8Array(buf); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+  const b64d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const KDF_ITER = 600000, PASS_MIN = 12;
+  const kekOf = async (secret, salt, iter) => crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), 'PBKDF2', false, ['deriveKey']), { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const wrapWith = async (secret, pkcs8) => { const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12)); return { wrapped: b64e(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await kekOf(secret, salt, KDF_ITER), pkcs8)), salt: b64e(salt), iv: b64e(iv), iter: KDF_ITER }; };
+  const unwrapWith = async (secret, w) => crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64d(w.iv) }, await kekOf(secret, b64d(w.salt), w.iter), b64d(w.wrapped));   // throws on the wrong secret
+  const codeSecret = s => String(s).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  const newCode = () => { const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; return [...crypto.getRandomValues(new Uint8Array(24))].map((v, i) => a[v % 32] + (i % 4 === 3 && i < 23 ? '-' : '')).join(''); };
+  const unwrapAny = async (secret, k) => { try { return { pkcs8: await unwrapWith(secret, k), via: 'passphrase' }; } catch { try { return { pkcs8: await unwrapWith(codeSecret(secret), k.rec), via: 'code' }; } catch { return null; } } };
+  const recCsv = doc => { const cell = v => { let t = v === undefined || v === null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    return 'ts,time_utc,actor,kind,action,details,request_id,ip\n' + doc.entries.map(r => { const { ts, actor, agent, kind, action, rid, ip, n, prev, h, ...rest } = r; return [ts, new Date(ts).toISOString(), actor || agent || '', kind || '', action || '', JSON.stringify(rest), rid || '', ip || ''].map(cell).join(','); }).join('\n') + '\n'; };
+  let recKeys = [];
+  const recDay = s => new Date(s).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+  const renderSaved = copies => {
+    $('rec-saved').innerHTML = copies.length ? copies.map(c => `<div class="row-item" data-copy="${esc(c.name)}"><span>${esc(recDay(c.from))} to ${esc(recDay(c.to))} <span class="meta">· ${c.entries} entr${c.entries === 1 ? 'y' : 'ies'} · ${Math.max(1, Math.round(c.bytes / 1024))} KB · saved ${esc(recDay(c.created))} ${c.reason === 'retention' ? 'before clean-up' : 'by hand'}</span></span><span class="row-actions"><a href="#" data-open="${esc(c.name)}">open</a><a href="#" data-del="${esc(c.name)}" class="danger">delete</a></span></div>`).join('')
+      : '<p class="empty">No saved copies yet.</p>';
+    document.querySelectorAll('[data-open]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); openSaved(a.dataset.open, a.closest('.row-item')); }));
+    document.querySelectorAll('[data-del]').forEach(a => a.addEventListener('click', async e => { e.preventDefault(); if (!confirm('Delete this saved copy for good?')) return;
+      try { renderSaved((await api(`/account/workspace/records-saved/${a.dataset.del}/delete`, {})).copies); show($('rec-saved-msg'), 'Deleted.', 'ok'); } catch (err) { show($('rec-saved-msg'), err.message, 'err'); } }));
+  };
+  const openSaved = async (name, row) => {
+    const secret = $('rec-open-pass').value, msg = $('rec-saved-msg');
+    if (!secret) return show(msg, 'Type your passphrase (or the recovery code) in the box above first.', 'err');
+    show(msg, 'Opening…');
+    try {
+      const env = await (await fetch('/account/workspace/records-saved/' + encodeURIComponent(name))).json(), key = recKeys.find(k => k.id === env.key);
+      if (!key) return show(msg, 'The key this copy was sealed with is not on this workspace any more.', 'err');
+      const un = await unwrapAny(secret, key);
+      if (!un) return show(msg, 'That passphrase does not open this copy. Nothing was sent anywhere; check it and try again.', 'err');
+      const priv = await crypto.subtle.importKey('pkcs8', un.pkcs8, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
+      const ck = await crypto.subtle.importKey('raw', await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, priv, b64d(env.wk)), 'AES-GCM', false, ['decrypt']);
+      const text = new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64d(env.iv) }, ck, b64d(env.ct))), doc = JSON.parse(text), base = name.replace(/\.sealed\.json$/, '');
+      row.querySelectorAll('.rec-dl').forEach(x => x.remove());
+      const link = (label, body, type, ext) => { const a = document.createElement('a'); a.className = 'rec-dl'; a.textContent = label; a.download = `${base}.${ext}`; a.href = URL.createObjectURL(new Blob([body], { type })); return a; };
+      row.querySelector('.row-actions').prepend(link('download JSON', text, 'application/json', 'json'), link('download CSV', recCsv(doc), 'text/csv', 'csv'));
+      row.dataset.opened = String(doc.entries.length);
+      show(msg, `Opened here in your browser: ${doc.entries.length} entr${doc.entries.length === 1 ? 'y' : 'ies'}. Use the download links on that line. The passphrase and the opened copy never left this device.`, 'ok');
+    } catch (err) { show(msg, 'This copy could not be opened: ' + err.message, 'err'); }
+  };
+  const makeOwnerKey = async pass => {
+    const kp = await crypto.subtle.generateKey({ name: 'RSA-OAEP', modulusLength: 3072, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['encrypt', 'decrypt']);
+    const pkcs8 = await crypto.subtle.exportKey('pkcs8', kp.privateKey), code = newCode();
+    return { body: { pub: b64e(await crypto.subtle.exportKey('spki', kp.publicKey)), ...(await wrapWith(pass, pkcs8)), rec: await wrapWith(codeSecret(code), pkcs8) }, code };
+  };
+  const renderRecords = async () => {
+    if (!me || !me.workspace || me.workspace.role !== 'owner' || !$('rec-box')) return;
+    let w, k, s; try { w = await api('/account/workspace'); k = await api('/account/workspace/ownerkey'); s = await api('/account/workspace/records-saved'); } catch { return; }
+    $('rec-box').style.display = ''; recKeys = k.keys || [];
+    const std = ['0', '30', '90', '365'].includes(String(w.recordDays || 0));
+    $('rec-days').value = std ? String(w.recordDays || 0) : 'custom'; $('rec-days-n').style.display = std ? 'none' : ''; if (!std) $('rec-days-n').value = w.recordDays;
+    $('rec-copy').checked = !!w.recordCopy;
+    const mine = k.set && k.mine;
+    $('rec-key-new').style.display = mine ? 'none' : ''; $('rec-key-change').style.display = mine ? '' : 'none';
+    $('rec-key-state').textContent = mine ? `A passphrase is set (${recDay(k.created)}). Saved copies are sealed so that only it, or your recovery code, opens them. It stays in your browser: we never receive it, so we cannot open a copy and cannot reset it for you.`
+      : k.set ? `Saved copies were set up by ${k.by}, the owner before you. Set your own passphrase: until you do, nothing is deleted from the record and no new copy is saved. Copies sealed earlier still need the earlier passphrase.`
+      : 'A saved copy is sealed in a way that only your passphrase opens. The passphrase stays in your browser: we never receive it, so we cannot open a copy and cannot reset the passphrase for you.';
+    renderSaved(s.copies || []);
+  };
+  $('rec-days')?.addEventListener('change', () => { $('rec-days-n').style.display = $('rec-days').value === 'custom' ? '' : 'none'; });
+  $('rec-save')?.addEventListener('click', async () => {
+    const days = $('rec-days').value === 'custom' ? Number($('rec-days-n').value) : Number($('rec-days').value), copy = $('rec-copy').checked;
+    if (days > 0 && !copy && !confirm(`Entries older than ${days} days will be deleted for good, with no copy kept. Go on?`)) return;
+    try { await api('/account/workspace', { recordDays: days, recordCopy: copy });
+      show($('rec-msg'), days ? `Saved. Entries older than ${days} days are removed once a day${copy ? ', after a sealed copy of them is saved here' : ', and no copy is kept'}.` : 'Saved. The record is kept for good.', 'ok'); }
+    catch (err) { show($('rec-msg'), err.message, 'err'); }
+  });
+  const setKey = async (pass, pass2, msgEl) => {
+    if (pass.length < PASS_MIN) return show(msgEl, `Use ${PASS_MIN} characters or more. A few words in a row work well.`, 'err');
+    if (pass2 !== undefined && pass !== pass2) return show(msgEl, 'The two passphrases are not the same.', 'err');
+    show(msgEl, 'Making your key. This can take a few seconds…');
+    try { const made = await makeOwnerKey(pass); await api('/account/workspace/ownerkey', made.body);
+      $('rec-code').textContent = made.code; $('rec-code-box').style.display = ''; $('rec-pass').value = $('rec-pass2').value = '';
+      show(msgEl, 'Passphrase set. Write down the recovery code below before you leave this page.', 'ok'); await renderRecords(); }
+    catch (err) { show(msgEl, err.message, 'err'); }
+  };
+  $('rec-key-make')?.addEventListener('click', () => setKey($('rec-pass').value, $('rec-pass2').value, $('rec-key-msg')));
+  $('rec-key-fresh')?.addEventListener('click', e => { e.preventDefault(); const p = $('rec-new').value;
+    if (!confirm('Start over with a new passphrase? Copies sealed with the old one can then never be opened again, by anyone.')) return; setKey(p, undefined, $('rec-key-msg')); });
+  $('rec-key-rewrap')?.addEventListener('click', async () => {
+    const old = $('rec-old').value, neu = $('rec-new').value, msgEl = $('rec-key-msg'), key = recKeys[recKeys.length - 1];
+    if (neu.length < PASS_MIN) return show(msgEl, `The new passphrase needs ${PASS_MIN} characters or more.`, 'err');
+    show(msgEl, 'Checking…');
+    try { const un = await unwrapAny(old, key); if (!un) return show(msgEl, 'That is neither the current passphrase nor the recovery code. Nothing was changed.', 'err');
+      const body = { rewrap: key.id, ...(await wrapWith(neu, un.pkcs8)) }; let code = null;
+      if (un.via === 'code') { code = newCode(); body.rec = await wrapWith(codeSecret(code), un.pkcs8); }   // a used recovery code is replaced by a new one
+      await api('/account/workspace/ownerkey', body); $('rec-old').value = $('rec-new').value = '';
+      if (code) { $('rec-code').textContent = code; $('rec-code-box').style.display = ''; }
+      show(msgEl, code ? 'Passphrase changed. The old recovery code no longer works: write down the new one below.' : 'Passphrase changed. Your saved copies open with the new one.', 'ok'); await renderRecords(); }
+    catch (err) { show(msgEl, err.message, 'err'); }
+  });
+  $('rec-now')?.addEventListener('click', async () => {
+    try { const d = await api('/account/workspace/records-saved', {}); renderSaved(d.copies); show($('rec-saved-msg'), `Saved a sealed copy of ${d.copy.entries} entries. Nothing was deleted.`, 'ok'); }
+    catch (err) { show($('rec-saved-msg'), err.message, 'err'); }
+  });
   const renderAudit = async () => {                                                         // T-0057
     const q = encodeURIComponent($('au-q')?.value || ''), actor = encodeURIComponent($('au-actor')?.value || '');
     let a; try { a = await api(`/account/workspace/audit?q=${q}&actor=${actor}`); } catch { return; }

@@ -331,6 +331,13 @@
   pre.diff .diff-add { color: var(--accent); display: block; } pre.diff .diff-rem { color: var(--danger); display: block; } pre.diff .diff-hunk { color: var(--info); display: block; } pre.diff .diff-hdr { color: var(--text-dim); display: block; }
 
   /* ── Activity ───────────────────────────────────────────────────────────────── */
+  /* T-0219: the Activity tab over any period */
+  .act-bar { flex-wrap: wrap; gap: 8px; } .act-bar select, .act-bar input[type=date] { background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--r); padding: 5px 8px; font: inherit; font-size: 12px; max-width: 100%; }
+  .act-export { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; } .act-export a { text-decoration: none; }
+  .act-progress { margin: 0 0 8px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 6px 10px; } .act-progress summary { cursor: pointer; font-size: 12px; color: var(--text); }
+  .act-prog { border-collapse: collapse; margin-top: 6px; font-size: 12px; width: 100%; max-width: 560px; } .act-prog th { text-align: left; font-weight: 500; color: var(--text-dim); padding: 3px 10px 3px 0; } .act-prog td { padding: 3px 10px 3px 0; color: var(--text); white-space: nowrap; }
+  .act-prog .num { font-variant-numeric: tabular-nums; } .act-bar-fill { display: inline-block; height: 6px; margin-left: 6px; border-radius: 3px; background: var(--text-dim); vertical-align: middle; } .act-bar-fill.d { background: var(--accent); }
+  #act-count { margin: 0 2px 6px; } .ev-day { margin: 10px 0 2px; font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; } .ev-day:first-child { margin-top: 2px; } .ev-more { padding: 10px 0 4px; text-align: center; }
   .activity-list { flex: 1; overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 6px 10px; }
   .event-row { display: flex; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--line); font-size: 12px; } .event-row:last-child { border-bottom: none; }
   .event-row .ev-time { color: var(--text-dim); font-size: 10px; min-width: 44px; padding-top: 2px; } .event-row .ev-icon { font-size: 13px; min-width: 20px; text-align: center; color: var(--text-dim); }
@@ -702,11 +709,16 @@
 </div>
 
 <div id="activity-view" class="view" role="tabpanel">
-  <div class="toolbar">
+  <div class="toolbar act-bar">
+    <select id="act-range" onchange="actRangeChanged()" aria-label="Period to show">
+      <option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="month">This month</option><option value="custom">Dates I pick…</option></select>
+    <span id="act-custom" hidden><input type="date" id="act-from" aria-label="From"> <input type="date" id="act-to" aria-label="To"> <button class="btn btn-sm" onclick="loadActivity()">Show</button></span>
     <button class="btn" onclick="loadActivity()">Refresh</button>
     <span class="spacer"></span>
-    <span class="dim small">Tickets and reviews, last 24 hours</span>
+    <span class="act-export"><span class="dim small">Export this period:</span> <a class="btn btn-sm" id="act-csv" href="#" title="Opens in Excel or Google Sheets">Spreadsheet (CSV)</a> <a class="btn btn-sm" id="act-json" href="#">JSON</a></span>
   </div>
+  <details class="act-progress" id="act-progress" open><summary>Progress by week</summary><div id="act-progress-body" class="dim small">…</div></details>
+  <div class="dim small" id="act-count" role="status"></div>
   <div class="activity-list" id="activity-list"></div>
 </div>
 
@@ -2824,38 +2836,72 @@ const EV_ICONS = {
   ticket_proposed: '📋', ticket_approved: '✓', ticket_rejected: '✗',
   ticket_claimed: '⚙', ticket_closed: '✓',
   review_submitted: '📝', review_approved: '✓', review_rejected: '✗',
-  message_burst: '💬', user_joined: '➕',
+  message_burst: '💬', user_joined: '➕', agent_run: '🤖',
 };
 
-async function loadActivity() {
+// T-0219: the Activity tab shows any period (not only the last 24 hours), a page at a time, exports it, and shows progress by week.
+let actEvents = [], actTotal = 0, actMore = false;
+function actPeriod() {
+  const v = document.getElementById('act-range').value, now = Date.now();
+  if (v === '7d') return { from: now - 7 * 864e5, to: now + 1000, words: 'the last 7 days' };
+  if (v === '30d') return { from: now - 30 * 864e5, to: now + 1000, words: 'the last 30 days' };
+  if (v === 'month') { const d = new Date(); return { from: new Date(d.getFullYear(), d.getMonth(), 1).getTime(), to: now + 1000, words: 'this month' }; }
+  if (v === 'custom') {
+    const a = document.getElementById('act-from').value, b = document.getElementById('act-to').value;
+    const from = a ? new Date(a + 'T00:00:00').getTime() : now - 864e5, to = b ? new Date(b + 'T00:00:00').getTime() + 864e5 : now + 1000;
+    return { from, to: Math.min(to, now + 1000), words: `${a || 'yesterday'} to ${b || 'today'}` };
+  }
+  return { from: now - 864e5, to: now + 1000, words: 'the last 24 hours' };
+}
+function actRangeChanged() { const c = document.getElementById('act-range').value === 'custom'; document.getElementById('act-custom').hidden = !c; if (!c) loadActivity(); }
+function actTook(s) { return !Number.isFinite(s) ? '' : s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 172800 ? `${Math.round(s / 360) / 10} h` : `${Math.round(s / 8640) / 10} days`; }
+function actEventHtml(e) {
+  const t = new Date(e.ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+  const icon = EV_ICONS[e.kind] || '•', took = e.meta && Number.isFinite(e.meta.seconds) ? actTook(e.meta.seconds) : '';
+  let text;
+  switch (e.kind) {
+    case 'ticket_proposed':  text = `<b>${esc(e.actor)}</b> proposed <span class="ref">${esc(e.ref)}</span> — ${esc(e.title || '')}`; break;
+    case 'ticket_approved':  text = `<b>${esc(e.actor || 'someone')}</b> approved <span class="ref">${esc(e.ref)}</span>${took ? ` <span class="ref">(waited ${took})</span>` : ''}`; break;
+    case 'ticket_rejected':  text = `<b>${esc(e.actor || 'someone')}</b> rejected <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;
+    case 'ticket_claimed':   text = `<b>${esc(e.actor || 'someone')}</b> started <span class="ref">${esc(e.ref)}</span>`; break;
+    case 'ticket_closed':    text = `<b>${esc(e.actor || 'someone')}</b> finished <span class="ref">${esc(e.ref)}</span>${took ? ` <span class="ref">(${took} from request to done)</span>` : ''}`; break;
+    case 'review_submitted': text = `<b>${esc(e.actor)}</b> submitted review <span class="ref">${esc(e.ref)}</span> (${e.meta?.files} file${e.meta?.files === 1 ? '' : 's'}${e.meta?.ticket ? ', ' + esc(e.meta.ticket) : ''})`; break;
+    case 'review_approved':  text = `<b>${esc(e.actor)}</b> approved review <span class="ref">${esc(e.ref)}</span>`; break;
+    case 'review_rejected':  text = `<b>${esc(e.actor)}</b> rejected review <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;
+    case 'agent_run':        text = `<b>${esc(e.actor)}</b> answered in ${esc(e.title || 'a room')}${e.ref ? ` about <span class="ref">${esc(e.ref)}</span>` : ''}${took ? ` <span class="ref">(took ${took})</span>` : ''}${e.meta?.state && e.meta.state !== 'done' ? ` <span class="ref">${esc(e.meta.state)}</span>` : ''}`; break;
+    case 'message_burst':    text = `<b>${esc(e.actor)}</b> burst — ${e.meta?.count} messages in ${e.meta?.span_sec}s`; break;
+    case 'user_joined':      text = `<b>${esc(e.actor)}</b> joined the chamber (${esc(e.meta?.role || 'ai')})`; break;
+    default:                 text = `${esc(e.kind)} — ${esc(e.actor || '')}`;
+  }
+  return `<div class="event-row"><span class="ev-time">${t}</span><span class="ev-icon">${icon}</span><span class="ev-text">${text}</span></div>`;
+}
+async function loadActivity(more) {
+  const p = actPeriod(), list = document.getElementById('activity-list'), count = document.getElementById('act-count');
+  if (p.from >= p.to) { list.innerHTML = '<div class="empty">That period ends before it starts.</div>'; count.textContent = ''; return; }
   try {
-    const r = await fetch(`${API}/api/activity`);
-    const data = await r.json();
-    const list = document.getElementById('activity-list');
-    if (!data.events || data.events.length === 0) {
-      list.innerHTML = '<div class="empty">No activity in the last 24 hours</div>';
-      return;
+    const r = await fetch(`${API}/api/activity?from=${p.from}&to=${p.to}&limit=100&offset=${more === true ? actEvents.length : 0}`), data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'error');
+    actEvents = more === true ? actEvents.concat(data.events || []) : (data.events || []); actTotal = data.total || 0; actMore = !!data.more;
+    document.getElementById('act-csv').href = `${API}/api/activity?from=${p.from}&to=${p.to}&format=csv`; document.getElementById('act-json').href = `${API}/api/activity?from=${p.from}&to=${p.to}&format=json`;
+    count.textContent = actTotal ? `${actTotal} event${actTotal === 1 ? '' : 's'} in ${p.words}${actMore ? `, showing the newest ${actEvents.length}` : ''}` : '';
+    if (!actEvents.length) { list.innerHTML = `<div class="empty">No activity in ${esc(p.words)}</div>`; }
+    else {
+      let day = '', html = '';
+      for (const e of actEvents) { const dk = new Date(e.ts).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }); if (dk !== day) { day = dk; html += `<div class="ev-day">${esc(dk)}</div>`; } html += actEventHtml(e); }
+      list.innerHTML = html + (actMore ? '<div class="ev-more"><button class="btn btn-sm" onclick="loadActivity(true)">Show older</button></div>' : '');
     }
-    list.innerHTML = data.events.map(e => {
-      const t = new Date(e.ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-      const icon = EV_ICONS[e.kind] || '•';
-      let text;
-      switch (e.kind) {
-        case 'ticket_proposed':  text = `<b>${esc(e.actor)}</b> proposed <span class="ref">${esc(e.ref)}</span> — ${esc(e.title || '')}`; break;
-        case 'ticket_approved':  text = `<b>${esc(e.actor || 'someone')}</b> approved <span class="ref">${esc(e.ref)}</span>`; break;
-        case 'ticket_rejected':  text = `<b>${esc(e.actor || 'someone')}</b> rejected <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;
-        case 'ticket_claimed':   text = `<b>${esc(e.actor || 'someone')}</b> claimed <span class="ref">${esc(e.ref)}</span>`; break;
-        case 'ticket_closed':    text = `<b>${esc(e.actor || 'someone')}</b> closed <span class="ref">${esc(e.ref)}</span>`; break;
-        case 'review_submitted': text = `<b>${esc(e.actor)}</b> submitted review <span class="ref">${esc(e.ref)}</span> (${e.meta?.files} file${e.meta?.files === 1 ? '' : 's'}${e.meta?.ticket ? ', ' + esc(e.meta.ticket) : ''})`; break;
-        case 'review_approved':  text = `<b>${esc(e.actor)}</b> approved review <span class="ref">${esc(e.ref)}</span>`; break;
-        case 'review_rejected':  text = `<b>${esc(e.actor)}</b> rejected review <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;
-        case 'message_burst':    text = `<b>${esc(e.actor)}</b> burst — ${e.meta?.count} messages in ${e.meta?.span_sec}s`; break;
-        case 'user_joined':      text = `<b>${esc(e.actor)}</b> joined the chamber (${esc(e.meta?.role || 'ai')})`; break;
-        default:                 text = `${esc(e.kind)} — ${esc(e.actor || '')}`;
-      }
-      return `<div class="event-row"><span class="ev-time">${t}</span><span class="ev-icon">${icon}</span><span class="ev-text">${text}</span></div>`;
-    }).join('');
   } catch {}
+  if (more !== true) loadProgress();
+}
+async function loadProgress() {                                                // per week: tickets proposed, approved and done, and the typical time from request to done
+  const box = document.getElementById('act-progress-body'); if (!box) return;
+  try {
+    const d = await (await fetch(`${API}/api/activity/progress?weeks=8`)).json(), w = d.weeks || [], top = Math.max(1, ...w.map(x => Math.max(x.proposed, x.approved, x.done)));
+    if (!w.some(x => x.proposed || x.approved || x.done)) { box.textContent = 'No tickets in the last 8 weeks yet.'; return; }
+    const bar = (n, cls) => `<td class="num">${n}<span class="act-bar-fill ${cls}" style="width:${Math.round(40 * n / top)}px"></span></td>`;
+    box.innerHTML = `<table class="act-prog"><thead><tr><th>Week of</th><th>Proposed</th><th>Approved</th><th>Done</th><th title="The middle value of the time from a request being made to it being done, for the tickets finished that week">Typical time to done</th></tr></thead><tbody>${
+      w.map(x => `<tr><td>${esc(new Date(x.week + 'T00:00:00Z').toLocaleDateString([], { day: 'numeric', month: 'short', timeZone: 'UTC' }))}</td>${bar(x.proposed, 'p')}${bar(x.approved, 'a')}${bar(x.done, 'd')}<td class="num">${x.typical_hours === null ? '–' : actTook(Math.round(x.typical_hours * 3600))}</td></tr>`).join('')}</tbody></table>`;
+  } catch { box.textContent = ''; }
 }
 
 // ── Presence (sidebar enrichment) ──

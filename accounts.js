@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const https = require('https'); const http = require('http');
+const records = require('./records');                             // T-0219: sealed copies of the activity record, and its keep-for limits
 const fleet = require('./fleet');                                             // T-0153: GhostPort fleet link (router status, read-only)
 const { execFile, execFileSync } = require('child_process');      // T-0010: /source archive via git; T-0036: changelog
 const cron = require('./cron');                                   // T-0058: schedules
@@ -1133,6 +1134,7 @@ async function handle(req, res, url, ctx0) {
         fleet: myWs.fleet ? { linked: true, tenant: myWs.fleet.tenant || '', by: myWs.fleet.by, at: myWs.fleet.at, state: myWs.fleet.state || 'ok', lastError: myWs.fleet.lastError || null } : { linked: false },   // T-0153: never the key
         agentPolicy: myWs.agentPolicy || 'owner',
         retentionDays: myWs.retentionDays || 0,                                  // T-0037: 0 = keep forever
+        recordDays: myWs.recordDays || 0, recordCopy: !!myWs.recordCopy, ownerKey: ownerKeyView(myWs, me, false),   // T-0219: 0 = the record is kept for good
       }), true;
     }
     if (p === '/account/workspace/audit/verify' && m === 'GET') {             // T-0194: is the record intact?
@@ -1149,7 +1151,7 @@ async function handle(req, res, url, ctx0) {
         const filtered = !!(q || actor || action || since || until !== Infinity), ch = filtered ? null : ctx.verifyAudit(dir);   // T-0194: before the export adds its own entry
         ctx.audit(sess, { action: 'audit-export', format, entries: all.length }, true);
         const name = `chamber-audit-${myWs.name.replace(/[^A-Za-z0-9_-]+/g, '_')}-${new Date().toISOString().slice(0, 10)}.${format}`;
-        if (format === 'json') { res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="${name}"` }); res.end(JSON.stringify({ workspace: myWs.name, exported_at: new Date().toISOString(), chain: ch ? { ok: ch.ok, n: ch.n, head: ch.head, how: 'node tools/verify-audit.js <this file> checks it without the server' } : { partial: true, how: 'This export is filtered, so it cannot be checked as a whole. Export without a filter to check it.' }, entries: all })); return true; }
+        if (format === 'json') { res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="${name}"` }); res.end(JSON.stringify({ workspace: myWs.name, exported_at: new Date().toISOString(), chain: ch ? { ok: ch.ok, n: ch.n, head: ch.head, trimmed_upto: ch.trimmedUpto || 0, how: 'node tools/verify-audit.js <this file> checks it without the server' } : { partial: true, how: 'This export is filtered, so it cannot be checked as a whole. Export without a filter to check it.' }, entries: all })); return true; }
         const cols = ['ts', 'time_utc', 'actor', 'kind', 'action', 'target', 'details', 'request_id', 'ip'];
         const cell = (v) => { const s = v === undefined || v === null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
         const rows = all.map(r => { const { ts, actor: a, agent, kind, action: act, rid, ip, ...rest } = r; const target = rest.ticket || rest.id || rest.room || rest.review || rest.username || rest.target || ''; return [ts, new Date(ts).toISOString(), a || agent || '', kind || (agent ? 'agent' : 'human'), act || '', target, JSON.stringify(rest), rid || '', ip || ''].map(cell).join(','); });
@@ -1162,6 +1164,62 @@ async function handle(req, res, url, ctx0) {
     if (!amAdmin) return ctx.json(res, 403, { error: 'Only the workspace owner or an admin can do that.' }), true;   // T-0034
     const b = await ctx.parseBody(req).catch(() => ({}));
     const ownerOnly = () => ctx.json(res, 403, { error: 'Only the workspace owner can do that.' });
+    // ── T-0219: the owner's key for sealed copies of the record, and the copies. Owner only: the wrapped private key and the
+    // copies go to nobody else. The server keeps the PUBLIC key (to seal with) and the private key only as the browser wrapped
+    // it with the owner's passphrase and with a recovery code; it never sees either secret, so it can never open a copy.
+    if (p === '/account/workspace/ownerkey' && m === 'GET') {
+      if (!amOwner) return ownerOnly(), true;
+      return ctx.json(res, 200, ownerKeyView(myWs, me, true)), true;
+    }
+    if (p === '/account/workspace/ownerkey' && m === 'POST') {
+      if (!amOwner) return ownerOnly(), true;
+      const str = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max && /^[A-Za-z0-9+/=]+$/.test(v);
+      const wrapOk = w => w && str(w.wrapped, 8192) && str(w.salt, 64) && str(w.iv, 64) && Number.isInteger(w.iter) && w.iter >= 100000 && w.iter <= 5000000;
+      const wrapOf = w => ({ wrapped: w.wrapped, salt: w.salt, iv: w.iv, iter: w.iter });
+      const keys = ownerKeys(myWs);
+      if (b?.rewrap !== undefined) {                                   // a new passphrase (or recovery code) for the same key: older copies stay openable
+        const k = keys.find(x => x.id === b.rewrap); if (!k) return ctx.json(res, 404, { error: 'No such key.' }), true;
+        if (!wrapOk(b) || (b.rec !== undefined && !wrapOk(b.rec))) return ctx.json(res, 400, { error: 'The wrapped key is not in the expected form.' }), true;
+        Object.assign(k, wrapOf(b)); if (b.rec) k.rec = wrapOf(b.rec); k.changed = Date.now();
+        save(store); ctx.audit(sess, { action: 'owner-key-passphrase', key: k.id }, true);
+        return ctx.json(res, 200, ownerKeyView(myWs, me, true)), true;
+      }
+      const pk = records.checkPublicKey(b?.pub);
+      if (!pk.ok) return ctx.json(res, 400, { error: 'That key cannot be used: ' + pk.why + '.' }), true;
+      if (!wrapOk(b) || !wrapOk(b.rec)) return ctx.json(res, 400, { error: 'The wrapped key is not in the expected form.' }), true;
+      if (keys.length >= 10) return ctx.json(res, 400, { error: 'This workspace already had ten keys. Write to support.' }), true;
+      const id = keys.reduce((n, k) => Math.max(n, k.id), 0) + 1;
+      myWs.ownerKeys = [...keys, { id, pub: b.pub, ...wrapOf(b), rec: wrapOf(b.rec), created: Date.now(), by: me.username }];
+      save(store); ctx.audit(sess, { action: 'owner-key-set', key: id, bits: pk.bits }, true);
+      return ctx.json(res, 200, ownerKeyView(myWs, me, true)), true;
+    }
+    const savedM = p.match(/^\/account\/workspace\/records-saved(?:\/([A-Za-z0-9.-]{1,80}))?(\/delete)?$/);
+    if (savedM) {
+      if (!amOwner) return ownerOnly(), true;
+      const dir = path.join(DATA_DIR, 'ws', myWs.id);
+      if (!savedM[1] && m === 'GET') return ctx.json(res, 200, { copies: records.listSaved(dir) }), true;
+      if (!savedM[1] && m === 'POST') {                                 // "Save a sealed copy now": the whole record as it stands, nothing deleted
+        const k = ownerKeyNow(myWs);
+        if (!k || k.by !== me.username) return ctx.json(res, 400, { error: 'Set your passphrase for saved copies first.' }), true;
+        const v = ctx.verifyAudit(dir), entries = ctx.auditAll(dir);   // before this request adds its own entry
+        let made; try { made = records.saveCopy(dir, { entries, ownerKey: { id: k.id, pub: k.pub }, workspace: myWs.name, reason: 'manual',
+          chain: v.ok ? { ok: true, n: v.n, head: v.head, trimmed_upto: (v.trimmed && v.trimmed.upto) || 0, how: 'node tools/verify-audit.js <this file> checks it without the server' } : { partial: true } }); }
+        catch (e) { return ctx.json(res, 400, { error: e.message.charAt(0).toUpperCase() + e.message.slice(1) + '.' }), true; }
+        ctx.audit(sess, { action: 'record-copy-saved', name: made.name, entries: made.entries }, true);
+        return ctx.json(res, 200, { ok: true, copy: made, copies: records.listSaved(dir) }), true;
+      }
+      if (savedM[1] && !savedM[2] && m === 'GET') {
+        const text = records.readSaved(dir, savedM[1]); if (!text) return ctx.json(res, 404, { error: 'No such copy.' }), true;
+        ctx.audit(sess, { action: 'record-copy-download', name: savedM[1] }, true);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="${savedM[1]}"`, 'Cache-Control': 'no-store' }); res.end(text); return true;
+      }
+      if (savedM[1] && savedM[2] && m === 'POST') {
+        if (!records.removeSaved(dir, savedM[1])) return ctx.json(res, 404, { error: 'No such copy.' }), true;
+        ctx.audit(sess, { action: 'record-copy-deleted', name: savedM[1] }, true);
+        return ctx.json(res, 200, { ok: true, copies: records.listSaved(dir) }), true;
+      }
+      return ctx.json(res, 405, { error: 'GET or POST' }), true;
+    }
     if (p === '/account/workspace/fleet' && m === 'POST') {      // T-0153: link this workspace to a GhostPort fleet tenant (read-only router status), or unlink
       if (!amOwner) return ownerOnly(), true;
       if (b?.unlink) {
@@ -1280,13 +1338,21 @@ async function handle(req, res, url, ctx0) {
         if (!Number.isInteger(d) || d < 0 || (d > 0 && d < 7) || d > 3650) return ctx.json(res, 400, { error: 'retentionDays must be 0 (keep forever) or between 7 and 3650' }), true;
         myWs.retentionDays = d; console.log(`[accounts] ${me.username} set retention ${d || 'forever'} for ${myWs.id}`); ctx.audit(sess, { action: 'retention', days: d }, true);   // T-0057
       }
+      if (b?.recordDays !== undefined || b?.recordCopy !== undefined) {                                              // T-0219: how long the who-did-what record is kept
+        if (!amOwner) return ownerOnly(), true;
+        const d = b.recordDays !== undefined ? parseInt(b.recordDays, 10) : (myWs.recordDays || 0), copy = b.recordCopy !== undefined ? b.recordCopy === true : !!myWs.recordCopy, k = ownerKeyNow(myWs);
+        if (!Number.isInteger(d) || d < 0 || (d > 0 && d < records.MIN_DAYS) || d > records.MAX_DAYS) return ctx.json(res, 400, { error: `Keep the record for good (0), or for ${records.MIN_DAYS} to ${records.MAX_DAYS} days.` }), true;
+        if (copy && !(k && k.by === me.username)) return ctx.json(res, 400, { error: 'Set your passphrase for saved copies first. Without it nobody could open them.' }), true;
+        myWs.recordDays = d; myWs.recordCopy = copy; console.log(`[accounts] ${me.username} set the record to ${d ? d + ' days' : 'for good'}${copy ? ' with sealed copies' : ''} for ${myWs.id}`);
+        ctx.audit(sess, { action: 'record-retention', days: d, copy }, true);
+      }
       if (b?.name !== undefined) {
         const name = String(b.name || '').trim().slice(0, 48);
         if (name.length < 2) return ctx.json(res, 400, { error: 'Name must be 2 to 48 characters.' }), true;
         myWs.name = name; ctx.audit(sess, { action: 'workspace-rename', name }, true);   // T-0057
       }
       save(store);
-      return ctx.json(res, 200, { ok: true, name: myWs.name, agentPolicy: myWs.agentPolicy || 'owner', retentionDays: myWs.retentionDays || 0, requestDrafts: !myWs.requestDraftsOff, approval: approvalRules(myWs), approvalWarning, budget: budgetOf(myWs.id) }), true;
+      return ctx.json(res, 200, { ok: true, name: myWs.name, agentPolicy: myWs.agentPolicy || 'owner', retentionDays: myWs.retentionDays || 0, recordDays: myWs.recordDays || 0, recordCopy: !!myWs.recordCopy, requestDrafts: !myWs.requestDraftsOff, approval: approvalRules(myWs), approvalWarning, budget: budgetOf(myWs.id) }), true;
     }
     if (p === '/account/workspace/invite-reset' && m === 'POST') {
       if (!verified(me)) return ctx.json(res, 403, { error: 'Confirm your email address first (account page).', needsVerification: true }), true;   // T-0032
@@ -1682,6 +1748,21 @@ function mirrorResult(wsId, id, ok, err) {
   if (ok) { x.sent = (x.sent || 0) + 1; x.lastSent = Date.now(); x.fails = 0; x.lastError = null; } else { x.fails = (x.fails || 0) + 1; x.lastError = String(err || 'error').slice(0, 120); if (x.fails >= 20) { x.enabled = false; x.lastError += ' (paused after 20 failures)'; } }
   save(store);
 }
+// ── T-0219: the owner's keys for sealed copies. ws.ownerKeys = [{ id, pub, wrapped, salt, iv, iter, rec: {wrapped, salt, iv, iter},
+// created, by }]; the newest is the one copies are sealed for. Older ones are kept so that older copies can still be opened.
+function ownerKeys(ws) { return Array.isArray(ws.ownerKeys) ? ws.ownerKeys : []; }
+function ownerKeyNow(ws) { const k = ownerKeys(ws); return k.length ? k[k.length - 1] : null; }
+function ownerKeyView(ws, me, full) {
+  const k = ownerKeyNow(ws), v = { set: !!k, id: k ? k.id : null, created: k ? k.created : null, by: k ? k.by : null, mine: !!(k && me && k.by === me.username) };
+  if (full) v.keys = ownerKeys(ws).map(x => ({ id: x.id, created: x.created, by: x.by, wrapped: x.wrapped, salt: x.salt, iv: x.iv, iter: x.iter, rec: x.rec }));
+  return v;
+}
+function recordSettings() {                                       // T-0219: [{ id, name, days, copy, key, by }] for workspaces whose owner limited how long the record is kept
+  if (!ENABLED) return [];
+  const st = load();
+  return Object.values(st.workspaces).filter(w => w.recordDays > 0).map(w => { const k = ownerKeyNow(w), owner = st.accounts[w.owner], mine = !!(k && owner && k.by === owner.username);
+    return { id: w.id, name: w.name, days: w.recordDays, copy: !!w.recordCopy, key: w.recordCopy && mine ? { id: k.id, pub: k.pub } : null, by: owner ? owner.username : null }; });   // a key set by an earlier owner is not used: the new owner could not open what it seals
+}
 function retentionSettings() {                                    // T-0037: [{ id, days }] for workspaces that asked for retention
   if (!ENABLED) return [];
   return Object.values(load().workspaces).filter(w => w.retentionDays > 0).map(w => ({ id: w.id, days: w.retentionDays }));
@@ -1689,4 +1770,4 @@ function retentionSettings() {                                    // T-0037: [{ 
 function fleetLinkOf(wsId) { return (load().workspaces[wsId] || {}).fleet || null; }                       // T-0153: the stored link record (sealed key + status), or null
 function fleetMark(wsId, patch) { const store = load(); const f = (store.workspaces[wsId] || {}).fleet; if (!f) return; Object.assign(f, patch); save(store); }
 const fleetDir = () => path.dirname(FILE);                                                                  // where fleet-link.key lives (beside accounts.json)
-module.exports = { enabled: ENABLED, reportMailFind, reportMailSet, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };
+module.exports = { enabled: ENABLED, recordSettings, reportMailFind, reportMailSet, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };

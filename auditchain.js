@@ -3,6 +3,9 @@
 // prev and the entry itself). Change or remove an old entry and the check values after it stop matching; remove the newest
 // entries and the stored head (audit-head.json) stops matching. Used by server.js and by tools/verify-audit.js, so both
 // compute exactly the same thing.
+// T-0219: an owner may limit how long the record is kept. The oldest entries are then removed as one front part, and the stored head
+// remembers up to which entry number that was done (head.trimmed.upto). Entries missing beyond that point make the check fail,
+// so removing old entries by hand shows, which it did not before.
 // What this does NOT protect against: someone with full access to the server who rewrites the whole chain. Keep a copy of the
 // check value the account page shows (or of an export) somewhere else, and you can tell even then.
 // SPDX-License-Identifier: AGPL-3.0-only  |  Copyright (C) 2026 GhostPort Technologies
@@ -24,6 +27,8 @@ function verify(entries, head) {
   }
   if (head && last && (head.h !== last.h || head.n !== last.n)) return { ok: false, checked, before, at: at(last), reason: 'the newest entries were removed' };
   if (head && head.n && !last) return { ok: false, checked, before, reason: 'the checked entries are gone' };
-  return { ok: true, checked, before, firstKept, n: last ? last.n : 0, head: last ? last.h : null };
+  const trimmedUpto = (head && head.trimmed && head.trimmed.upto) || 0;
+  if (head && firstKept !== null && firstKept > trimmedUpto + 1) return { ok: false, checked, before, reason: 'older entries were removed, and not by the setting for how long the record is kept' };
+  return { ok: true, checked, before, firstKept, n: last ? last.n : 0, head: last ? last.h : null, trimmedUpto };
 }
 module.exports = { hash, verify };

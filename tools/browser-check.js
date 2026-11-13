@@ -187,6 +187,19 @@ async function run(size) {
       await shot('review-changes'); await page.evaluate(() => closeTicketModal());
       check(`${size}: Ask for changes marks the ticket, says what was asked, and takes Approve away until a new version comes`, /Changes asked for by/.test(st.note) && /Please make it 3/.test(st.note) && !st.approve && !!tid, JSON.stringify(st).slice(0, 300));
     } finally { await page.evaluate(() => { try { closeTicketModal(); document.getElementById('ask-cancel')?.click(); } catch {} }).catch(() => {}); } });
+    await step('activity: a longer period, the export and progress by week', async () => {          // T-0219
+      await page.click('.tab[data-view="activity"]'); await page.waitForSelector('#activity-view.active', { state: 'visible' });
+      await page.selectOption('#act-range', '7d'); await page.locator('#act-count', { hasText: /in the last 7 days/ }).waitFor();
+      await page.locator('#act-progress-body table').waitFor();
+      const a = await page.evaluate(async () => { const csv = document.getElementById('act-csv').href, t = await (await fetch(csv)).text();
+        return { count: document.getElementById('act-count').textContent, days: document.querySelectorAll('#activity-list .ev-day').length, rows: document.querySelectorAll('#activity-list .event-row').length, csv, head: t.split('\n')[0], lines: t.trim().split('\n').length,
+          prog: document.getElementById('act-progress-body').innerText, sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }; });
+      await shot('activity-period');
+      check(`${size}: the Activity tab shows a longer period with a date above each day, exports it as a spreadsheet file, and shows progress by week, inside the screen`, /\d+ events? in the last 7 days/.test(a.count) && a.days >= 1 && a.rows >= 1 && /format=csv/.test(a.csv) && a.head === 'time_utc,what,who,ref,title,details,seconds' && a.lines >= 2
+        && /Week of/.test(a.prog) && /Proposed/.test(a.prog) && /Typical time to done/.test(a.prog) && a.sw <= a.cw + 1, JSON.stringify(a).slice(0, 400));
+      await page.selectOption('#act-range', 'custom'); const custom = await page.locator('#act-custom').isVisible(); await page.selectOption('#act-range', '24h');
+      check(`${size}: "Dates I pick" shows two date boxes`, custom);
+    });
     await step('add an agent', async () => {
       await page.click('.tab[data-view="chat"]'); await page.click('#gear-btn'); await page.click('#menu-add-agent');
       await page.fill('#aw-name', 'check-bot-' + size); await page.click('#aw-mkkey');
@@ -432,6 +445,35 @@ async function run(size) {
       const t = await page.evaluate(() => ({ v: document.getElementById('au-verify-msg').innerText, u: document.getElementById('usage-box').innerText, sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
       await page.locator('#usage').scrollIntoViewIfNeeded(); await shot('record-usage');
       check(`${size}: the account page checks the record and shows AI usage`, /Intact/.test(t.v) && t.u.length > 10 && t.sw <= t.cw + 1, JSON.stringify(t).slice(0, 300));
+    });
+    await step('account page: keep-for setting, passphrase and a sealed copy opened in the browser', async () => {   // T-0219
+      await page.goto(BASE + '/billing', { waitUntil: 'networkidle' });
+      await page.locator('#rec-box').waitFor({ state: 'visible' }); await page.locator('#rec-pass').scrollIntoViewIfNeeded();
+      const hadKey = !(await page.locator('#rec-key-new').isVisible());
+      if (!hadKey) {                                                              // the first screen size makes the key; the second finds it set and changes nothing
+        await page.fill('#rec-pass', 'short'); await page.fill('#rec-pass2', 'short'); await page.click('#rec-key-make');
+        await page.locator('#rec-key-msg', { hasText: /12 characters or more/ }).waitFor();
+        await page.fill('#rec-pass', 'a passphrase for the browser check'); await page.fill('#rec-pass2', 'a passphrase for the browser check'); await page.click('#rec-key-make');
+        await page.locator('#rec-code-box').waitFor({ state: 'visible', timeout: 60000 });
+        const code = await page.locator('#rec-code').innerText(); await shot('record-passphrase');
+        check(`${size}: the owner sets a passphrase in the browser and is shown a recovery code once`, /^[A-Z2-9]{4}(-[A-Z2-9]{4}){5}$/.test(code) && await page.locator('#rec-key-change').isVisible(), code.replace(/[A-Z2-9]/g, 'X'));
+      }
+      const before = await page.locator('#rec-saved .row-item').count();
+      await page.click('#rec-now'); await page.locator('#rec-saved-msg', { hasText: /Saved a sealed copy/ }).waitFor();
+      const row = page.locator('#rec-saved .row-item').first();
+      await page.fill('#rec-open-pass', 'this is not the passphrase'); await row.locator('a[data-open]').click(); await page.locator('#rec-saved-msg', { hasText: /does not open this copy/ }).waitFor({ timeout: 60000 });
+      await page.fill('#rec-open-pass', 'a passphrase for the browser check'); await row.locator('a[data-open]').click(); await page.locator('#rec-saved-msg', { hasText: /Opened here in your browser/ }).waitFor({ timeout: 60000 });
+      const got = await page.evaluate(async () => { const r = document.querySelector('#rec-saved .row-item'), links = [...r.querySelectorAll('a.rec-dl')];
+        const doc = JSON.parse(await (await fetch(links.find(a => /JSON/.test(a.textContent)).href)).text()), csv = await (await fetch(links.find(a => /CSV/.test(a.textContent)).href)).text();
+        const sealed = await (await fetch('/account/workspace/records-saved/' + r.dataset.copy)).text();
+        return { n: doc.entries.length, acts: doc.entries.map(e => e.action), head: csv.split('\n')[0], opened: r.dataset.opened, sealedHasAction: /owner-key-set|signup|record-copy-saved/.test(sealed), kind: JSON.parse(sealed).kind, sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }; });
+      await row.scrollIntoViewIfNeeded(); await shot('record-sealed-copy');
+      check(`${size}: a sealed copy is saved, a wrong passphrase opens nothing, the right one opens it in the browser with JSON and CSV to download, and what the server holds is not readable`, (await page.locator('#rec-saved .row-item').count()) === before + 1
+        && got.n >= 2 && got.acts.includes('owner-key-set') && got.head === 'ts,time_utc,actor,kind,action,details,request_id,ip' && got.opened === String(got.n) && got.sealedHasAction === false && got.kind === 'chamber-sealed-record' && got.sw <= got.cw + 1, JSON.stringify(got).slice(0, 400));
+      page.once('dialog', d => d.accept());
+      await page.selectOption('#rec-days', '90'); await page.check('#rec-copy'); await page.click('#rec-save'); await page.locator('#rec-msg', { hasText: /older than 90 days are removed once a day, after a sealed copy/ }).waitFor();
+      await page.selectOption('#rec-days', '0'); await page.uncheck('#rec-copy'); await page.click('#rec-save'); await page.locator('#rec-msg', { hasText: /kept for good/ }).waitFor();
+      check(`${size}: the owner sets how long the record is kept, with a sealed copy first, and can go back to keeping it for good`, true);
     });
     await step('weekly report: private link and page', async () => {                                   // T-0202
       await page.goto(BASE + '/billing', { waitUntil: 'networkidle' });

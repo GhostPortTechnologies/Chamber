@@ -114,7 +114,7 @@ function auditRepair(dir) {
     const lines = fs.readFileSync(path.join(dir, files[files.length - 1]), 'utf8').split('\n').filter(Boolean); if (!lines.length) return null;
     let r; try { r = JSON.parse(lines[lines.length - 1]); } catch { return null; }
     if (!r || !Number.isInteger(head.n) || r.n !== head.n + 1 || (r.prev || null) !== (head.h || null) || auditChain.hash(r) !== r.h) return null;
-    const tmp = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify({ n: r.n, h: r.h, since: head.since || r.ts }), { mode: 0o600 }); fs.renameSync(tmp, headFile);
+    const tmp = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify({ ...head, n: r.n, h: r.h, since: head.since || r.ts }), { mode: 0o600 }); fs.renameSync(tmp, headFile);
     auditAppend(dir, { ts: Date.now(), actor: 'chamber', kind: 'system', action: 'record-repaired', entry: r.n, note: 'the server stopped between writing this entry and its check value; the check value was restored when the server started again' });
     console.log(`[audit] ${path.basename(dir)}: restored the check value for entry ${r.n} (the server had stopped before writing it)`);
     return r.n;
@@ -126,20 +126,21 @@ function auditAppend(dir, rec) {                                              //
   const headFile = path.join(dir, 'audit-head.json'); let head = {}; try { head = JSON.parse(fs.readFileSync(headFile, 'utf8')); } catch { /* first chained entry */ }   // T-0194
   rec.n = (head.n || 0) + 1; rec.prev = head.h || null; rec.h = auditChain.hash(rec);
   fs.appendFileSync(path.join(dir, `audit-${new Date(rec.ts).toISOString().slice(0, 7)}.jsonl`), JSON.stringify(rec) + '\n', { mode: 0o600 });
-  { const tmpH = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmpH, JSON.stringify({ n: rec.n, h: rec.h, since: head.since || rec.ts }), { mode: 0o600 }); fs.renameSync(tmpH, headFile); }
+  { const tmpH = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmpH, JSON.stringify({ ...head, n: rec.n, h: rec.h, since: head.since || rec.ts }), { mode: 0o600 }); fs.renameSync(tmpH, headFile); }   // T-0219: ...head keeps what the head remembers besides (trimmed)
   let log = []; try { log = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first entry */ }
   log.push(rec);
   if (log.length > AUDIT_RECENT) log = log.slice(-AUDIT_RECENT);
   const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(log)); fs.renameSync(tmp, file);
 }
 const auditChain = require('./auditchain');                                   // T-0194: tamper-evident activity record
+const records = require('./records');                                         // T-0219: how long the record is kept; sealed copies for the owner
 function verifyAudit(dir) {                                                   // T-0194: walk the record as written and recompute every check value
   auditRepair(dir);                                                           // T-0217
   let files = []; try { files = fs.readdirSync(dir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort(); } catch { /* no record yet */ }
   const entries = [];
   for (const f of files) fs.readFileSync(path.join(dir, f), 'utf8').split('\n').forEach((line, i) => { if (!line) return; let r; try { r = JSON.parse(line); } catch { r = null; } entries.push(r && typeof r === 'object' ? { ...r, _where: { file: f, line: i + 1 } } : null); });
   let head = null; try { head = JSON.parse(fs.readFileSync(path.join(dir, 'audit-head.json'), 'utf8')); } catch { /* none yet */ }
-  return { ...auditChain.verify(entries, head), since: head && head.since || null };
+  return { ...auditChain.verify(entries, head), since: head && head.since || null, trimmed: head && head.trimmed || null };   // T-0219: trimmed = what the owner's keep-for setting removed
 }
 function auditAll(dir) {                                                       // T-0057: everything we have, oldest first (archives + recent, de-duplicated)
   const seen = new Set(), out = [];
@@ -157,6 +158,73 @@ function reachOf(r) {
   if (r.mode === 'attached') out.names = (Array.isArray(r.names) ? r.names : []).slice(0, 12).map(n => String(n).slice(0, 60));
   if (r.cmd === true) out.cmd = true;
   return out;
+}
+
+// ── T-0219: the Activity tab over any period, its export, and progress by week ─────────────────────────────────────────────
+// Everything is worked out from what the caller may already see: tickets and reviews, agent answers and busy spells in rooms
+// they can see, people joining. Nothing here reads the who-did-what record (that stays on the account page).
+// Busy spells are found in the last 1000 messages only (what loadDataFull holds), so in an old period they can be incomplete.
+const ACT_WORDS = { ticket_proposed: 'ticket proposed', ticket_approved: 'ticket approved', ticket_rejected: 'ticket rejected', ticket_claimed: 'ticket started', ticket_closed: 'ticket done',
+  review_submitted: 'review submitted', review_approved: 'review approved', review_rejected: 'review rejected', agent_run: 'agent answer', message_burst: 'busy chat', user_joined: 'joined' };
+const ACT_EXPORT_MAX = 50000;
+function activityEvents(sess, from, to) {
+  const events = [], inR = ts => Number.isFinite(ts) && ts > from && ts < to, T = s => Date.parse(s);
+  for (const t of (loadTickets().tickets || [])) {
+    const p = T(t.proposed_at);
+    if (inR(p)) events.push({ ts: p, kind: 'ticket_proposed', actor: t.proposed_by, ref: t.id, title: t.title, meta: { priority: t.priority, type: t.type } });
+    if (t.approved_at && inR(T(t.approved_at))) events.push({ ts: T(t.approved_at), kind: 'ticket_approved', actor: t.approved_by, ref: t.id, title: t.title, meta: { seconds: Math.max(0, Math.round((T(t.approved_at) - p) / 1000)) } });
+    if (t.rejected_at && inR(T(t.rejected_at))) events.push({ ts: T(t.rejected_at), kind: 'ticket_rejected', actor: t.rejected_by, ref: t.id, title: t.title, meta: { reason: t.reject_reason } });
+    if (t.claimed_at && inR(T(t.claimed_at))) events.push({ ts: T(t.claimed_at), kind: 'ticket_claimed', actor: t.assignee, ref: t.id, title: t.title });
+    if (t.closed_at && inR(T(t.closed_at))) events.push({ ts: T(t.closed_at), kind: 'ticket_closed', actor: t.closed_by || t.assignee || t.proposed_by, ref: t.id, title: t.title, meta: { seconds: Math.max(0, Math.round((T(t.closed_at) - p) / 1000)) } });
+  }
+  for (const r of (loadReviews().reviews || [])) {
+    const title = (r.files || []).map(f => path.basename(f.path)).join(', ');
+    if (inR(T(r.proposed_at))) events.push({ ts: T(r.proposed_at), kind: 'review_submitted', actor: r.by, ref: r.id, title, meta: { ticket: r.ticket_id, files: (r.files || []).length } });
+    if (r.reviewed_at && inR(T(r.reviewed_at))) events.push({ ts: T(r.reviewed_at), kind: r.status === 'approved' ? 'review_approved' : 'review_rejected', actor: r.reviewed_by, ref: r.id, title, meta: { reason: r.reject_reason } });
+  }
+  const chamber = loadDataFull(), who = sess && sess.username, roomName = k => String(k).startsWith('dm:') ? 'a private conversation' : '#' + k;
+  for (const m of store.runsSince(F().data, from)) {                           // agent answers, with how long each took
+    if (!inR(m.ts) || !m.run || m.run.state === 'running' || !canSeeRoom(chamber, m.room, who)) continue;
+    events.push({ ts: m.ts, kind: 'agent_run', actor: m.username, ref: (String(m.text || '').match(/T-\d{4}/) || [null])[0], title: roomName(m.room), meta: { seconds: Math.round((Number(m.run.ms) || 0) / 1000), state: m.run.state || 'done' } });
+  }
+  const byUser = {};
+  for (const m of (chamber.messages || [])) if (inR(m.ts) && m.type !== 'system' && canSeeRoom(chamber, m.room, who)) (byUser[m.username] ||= []).push(m);
+  for (const [user, list] of Object.entries(byUser)) {                         // a busy spell: five or more messages from one name within two minutes
+    list.sort((a, b) => a.ts - b.ts);
+    for (let i = 0; i < list.length;) {
+      let j = i; while (j + 1 < list.length && list[j + 1].ts - list[i].ts < 120000) j++;
+      if (j - i + 1 >= 5) { events.push({ ts: list[j].ts, kind: 'message_burst', actor: user, meta: { count: j - i + 1, span_sec: Math.round((list[j].ts - list[i].ts) / 1000) } }); i = j + 1; } else i++;
+    }
+  }
+  for (const u of Object.values(chamber.users || {})) if (inR(u.joinedAt) && Date.now() - u.joinedAt > 1000) events.push({ ts: u.joinedAt, kind: 'user_joined', actor: u.username, meta: { role: u.role } });
+  return events.sort((a, b) => b.ts - a.ts);
+}
+// A cell for a spreadsheet: quoted where needed, and text that a spreadsheet would run as a formula (= + - @ at the start) gets
+// an apostrophe in front, because titles and reasons are typed by people and agents.
+function csvCell(v) { let s = v === undefined || v === null ? '' : String(v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+function activityDetails(e) {
+  const m = e.meta || {};
+  if (e.kind === 'ticket_proposed') return [m.type, m.priority].filter(Boolean).join(', ');
+  if (e.kind === 'ticket_rejected' || e.kind === 'review_rejected') return m.reason || '';
+  if (e.kind === 'review_submitted') return `${m.files || 0} file${m.files === 1 ? '' : 's'}${m.ticket ? ', ' + m.ticket : ''}`;
+  if (e.kind === 'agent_run') return m.state && m.state !== 'done' ? m.state : '';
+  if (e.kind === 'message_burst') return `${m.count} messages in ${m.span_sec} seconds`;
+  if (e.kind === 'user_joined') return m.role || '';
+  return '';
+}
+// Progress by week (weeks start on Monday, UTC): tickets proposed, approved and done, and the typical (middle) time from request to done.
+function activityProgress(weeks) {
+  const weekOf = ts => { const d = new Date(ts); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.getTime(); };
+  const start = weekOf(Date.now()) - (weeks - 1) * 7 * 864e5, rows = new Map();
+  for (let i = 0; i < weeks; i++) rows.set(start + i * 7 * 864e5, { week: new Date(start + i * 7 * 864e5).toISOString().slice(0, 10), proposed: 0, approved: 0, done: 0, hours: [] });
+  const row = s => { const ts = Date.parse(s); return Number.isFinite(ts) ? rows.get(weekOf(ts)) : null; };
+  for (const t of (loadTickets().tickets || [])) {
+    const a = row(t.proposed_at); if (a) a.proposed++;
+    const b = t.approved_at && row(t.approved_at); if (b) b.approved++;
+    const c = t.status === 'done' && t.closed_at && row(t.closed_at); if (c) { c.done++; c.hours.push((Date.parse(t.closed_at) - Date.parse(t.proposed_at)) / 36e5); }
+  }
+  return [...rows.values()].reverse().map(r => { const h = r.hours.filter(Number.isFinite).sort((x, y) => x - y), mid = h.length ? (h.length % 2 ? h[(h.length - 1) / 2] : (h[h.length / 2 - 1] + h[h.length / 2]) / 2) : null;
+    return { week: r.week, proposed: r.proposed, approved: r.approved, done: r.done, typical_hours: mid === null ? null : Math.round(mid * 10) / 10 }; });
 }
 
 const MAX_MESSAGES = 500;
@@ -713,12 +781,28 @@ function shutdown(code, why) {
 // ── Hourly maintenance (T-0037) ──────────────────────────────────────────────────────────────────────────
 // Expired sessions out of memory, SQLite WAL files checkpointed, idle database handles closed, and message
 // retention applied for workspaces whose owner set it. Cheap, logged in one line, never touches anything else.
-function maintenance() {
+// T-0219: where the owner limited how long the activity record is kept, remove what is older. Once a day per workspace at most
+// (the hourly pass skips a workspace trimmed in the last 20 hours). With "save a copy first" the removed entries are sealed for the
+// owner before anything is deleted; no usable owner key means nothing is deleted.
+function recordRetention(s, force) {
+  return withWorkspace(s.id, () => {
+    const dir = path.dirname(F().data); let head = {}; try { head = JSON.parse(fs.readFileSync(path.join(dir, 'audit-head.json'), 'utf8')); } catch { /* no checked entries yet */ }
+    if (!force && head.trimmed && Date.now() - head.trimmed.at < 20 * 3600e3) return null;
+    if (s.copy && !s.key) return null;                                         // the account page tells the owner why
+    auditRepair(dir);
+    return records.trim(dir, Date.now() - s.days * 864e5, { days: s.days, by: s.by, workspace: s.name, copy: s.copy, ownerKey: s.key, append: rec => auditAppend(dir, rec) });
+  });
+}
+function maintenance(opts = {}) {
   const t0 = Date.now(); let sessionsPruned = 0;
   for (const [t, s] of sessions) if (s.expires < t0) { sessions.delete(t); sessionsPruned++; }
   const retained = [];
   for (const { id, days } of accounts.retentionSettings()) {
     try { const n = withWorkspace(id, () => store.retention(F().data, days, rows => rows.forEach(unlinkFile))); if (n) retained.push(`${id}:${n}`); } catch (e) { console.error('[maintenance] retention', id, e.message); }
+  }
+  const trimmed = [];                                                         // T-0219
+  for (const s of accounts.recordSettings()) {
+    try { const r = recordRetention(s, opts.recordNow === true); if (r && r.removed) trimmed.push(`${s.id}:${r.removed}`); } catch (e) { console.error('[maintenance] record', s.id, e.message); }
   }
   let orphans = 0;                                                            // T-0064: uploads that were never sent
   try {
@@ -729,8 +813,8 @@ function maintenance() {
   try { if (accounts.enabled) trial = accounts.trialHousekeeping(ACCOUNTS_CTX); } catch (e) { console.error('[maintenance] trial', e.message); }
   if (trial.reminded.length || trial.removed.length) console.log(`[maintenance] trial reminders=${trial.reminded.length} unconfirmed removed=${trial.removed.length}`);
   const st = store.maintenance();
-  console.log(`[maintenance] sessions pruned=${sessionsPruned} wal checkpointed=${st.checkpointed} db closed=${st.closed} retention=${retained.join(',') || '-'} orphan files=${orphans} ${Date.now() - t0}ms`);
-  return { sessionsPruned, ...st, retained, orphanFiles: orphans };
+  console.log(`[maintenance] sessions pruned=${sessionsPruned} wal checkpointed=${st.checkpointed} db closed=${st.closed} retention=${retained.join(',') || '-'} record=${trimmed.join(',') || '-'} orphan files=${orphans} ${Date.now() - t0}ms`);
+  return { sessionsPruned, ...st, retained, trimmed, orphanFiles: orphans };
 }
 setTimeout(maintenance, 60e3).unref(); setInterval(maintenance, 3600e3).unref();
 process.on('SIGTERM', () => shutdown(0, 'SIGTERM'));
@@ -1473,7 +1557,7 @@ async function handleRequest(req, res, sess) {                              // [
   }
   if (TEST_HOOKS && url.pathname.startsWith('/api/_test/')) {                // [new] T-0025: only with CHAMBER_TEST_HOOKS=1 (never in production)
     if (url.pathname === '/api/_test/throw') throw new Error('test: handler throw');
-    if (url.pathname === '/api/_test/maintenance') return json(res, 200, maintenance());   // T-0037
+    if (url.pathname === '/api/_test/maintenance') return json(res, 200, maintenance({ recordNow: url.searchParams.get('recordNow') === '1' }));   // T-0037; T-0219: recordNow=1 skips the once-a-day pause
     if (url.pathname === '/api/_test/trial-housekeeping') return json(res, 200, accounts.trialHousekeeping(ACCOUNTS_CTX, parseInt(url.searchParams.get('at')) || Date.now()));   // T-0175/T-0176
     if (url.pathname === '/api/_test/tick') { const at = new Date(parseInt(url.searchParams.get('at')) || Date.now()); return json(res, 200, { fired: runSchedules(at), flushed: accounts.flushQuietHeld(at), reminded: approvalReminders(at), reports: weeklyReportMail(at), budget: budgetAlerts(at), github: await githubSync(at.getTime(), true) }); }   // T-0058/T-0078; T-0201
     if (url.pathname === '/api/_test/reject') { Promise.reject(new Error('test: unhandled rejection')); return json(res, 200, { ok: true }); }
@@ -3071,89 +3155,29 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
   // ── Activity timeline ────────────────────────────────────────────
   // Deterministic event derivation from chamber + tickets + reviews.
   // Returns chronological events in [since, now], capped at 200 newest.
-  if (url.pathname === '/api/activity' && method === 'GET') {
-    const since = parseInt(url.searchParams.get('since')) || (Date.now() - 24 * 3600 * 1000);
-    const events = [];
-
-    // Tickets — propose / approve / reject / claim / close events from the
-    // updates array if present, else fall back to top-level timestamps.
-    const tix = loadTickets();
-    for (const t of (tix.tickets || [])) {
-      const proposedTs = Date.parse(t.proposed_at);
-      if (proposedTs > since) {
-        events.push({ ts: proposedTs, kind: 'ticket_proposed', actor: t.proposed_by,
-          ref: t.id, title: t.title, meta: { priority: t.priority, type: t.type } });
-      }
-      if (t.approved_at) {
-        const ts = Date.parse(t.approved_at);
-        if (ts > since) events.push({ ts, kind: 'ticket_approved', actor: t.approved_by, ref: t.id, title: t.title });
-      }
-      if (t.rejected_at) {
-        const ts = Date.parse(t.rejected_at);
-        if (ts > since) events.push({ ts, kind: 'ticket_rejected', actor: t.rejected_by, ref: t.id, title: t.title, meta: { reason: t.reject_reason } });
-      }
-      if (t.claimed_at) {
-        const ts = Date.parse(t.claimed_at);
-        if (ts > since) events.push({ ts, kind: 'ticket_claimed', actor: t.assignee, ref: t.id, title: t.title });
-      }
-      if (t.closed_at) {
-        const ts = Date.parse(t.closed_at);
-        if (ts > since) events.push({ ts, kind: 'ticket_closed', actor: t.assignee || t.proposed_by, ref: t.id, title: t.title });
-      }
+  if (url.pathname === '/api/activity/progress' && method === 'GET') {        // T-0219
+    if (!sess?.username) return json(res, 401, { error: 'not signed in' });
+    return json(res, 200, { weeks: activityProgress(Math.max(1, Math.min(26, parseInt(url.searchParams.get('weeks'), 10) || 8))) });
+  }
+  if (url.pathname === '/api/activity' && method === 'GET') {                 // T-0219: a period (from, to), a page at a time (limit, offset), or the whole period as a file (format)
+    if (!sess?.username) return json(res, 401, { error: 'not signed in' });
+    const now = Date.now(), num = k => { const v = parseInt(url.searchParams.get(k), 10); return Number.isFinite(v) ? v : null; };
+    const from = num('from') ?? num('since') ?? (now - 864e5), to = Math.min(num('to') ?? now + 1000, now + 1000);
+    if (from >= to) return json(res, 400, { error: 'that period ends before it starts' });
+    const events = activityEvents(sess, from, to), format = url.searchParams.get('format');
+    if (format === 'csv' || format === 'json') {                               // everyone may export what they can see here; who exported what goes on the record
+      const out = events.slice(0, ACT_EXPORT_MAX).reverse();                   // oldest first: the order a timeline is read in
+      audit(sess, { action: 'activity-export', format, events: out.length, from: new Date(from).toISOString(), to: new Date(to).toISOString() }, true);
+      const name = `chamber-activity-${new Date(from).toISOString().slice(0, 10)}-to-${new Date(Math.min(to, now)).toISOString().slice(0, 10)}.${format}`;
+      if (format === 'json') { res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="${name}"` });
+        return res.end(JSON.stringify({ exported_at: new Date().toISOString(), exported_by: sess.username, from: new Date(from).toISOString(), to: new Date(Math.min(to, now)).toISOString(), complete: events.length <= ACT_EXPORT_MAX,
+          events: out.map(e => ({ time_utc: new Date(e.ts).toISOString(), what: ACT_WORDS[e.kind] || e.kind, who: e.actor || null, ref: e.ref || null, title: e.title || null, details: activityDetails(e) || null, seconds: e.meta && Number.isFinite(e.meta.seconds) ? e.meta.seconds : null })) })); }
+      const rows = out.map(e => [new Date(e.ts).toISOString(), ACT_WORDS[e.kind] || e.kind, e.actor || '', e.ref || '', e.title || '', activityDetails(e), e.meta && Number.isFinite(e.meta.seconds) ? e.meta.seconds : ''].map(csvCell).join(','));
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` });
+      return res.end('time_utc,what,who,ref,title,details,seconds\n' + rows.join('\n') + (rows.length ? '\n' : ''));
     }
-
-    // Reviews — submit / approve / reject events.
-    const rev = loadReviews();
-    for (const r of (rev.reviews || [])) {
-      const ts = Date.parse(r.proposed_at);
-      if (ts > since) {
-        events.push({ ts, kind: 'review_submitted', actor: r.by, ref: r.id,
-          title: r.files.map(f => path.basename(f.path)).join(', '),
-          meta: { ticket: r.ticket_id, files: r.files.length } });
-      }
-      if (r.reviewed_at) {
-        const ts2 = Date.parse(r.reviewed_at);
-        if (ts2 > since) events.push({ ts: ts2,
-          kind: r.status === 'approved' ? 'review_approved' : 'review_rejected',
-          actor: r.reviewed_by, ref: r.id,
-          title: r.files.map(f => path.basename(f.path)).join(', '),
-          meta: { reason: r.reject_reason } });
-      }
-    }
-
-    // Message bursts — >=5 messages from one user within a 2-minute window.
-    const chamber = loadDataFull();
-    const msgs = (chamber.messages || []).filter(m => m.ts > since && m.type !== 'system');
-    const byUser = {};
-    for (const m of msgs) {
-      (byUser[m.username] ||= []).push(m);
-    }
-    for (const [user, list] of Object.entries(byUser)) {
-      list.sort((a, b) => a.ts - b.ts);
-      let i = 0;
-      while (i < list.length) {
-        let j = i;
-        while (j + 1 < list.length && list[j + 1].ts - list[i].ts < 120000) j++;
-        if (j - i + 1 >= 5) {
-          events.push({ ts: list[j].ts, kind: 'message_burst', actor: user,
-            meta: { count: j - i + 1, span_sec: Math.round((list[j].ts - list[i].ts) / 1000) } });
-          i = j + 1;
-        } else {
-          i++;
-        }
-      }
-    }
-
-    // User joins (joinedAt within window).
-    for (const u of Object.values(chamber.users || {})) {
-      if (u.joinedAt > since && (Date.now() - u.joinedAt) > 1000) {
-        events.push({ ts: u.joinedAt, kind: 'user_joined', actor: u.username,
-          meta: { role: u.role } });
-      }
-    }
-
-    events.sort((a, b) => b.ts - a.ts);
-    return json(res, 200, { events: events.slice(0, 200) });
+    const offset = Math.max(0, num('offset') ?? 0), limit = Math.max(1, Math.min(500, num('limit') ?? 200));
+    return json(res, 200, { events: events.slice(offset, offset + limit), more: events.length > offset + limit, total: events.length, from, to });
   }
 
   // [new] T-0132: the owner says what the phone AI is called, what it may do and anything it should
