@@ -1399,6 +1399,8 @@ function markPaid(...emails) {                                   // simulate a p
         const inHome = sh(['--url', B7, '--token', tok || 'chk_x', '--workdir', home]);
         check('T-0186: it refuses to give the agent the whole home folder', inHome.status !== 0 && /one project folder/.test(inHome.stderr), inHome.stderr.slice(0, 200));
         check('T-0186: it refuses something that is not an agent key', sh(['--url', B7, '--token', 'not-a-key', '--workdir', proj]).status !== 0);
+        const noTty = spawnSync('setsid', ['sh', path.join(APP, 'public', 'laptop.sh'), '--url', B7, '--token', '-', '--workdir', proj], { encoding: 'utf8', timeout: 30000, env: { PATH: process.env.PATH, HOME: home, CHAMBER_NO_START: '1' } });
+        check('T-0217: "--token -" asks for the key instead of taking it from the command line; with no terminal to ask on it stops and says so, and both installers still parse', noTty.status !== 0 && /could not be read/.test(noTty.stderr || '') && spawnSync('sh', ['-n', path.join(APP, 'public', 'laptop.sh')]).status === 0 && spawnSync('bash', ['-n', path.join(APP, 'public', 'install.sh')]).status === 0 && /Paste the agent key from Chamber/.test(fs.readFileSync(path.join(APP, 'public', 'install.sh'), 'utf8')), (noTty.stderr || '').slice(0, 200));
         const r1 = sh(['--url', B7, '--token', tok, '--workdir', proj]);
         const conf = path.join(home, '.config', 'chamber', 'agent.env'), cdir = path.dirname(conf), adir = path.join(home, '.chamber');
         const txt = fs.existsSync(conf) ? fs.readFileSync(conf, 'utf8') : '', mode = f => fs.existsSync(f) ? (fs.statSync(f).mode & 0o777).toString(8) : 'missing';
@@ -1574,8 +1576,18 @@ function markPaid(...emails) {                                   // simulate a p
         check('T-0202: the private page shows the week in plain words: what was done with its result, how long it took, who approved, what waits, and the facts-only note', pg.status === 200 && pg.text.includes('Shop Team') && pg.text.includes(t1) && pg.text.includes('Contact form: done, sends to support') && pg.text.includes('own11') && pg.text.includes(t2) && /Only measured facts/.test(pg.text) && /approval waited/.test(pg.text), pg.text.slice(0, 200));
         check('T-0202: the page holds no chat and no script, is never cached or indexed, and a wrong link is refused', !pg.text.includes('PRIVATE-CHAT-LINE') && !/<script/i.test(pg.text) && /no-store/.test(pg.headers.get('cache-control') || '') && /noindex/.test(pg.headers.get('x-robots-tag') || '') && (await c11('GET', '/report/' + 'x'.repeat(24))).status === 404);
         const nextMon = new Date(new Date().setUTCHours(0, 0, 0, 0)); nextMon.setUTCDate(nextMon.getUTCDate() - ((nextMon.getUTCDay() + 6) % 7) + 7); const at = nextMon.getTime() + 8 * 36e5 + 5 * 6e4;
+        await new Promise(r => setTimeout(r, 250)); const cl11 = a => (log11.match(new RegExp('\\[report\\] confirm link for ' + a.replace(/[.]/g, '\\.') + ': (\\S+)')) || [])[1] || '';
+        const r0 = (await c11('GET', `/api/_test/tick?at=${at - 6e4}`)).json?.reports || [], lb = cl11('boss@test.invalid');
+        const pgB = lb ? await c11('GET', new URL(lb).pathname) : { status: 0, text: '' }, stillNo = ((await c11('GET', '/account/workspace', { token: O.token })).json?.report?.waiting || []).join();
+        const yesB = lb ? await c11('POST', new URL(lb).pathname + '?do=yes') : { status: 0, text: '' }, again = await c11('POST', '/account/workspace/report', { token: O.token, body: { recipients: 'boss@test.invalid, client@test.invalid, own11@test.invalid' } });
+        await new Promise(r => setTimeout(r, 200));
+        check('T-0217: a new address gets one email asking whether it wants the report; nothing goes to it before it says yes, and opening the link alone says nothing', r0.length === 0 && !!lb && !!cl11('client@test.invalid') && pgB.status === 200 && /Yes, send me the report/.test(pgB.text) && stillNo === 'boss@test.invalid,client@test.invalid' && yesB.status === 200 && /You will get the weekly report/.test(yesB.text), JSON.stringify([r0.length, !!lb, pgB.status, stillNo, yesB.status]));
+        check('T-0217: the address of someone in the workspace needs no question, and saving the list again asks nobody twice', again.status === 200 && JSON.stringify(again.json?.report?.waiting) === '["client@test.invalid"]' && (again.json?.asked || []).length === 0 && (log11.match(/\[report\] confirm link for boss@test\.invalid/g) || []).length === 1 && !/confirm link for own11@test\.invalid/.test(log11), JSON.stringify([again.json?.report, again.json?.asked]));
         const r1 = (await c11('GET', `/api/_test/tick?at=${at}`)).json?.reports || [], r2 = (await c11('GET', `/api/_test/tick?at=${at + 6e4}`)).json?.reports || [];
-        check('T-0202: on Monday morning last week\'s report is emailed to the listed people, once', r1.length === 1 && r1[0].to.join() === 'boss@test.invalid,client@test.invalid' && r1[0].done === 1 && /Shop Team: 1 done, 1 waiting/.test(r1[0].subject) && r2.length === 0 && /\[report\] mail to boss@test\.invalid/.test(log11), JSON.stringify([r1, r2]).slice(0, 300));
+        check('T-0202: on Monday morning last week\'s report is emailed to the listed people, once', r1.length === 1 && r1[0].to.join() === 'boss@test.invalid,own11@test.invalid' && r1[0].done === 1 && /Shop Team: 1 done, 1 waiting/.test(r1[0].subject) && r2.length === 0 && /\[report\] mail to boss@test\.invalid/.test(log11), JSON.stringify([r1, r2]).slice(0, 300));
+        await new Promise(r => setTimeout(r, 200));
+        const stopLine = (log11.match(/\[report\] mail to boss@test\.invalid: .* \| stop (\S+)/) || [])[1] || '', stopB = stopLine ? await c11('POST', new URL(stopLine).pathname + '?do=stop') : { status: 0, text: '' }, wsS = (await c11('GET', '/account/workspace', { token: O.token })).json?.report || {};
+        check('T-0217: every report email carries a link that stops it for that address', !!stopLine && stopB.status === 200 && /You will not get this report/.test(stopB.text) && !(wsS.recipients || []).includes('boss@test.invalid') && (wsS.recipients || []).includes('client@test.invalid'), JSON.stringify([stopLine.slice(-24), stopB.status, wsS.recipients]));
         const off = await c11('POST', '/account/workspace/report', { token: O.token, body: { link: 'off' } });
         check('T-0202: turning the link off stops it working', off.status === 200 && off.json.report.linkUrl === null && (await c11('GET', new URL(link).pathname)).status === 404);
       } finally { srv11.kill(); try { fs.rmSync(dir11, { recursive: true, force: true }); } catch {} }
@@ -1701,6 +1713,8 @@ function markPaid(...emails) {                                   // simulate a p
         const p5 = await propA('Fix test 5'), p6 = await propA('Fix test 6'); await claim(AG, p5.id, 'pr'); await claim(AG, p6.id, 'pr');
         const k3 = await chk(AG, p5.id, ['src/app.py']), k4 = await chk(AG, p6.id, ['tests/secrets.json']);
         check('T-0200: files outside the chosen folders, and files no standing approval ever covers (secrets, keys, build pipelines), send the ticket back to a person', p5.standing?.ok && p6.standing?.ok && k3.json?.ok === false && /outside tests\//.test(k3.json.why) && k4.json?.ok === false && /no standing approval covers/.test(k4.json.why) && (await find(p5.id)).status === 'proposed' && (await find(p6.id)).status === 'proposed', JSON.stringify([p5.standing, p6.standing, k3.json, k4.json]));
+        const pN = await propA('Fix test nested'); await claim(AG, pN.id, 'pr'); const kN = await chk(AG, pN.id, ['tests/config/auth.json', 'tests/backups/dump.sql']);
+        check('T-0217: the files no standing approval covers are refused at any depth, not only at the top of the repository', pN.standing?.ok === true && kN.json?.ok === false && /no standing approval covers/.test(kN.json?.why || '') && /tests\/config\/auth\.json/.test(kN.json.why) && /tests\/backups\/dump\.sql/.test(kN.json.why), JSON.stringify([pN.standing, kN.json]));
         const p7 = await propA('Fix test 7'), wAg = await c14('POST', '/api/standing/S-1/withdraw', { token: AG, body: {} }), w = await c14('POST', '/api/standing/S-1/withdraw', { token: M.token, body: {} });
         const t7 = await find(p7.id), k5 = await chk(AG, p1.id, ['tests/test_a.py']), p8 = await propA('Fix test 8');
         check('T-0200: one tap withdraws it (an agent cannot): what it approved and nobody started goes back to a person, work in progress stops before it is pushed, new tickets are not covered', p7.standing?.ok && wAg.status === 403 && w.status === 200 && w.json?.back === 1 && t7.status === 'proposed' && k5.json?.ok === false && /withdrawn/.test(k5.json.why) && (await find(p1.id)).status === 'proposed' && p8.standing?.ok === false && /withdrawn/.test(p8.standing.why), JSON.stringify([p7.standing, wAg.status, w.json, t7.status, k5.json, p8.standing]));
@@ -1761,6 +1775,11 @@ function markPaid(...emails) {                                   // simulate a p
         const au = ((await c15('GET', '/account/workspace/audit?format=json', { token: O.token })).json?.entries || []).filter(e => e.actor === 'mcp15' && e.kind === 'agent').map(e => e.action);
         check('T-0198: what it did is on the activity record under the agent\'s name, refused approval included', ['message', 'proposal', 'ticket-update', 'ticket-approve-refused'].every(a => au.includes(a)), JSON.stringify(au));
         const { execFileSync } = require('child_process'), runSetup = url => { try { return 'EXIT 0 ' + execFileSync('python3', [MCP, '--setup', '--url', url, '--token', AG], { env: { PATH: process.env.PATH, HOME: home15 }, encoding: 'utf8', timeout: 20000, stdio: 'pipe' }); } catch (e) { return 'EXIT ' + e.status + ' ' + (e.stdout || '') + (e.stderr || ''); } };
+        const home15b = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-mcp-ask-')); let soAsk = '';
+        try { soAsk = execFileSync('setsid', ['python3', MCP, '--setup', '--url', B15], { env: { PATH: process.env.PATH, HOME: home15b }, input: AG + '\n', encoding: 'utf8', timeout: 20000, stdio: ['pipe', 'pipe', 'pipe'] }); } catch (e) { soAsk = 'EXIT ' + e.status + ' ' + (e.stdout || '') + (e.stderr || ''); }
+        const envAsk = (() => { try { return fs.readFileSync(path.join(home15b, '.config', 'chamber', 'mcp.env'), 'utf8'); } catch { return ''; } })();
+        check('T-0217: chamber-mcp --setup without --token asks for the key and saves it the same way', /Connected to Chamber as /.test(soAsk) && envAsk.includes('CHAMBER_TOKEN=' + AG), soAsk.slice(0, 200));
+        try { fs.rmSync(home15b, { recursive: true, force: true }); } catch {}
         const so = runSetup(B15), envf = path.join(home15, '.config', 'chamber', 'mcp.env'), mode = (() => { try { return fs.statSync(envf).mode & 0o777; } catch { return -1; } })();
         mcp2 = mcpRun({}); await mcp2.rpc('initialize', hello); const rr2 = await mcp2.call('read_room', {});
         const pres = ((await c15('GET', '/api/presence', { token: O.token })).json?.presence || []).find(u => u.username === 'mcp15');
@@ -1966,9 +1985,33 @@ function markPaid(...emails) {                                   // simulate a p
         const pg206 = fs.readFileSync(path.join(APP, 'public', 'requests.html'), 'utf8'), app206 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8');
         check('T-0206: Your requests has the file picker, and the ticket shows what was sent', /id="rq-files"/.test(pg206) && /\/api\/requests\/files/.test(pg206) && /id="tm-files"/.test(app206) && /Sent with the request/.test(app206));
         const pg17 = fs.readFileSync(path.join(APP, 'public', 'requests.html'), 'utf8');
+        // T-0217: a stop between writing an entry and its check value is repaired on start; anything else still reads as not intact
+        { const chainR = require(path.join(APP, 'auditchain.js')), wsDir = path.join(dir17, 'ws', fs.readdirSync(path.join(dir17, 'ws'))[0]);
+          const headF = path.join(wsDir, 'audit-head.json'), jf = () => path.join(wsDir, fs.readdirSync(wsDir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort().pop());
+          const restart = async () => { const port = await freePort(), B = `http://127.0.0.1:${port}`; const s = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: { ...env17, CHAMBER_PUBLIC_URL: B, CHAMBER_PORT: String(port) }, stdio: ['ignore', 'ignore', 'ignore'] });
+            const get = async p => { const r = await fetch(B + p, { signal: AbortSignal.timeout(8000), headers: { Authorization: `Bearer ${O.token}` } }); return r.json(); };
+            for (let i = 0; i < 60; i++) { try { if ((await fetch(B + '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+            return { s, get }; };
+          const before = (await c17('GET', '/account/workspace/audit/verify', { token: O.token })).json || {};
+          srv17.kill(); await new Promise(r => setTimeout(r, 400));
+          const head = JSON.parse(fs.readFileSync(headF, 'utf8')), lost = { ts: Date.now(), actor: 'own17', kind: 'human', action: 'written-just-before-the-stop', n: head.n + 1, prev: head.h }; lost.h = chainR.hash(lost);
+          fs.appendFileSync(jf(), JSON.stringify(lost) + '\n');
+          const a = await restart(); let vA = {}, auA = [];
+          try { vA = await a.get('/account/workspace/audit/verify'); auA = (await a.get('/account/workspace/audit?format=json')).entries || []; } catch (e) { vA = { error: e.message }; } finally { a.s.kill(); }
+          await new Promise(r => setTimeout(r, 400));
+          const head2 = JSON.parse(fs.readFileSync(headF, 'utf8')), forged = { ts: Date.now(), actor: 'own17', kind: 'human', action: 'forged', n: head2.n + 1, prev: head2.h, h: 'f'.repeat(64) };
+          fs.appendFileSync(jf(), JSON.stringify(forged) + '\n');
+          const b2 = await restart(); let vB = {};
+          try { vB = await b2.get('/account/workspace/audit/verify'); } catch (e) { vB = { error: e.message }; } finally { b2.s.kill(); }
+          check('T-0217: when the server stopped between writing an entry and its check value, the check value is restored on start and the record says so; a forged entry is still caught', before.ok === true && vA.ok === true && vA.n >= head.n + 2 && auA.some(e => e.action === 'record-repaired' && e.entry === head.n + 1) && auA.some(e => e.action === 'written-just-before-the-stop') && vB.ok === false, JSON.stringify([before.ok, vA.ok, vA.n, head.n, vA.reason || vA.error, vB.ok, vB.reason || vB.error]));
+        }
         check('T-0205: the Your requests page has the switch', /id="rq-mail"/.test(pg17) && /\/api\/requests\/mail/.test(pg17) && /Email me when one of my requests moves/.test(pg17));
       } finally { srv17.kill(); try { fs.rmSync(dir17, { recursive: true, force: true }); } catch {} }
     }
+    console.log('scheduled and webhook messages say so (T-0214)');
+    { const app214 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8'), land214 = fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8'), ag214 = fs.readFileSync(path.join(APP, 'agent', 'chamber-agent.py'), 'utf8');
+      check('T-0214: the app puts a Scheduled or Webhook tag next to the name of a message nobody typed, linking to that schedule or webhook on the Account page', /function autoTag\(m\)/.test(app214) && /\$\{esc\(m\.username\)\}<\/span>\$\{autoTag\(m\)\}/.test(app214) && /Nobody typed this just now/.test(app214) && /href="\/billing#\$\{sched \? 'sched-'/.test(app214));
+      check('T-0214: the Account page gives every schedule and webhook an address the tag can open, and agents are told the same thing', /id="sched-\$\{esc\(s\.id\)\}"/.test(land214) && /id="hook-\$\{esc\(h\.id\)\}"/.test(land214) && /def auto_hint\(m\)/.test(ag214) && /\{auto_hint\(msg\)\}/.test(ag214)); }
     console.log('GitHub issues link (T-0197)');
     { const ghCalls = [], ghIssues = [
         { number: 1, title: 'Checkout button does nothing on Safari', body: 'Tap Pay, nothing happens.', labels: [{ name: 'chamber' }], user: { login: 'cust1' }, html_url: 'https://github.com/o/r/issues/1', state: 'open' },

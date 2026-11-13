@@ -270,7 +270,47 @@ function remindTargets(wsId, ticket) {
   return may.filter(u => lc(u) !== lc(ticket.proposed_by) && !done.has(lc(u)));
 }
 // T-0202: the weekly report. ws.report = { enabled, recipients: [emails], token }. The token makes a private link (no login).
-function reportView(ws) { const r = (ws && ws.report) || {}; return { enabled: !!r.enabled, recipients: Array.isArray(r.recipients) ? r.recipients : [], linkUrl: r.token ? `${PUBLIC_URL}/report/${r.token}` : null }; }
+// T-0217: an address gets the weekly report only after it said yes. ws.report.confirm = { email: { token, ok, askedAt } }. A list that
+// existed before this was added is kept as it is (those addresses were already getting it); the verified account address of someone
+// in the workspace needs no question. Every address has its own link, which also stops the report.
+function reportConfirm(ws) {
+  const r = ws.report || (ws.report = {});
+  if (!r.confirm) { r.confirm = {}; for (const e of r.recipients || []) r.confirm[e] = { token: crypto.randomBytes(18).toString('base64url'), ok: true, kept: true }; }
+  return r.confirm;
+}
+function reportSetRecipients(store, ws, list, by) {                // -> the addresses that were asked just now
+  const conf = reportConfirm(ws), asked = [], mine = new Set(members(store, ws.id).filter(a => verified(a)).map(a => a.email.toLowerCase()));
+  for (const e of Object.keys(conf)) if (!list.includes(e)) delete conf[e];
+  for (const e of list) {
+    if (conf[e]) continue;
+    conf[e] = { token: crypto.randomBytes(18).toString('base64url'), ok: mine.has(e), askedAt: Date.now() };
+    if (conf[e].ok) continue;
+    asked.push(e);
+    const link = `${PUBLIC_URL}/report-mail/${conf[e].token}`;
+    if (TEST_HOOKS) console.log(`[report] confirm link for ${e}: ${link}`);
+    if (mail.enabled) mail.send({ to: e, subject: `Do you want the weekly report for ${ws.name}?`,
+      text: `Hello,\n\n${by} listed this address for a short weekly report from the workspace "${ws.name}" in Chamber: what was done, how long it took and what is waiting. No chat and no code.\n\nNothing is sent unless you say yes. To say yes (or no), open:\n${link}\n\nIf you do not want it, you can also just ignore this message.\n` }).catch(err => console.error('[report] confirm mail failed:', err.message));
+  }
+  ws.report.recipients = list;
+  return asked;
+}
+function reportMailFind(token) {                                   // { ws, name, email, ok } for one address's link, or null
+  if (!ENABLED || !token) return null;
+  for (const ws of Object.values(load().workspaces)) for (const [email, c] of Object.entries((ws.report && ws.report.confirm) || {})) if (c.token && same(c.token, token)) return { ws: ws.id, name: ws.name, email, ok: !!c.ok };
+  return null;
+}
+function reportMailSet(token, what) {                              // 'yes' confirms the address, 'stop' takes it off the list
+  if (!ENABLED || !token) return null;
+  const store = load();
+  for (const ws of Object.values(store.workspaces)) for (const [email, c] of Object.entries((ws.report && ws.report.confirm) || {})) if (c.token && same(c.token, token)) {
+    if (what === 'yes') { c.ok = true; c.confirmedAt = Date.now(); }
+    else { delete ws.report.confirm[email]; ws.report.recipients = (ws.report.recipients || []).filter(e => e !== email); if (!ws.report.recipients.length) ws.report.enabled = false; }
+    save(store); return { ws: ws.id, name: ws.name, email };
+  }
+  return null;
+}
+function reportView(ws) { const r = (ws && ws.report) || {}, rec = Array.isArray(r.recipients) ? r.recipients : [], conf = r.confirm || null;
+  return { enabled: !!r.enabled, recipients: rec, waiting: conf ? rec.filter(e => !(conf[e] && conf[e].ok)) : [], linkUrl: r.token ? `${PUBLIC_URL}/report/${r.token}` : null }; }   // T-0217: + waiting (asked, no yes yet)
 function reportByToken(token) {
   if (!ENABLED || !token) return null;
   for (const ws of Object.values(load().workspaces)) if (ws.report && ws.report.token && same(ws.report.token, token)) return { ws: ws.id, name: ws.name, token: ws.report.token };
@@ -278,8 +318,15 @@ function reportByToken(token) {
 }
 function reportWorkspaces() {
   if (!ENABLED) return [];
-  return Object.values(load().workspaces).filter(ws => ws.report && ws.report.enabled && Array.isArray(ws.report.recipients) && ws.report.recipients.length)
-    .map(ws => ({ ws: ws.id, name: ws.name, recipients: ws.report.recipients.slice(0, 10), linkUrl: ws.report.token ? `${PUBLIC_URL}/report/${ws.report.token}` : null }));
+  const store = load(); let changed = false, out = [];
+  for (const ws of Object.values(store.workspaces)) {
+    if (!(ws.report && ws.report.enabled && Array.isArray(ws.report.recipients) && ws.report.recipients.length)) continue;
+    if (!ws.report.confirm) { reportConfirm(ws); changed = true; }                                   // T-0217: a list from before keeps going, and gets its stop links
+    const conf = ws.report.confirm, ok = ws.report.recipients.filter(e => conf[e] && conf[e].ok).slice(0, 10);
+    if (ok.length) out.push({ ws: ws.id, name: ws.name, recipients: ok, stop: Object.fromEntries(ok.map(e => [e, `${PUBLIC_URL}/report-mail/${conf[e].token}`])), linkUrl: ws.report.token ? `${PUBLIC_URL}/report/${ws.report.token}` : null });
+  }
+  if (changed) save(store);
+  return out;
 }
 // T-0203: the monthly AI budget, set by the owner. ws.budget = { monthlyCents, perAgent: { agentName: cents } }. server.js adds up
 // the spend; these only store and hand out the settings.
@@ -1133,19 +1180,19 @@ async function handle(req, res, url, ctx0) {
       return ctx.json(res, 200, { ok: true, linked: true, tenant: tried.data.tenant, routers: tried.data.count, online: tried.data.online }), true;
     }
     if (p === '/account/workspace/report' && m === 'POST') {    // T-0202: owner or admin: who gets the Monday email, and the private link
-      myWs.report = myWs.report || {};
+      myWs.report = myWs.report || {}; let asked = [];
       if (b?.recipients !== undefined) {
         const list = [...new Set((Array.isArray(b.recipients) ? b.recipients : String(b.recipients).split(/[,\s]+/)).map(s => String(s).trim().toLowerCase()).filter(Boolean))];
         if (list.length > 10) return ctx.json(res, 400, { error: 'At most 10 people get the report by email.' }), true;
         const bad = list.filter(e => !EMAIL_RE.test(e)); if (bad.length) return ctx.json(res, 400, { error: `Not an email address: ${bad.slice(0, 3).join(', ')}` }), true;
-        myWs.report.recipients = list;
+        asked = reportSetRecipients(store, myWs, list, me.username);                              // T-0217: new addresses are asked first
       }
       if (b?.enabled !== undefined) myWs.report.enabled = !!b.enabled;
       if (myWs.report.enabled && !(myWs.report.recipients || []).length) return ctx.json(res, 400, { error: 'Add at least one email address before switching the email on.' }), true;
       if (b?.link === 'make') myWs.report.token = crypto.randomBytes(18).toString('base64url');
       if (b?.link === 'off') delete myWs.report.token;
       save(store); ctx.audit(sess, { action: 'report-settings', enabled: !!myWs.report.enabled, recipients: (myWs.report.recipients || []).length, link: b?.link || undefined }, true);
-      return ctx.json(res, 200, { ok: true, report: reportView(myWs) }), true;
+      return ctx.json(res, 200, { ok: true, report: reportView(myWs), asked }), true;
     }
     if (p === '/account/workspace/role' && m === 'POST') {       // T-0034: owner promotes/demotes a member
       if (!amOwner) return ownerOnly(), true;
@@ -1642,4 +1689,4 @@ function retentionSettings() {                                    // T-0037: [{ 
 function fleetLinkOf(wsId) { return (load().workspaces[wsId] || {}).fleet || null; }                       // T-0153: the stored link record (sealed key + status), or null
 function fleetMark(wsId, patch) { const store = load(); const f = (store.workspaces[wsId] || {}).fleet; if (!f) return; Object.assign(f, patch); save(store); }
 const fleetDir = () => path.dirname(FILE);                                                                  // where fleet-link.key lives (beside accounts.json)
-module.exports = { enabled: ENABLED, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };
+module.exports = { enabled: ENABLED, reportMailFind, reportMailSet, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };

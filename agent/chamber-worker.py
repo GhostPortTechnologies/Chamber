@@ -99,7 +99,12 @@ WORK = os.path.join(HOME, "work")
 STATE = os.path.join(HOME, "state.json")
 DENY = ["*.key", "*.pub", "*.pem", "auth.json", "*tokens*", "*secret*", "*credential*", "*.env", "backups/*", "*.db", "*.sqlite*"] + \
        [p.strip() for p in os.environ.get("WORKER_DENY", "").split(",") if p.strip()]      # 1.5.1: add your own never-deploy patterns
-TOOLS = ["Read", "Edit", "Write", "Grep", "Glob", "Bash(python3 -m pytest:*)", "Bash(python3 -m py_compile:*)",
+# 1.11.0 (T-0217): the AI session is held inside its work folder. Files may be read, changed and searched only under the folder the
+# session runs in (the scoped rules; Grep and Glob follow the Read rule), so it cannot write into the live folder past the worker's
+# checks, nor read keys or other projects on the machine. Before this, plain "Read", "Edit", "Write", "Grep" and "Glob" were allowed
+# and reached any path the worker's user could. TOOL_NAMES is what exists in the session; TOOLS is what is allowed outright.
+TOOL_NAMES = ["Read", "Edit", "Write", "Grep", "Glob", "Bash"]
+TOOLS = ["Read(./**)", "Edit(./**)", "Write(./**)", "Bash(python3 -m pytest:*)", "Bash(python3 -m py_compile:*)",
          "Bash(git diff:*)", "Bash(git status:*)", "Bash(git log:*)"]
 
 # 1.7.0 (T-0191, T-0192): pull-request mode. WORKER_MODE=pr: an approved ticket becomes a branch and a GitHub pull request; nothing
@@ -186,7 +191,7 @@ def git(*a, cwd=REPO): return run(["git", *a], cwd=cwd)
 
 JUNK = (":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc", ":(exclude,glob)**/.pytest_cache/**")   # 1.8.0: what py_compile and pytest leave behind is never part of a change
 def junk(p): parts = p.rstrip("/").split("/"); return "__pycache__" in parts or ".pytest_cache" in parts or p.endswith(".pyc")
-def denied(path): return any(fnmatch.fnmatch(path, pat) for pat in DENY) or path.startswith("/")
+def denied(path): return path.startswith("/") or any(fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(path, "*/" + pat) for pat in DENY)   # 1.11.0 (T-0217): a protected name counts at any depth, not only at the top of the repository
 
 
 def health_ok():
@@ -202,7 +207,7 @@ def health_ok():
     return False
 
 
-WORKER_VERSION = "worker-1.10.1"
+WORKER_VERSION = "worker-1.11.0"
 
 
 def wlog(tid, line, model=None):
@@ -398,7 +403,7 @@ def work(t):
                   "nothing and reply with exactly one line: CANNOT: <where the code actually lives and why you cannot do it here>.")
         env = {k: v for k, v in os.environ.items() if k not in ("CHAMBER_TOKEN", "WORKER_GITHUB_TOKEN")}   # 1.7.0: the model never sees the GitHub key
         env["HOME"] = HOME
-        base = sorted({x.split("(")[0] for x in TOOLS})
+        base = list(TOOL_NAMES)
         cmd = [CLAUDE, "-p", prompt, "--output-format", "json", "--tools", *base, "--allowedTools", *TOOLS,
                "--permission-mode", "dontAsk", "--max-turns", "60"]
         try:
@@ -738,7 +743,7 @@ def work_pr(t):
                   "If the ticket asks for a change to code that is not in this repo, change nothing and reply with exactly one line: "
                   "CANNOT: <where the code actually lives and why you cannot do it here>.")
         env = {k: v for k, v in os.environ.items() if k not in ("CHAMBER_TOKEN", "WORKER_GITHUB_TOKEN")}; env["HOME"] = HOME
-        tools = sorted({x.split("(")[0] for x in TOOLS}); refused = None
+        tools = list(TOOL_NAMES); refused = None
         askdir = ask_dir() if may_ask() else None                        # 1.9.0 (T-0212): the owner lets this worker ask a person, one use at a time
         try:
             if askdir:

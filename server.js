@@ -97,21 +97,44 @@ function audit(sess, entry, always = false) {
   const rec = { ts: Date.now(), actor: sess.username, kind: sess.agent ? 'agent' : 'human', ...entry, rid: scope.rid || undefined };
   if (!sess.agent && scope.ip) rec.ip = scope.ip;
   if (sess.agent) rec.agent = sess.username;                                   // kept for older readers of audit.json
-  const dir = path.dirname(F().data), file = path.join(dir, 'audit.json');
+  const dir = path.dirname(F().data);
+  try { auditRepair(dir); auditAppend(dir, rec); }
+  catch (e) { console.error('[audit] write failed:', e.message); }
+}
+// T-0217: if the server stops in the instant between writing an entry and writing its check value (audit-head.json), the record would
+// afterwards read as "the newest entries were removed" although nobody touched it. Once per workspace after a start: when the newest
+// entry on disk is exactly the one valid next entry after the stored head, the head is brought up to it and the record says so.
+// Anything else (a changed entry, a gap, more than one entry past the head) is left alone and still reads as not intact.
+const auditChecked = new Set();
+function auditRepair(dir) {
+  if (auditChecked.has(dir)) return null; auditChecked.add(dir);
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    const headFile = path.join(dir, 'audit-head.json'); let head = {}; try { head = JSON.parse(fs.readFileSync(headFile, 'utf8')); } catch { /* first chained entry */ }   // T-0194
-    rec.n = (head.n || 0) + 1; rec.prev = head.h || null; rec.h = auditChain.hash(rec);
-    fs.appendFileSync(path.join(dir, `audit-${new Date(rec.ts).toISOString().slice(0, 7)}.jsonl`), JSON.stringify(rec) + '\n', { mode: 0o600 });
-    { const tmpH = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmpH, JSON.stringify({ n: rec.n, h: rec.h, since: head.since || rec.ts }), { mode: 0o600 }); fs.renameSync(tmpH, headFile); }
-    let log = []; try { log = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first entry */ }
-    log.push(rec);
-    if (log.length > AUDIT_RECENT) log = log.slice(-AUDIT_RECENT);
-    const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(log)); fs.renameSync(tmp, file);
-  } catch (e) { console.error('[audit] write failed:', e.message); }
+    const headFile = path.join(dir, 'audit-head.json'); let head; try { head = JSON.parse(fs.readFileSync(headFile, 'utf8')); } catch { return null; }
+    const files = fs.readdirSync(dir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort(); if (!files.length) return null;
+    const lines = fs.readFileSync(path.join(dir, files[files.length - 1]), 'utf8').split('\n').filter(Boolean); if (!lines.length) return null;
+    let r; try { r = JSON.parse(lines[lines.length - 1]); } catch { return null; }
+    if (!r || !Number.isInteger(head.n) || r.n !== head.n + 1 || (r.prev || null) !== (head.h || null) || auditChain.hash(r) !== r.h) return null;
+    const tmp = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify({ n: r.n, h: r.h, since: head.since || r.ts }), { mode: 0o600 }); fs.renameSync(tmp, headFile);
+    auditAppend(dir, { ts: Date.now(), actor: 'chamber', kind: 'system', action: 'record-repaired', entry: r.n, note: 'the server stopped between writing this entry and its check value; the check value was restored when the server started again' });
+    console.log(`[audit] ${path.basename(dir)}: restored the check value for entry ${r.n} (the server had stopped before writing it)`);
+    return r.n;
+  } catch (e) { console.error('[audit] repair check failed:', e.message); return null; }
+}
+function auditAppend(dir, rec) {                                              // one entry onto the chained record, its check value, and the short recent list
+  const file = path.join(dir, 'audit.json');
+  fs.mkdirSync(dir, { recursive: true });
+  const headFile = path.join(dir, 'audit-head.json'); let head = {}; try { head = JSON.parse(fs.readFileSync(headFile, 'utf8')); } catch { /* first chained entry */ }   // T-0194
+  rec.n = (head.n || 0) + 1; rec.prev = head.h || null; rec.h = auditChain.hash(rec);
+  fs.appendFileSync(path.join(dir, `audit-${new Date(rec.ts).toISOString().slice(0, 7)}.jsonl`), JSON.stringify(rec) + '\n', { mode: 0o600 });
+  { const tmpH = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmpH, JSON.stringify({ n: rec.n, h: rec.h, since: head.since || rec.ts }), { mode: 0o600 }); fs.renameSync(tmpH, headFile); }
+  let log = []; try { log = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first entry */ }
+  log.push(rec);
+  if (log.length > AUDIT_RECENT) log = log.slice(-AUDIT_RECENT);
+  const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(log)); fs.renameSync(tmp, file);
 }
 const auditChain = require('./auditchain');                                   // T-0194: tamper-evident activity record
 function verifyAudit(dir) {                                                   // T-0194: walk the record as written and recompute every check value
+  auditRepair(dir);                                                           // T-0217
   let files = []; try { files = fs.readdirSync(dir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort(); } catch { /* no record yet */ }
   const entries = [];
   for (const f of files) fs.readFileSync(path.join(dir, f), 'utf8').split('\n').forEach((line, i) => { if (!line) return; let r; try { r = JSON.parse(line); } catch { r = null; } entries.push(r && typeof r === 'object' ? { ...r, _where: { file: f, line: i + 1 } } : null); });
@@ -941,7 +964,11 @@ function weeklyReportMail(now = new Date()) {                                   
       const file = path.join(path.dirname(F().data), 'report-sent.json'); let st = {}; try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* never sent */ }
       if (st.week === week) return;
       const r = weeklyReport(w.name, from, to, w.linkUrl ? `${w.linkUrl}?week=${week}` : null);
-      for (const addr of w.recipients) { if (TEST_HOOKS) console.log(`[report] mail to ${addr}: ${r.subject}`); if (mail.enabled) mail.send({ to: addr, subject: r.subject, text: r.text }).catch(e => console.error('[report] mail failed:', e.message)); }
+      for (const addr of w.recipients) {                                       // T-0217: each address gets its own link that stops the report
+        const stop = (w.stop || {})[addr], text = r.text + (stop ? `\nTo stop getting this report: ${stop}\n` : '');
+        if (TEST_HOOKS) console.log(`[report] mail to ${addr}: ${r.subject}${stop ? ' | stop ' + stop : ''}`);
+        if (mail.enabled) mail.send({ to: addr, subject: r.subject, text }).catch(e => console.error('[report] mail failed:', e.message));
+      }
       const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify({ week, at: now.getTime(), to: w.recipients.length }), { mode: 0o600 }); fs.renameSync(tmp, file);
       sent.push({ ws: w.ws, week, to: w.recipients, done: r.done, subject: r.subject });
     }, { rid: 'report' });
@@ -963,7 +990,7 @@ function monthStartOf(d) { const x = new Date(d); return new Date(Date.UTC(x.get
 const STANDING_MAX_ACTIVE = 20, STANDING_MAX_DAYS = 90, STANDING_KEEP = 200;
 const STANDING_NEVER = ['*.key', '*.pub', '*.pem', '*.pfx', '*.p12', 'auth.json', '*tokens*', '*secret*', '*credential*', '*.env', '.env*', '*/.env*', 'backups/*', '*.db', '*.sqlite*',
   '.github/*', '.gitlab-ci.yml', '.circleci/*', 'Jenkinsfile', 'azure-pipelines.yml', '.buildkite/*'];   // the worker's never-touch list, plus build pipelines: a pull request that changes those can run code with the repository's secrets
-const STANDING_NEVER_RE = STANDING_NEVER.map(p => new RegExp('^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i'));
+const STANDING_NEVER_RE = STANDING_NEVER.map(p => new RegExp('^(?:.*/)?' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i'));
 function standingPath() { return path.join(path.dirname(F().data), 'standing.json'); }
 function loadStanding() {
   try { const d = JSON.parse(fs.readFileSync(standingPath(), 'utf8')); if (d && Array.isArray(d.items)) return { next: Number.isInteger(d.next) ? d.next : d.items.length + 1, items: d.items }; } catch {}
@@ -1327,6 +1354,22 @@ async function handleRequest(req, res, sess) {                              // [
     return res.end();
   }
 
+  const rmM = url.pathname.match(/^\/report-mail\/([A-Za-z0-9_-]{16,64})$/);    // T-0217: an address says yes to the weekly report, or stops it (no login; the link is the key)
+  if (accounts.enabled && rmM && (method === 'GET' || method === 'POST')) {
+    const page = (title, bodyHtml, code = 200) => { res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' });
+      return res.end(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${escH(title)}</title><style>body{margin:0;background:#fff;color:#1b1f1d;font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:560px;margin:0 auto;padding:40px 18px}h1{font-size:21px}button{font:inherit;padding:9px 16px;border-radius:8px;border:1px solid #0b6b43;background:#0b6b43;color:#fff;cursor:pointer;margin:6px 8px 6px 0}button.plain{background:#fff;color:#1b1f1d;border-color:#9aa5a0}.dim{color:#5b665f;font-size:14px}</style></head><body><main><h1>${escH(title)}</h1>${bodyHtml}<p class="dim">Chamber, ${escH((process.env.CHAMBER_PUBLIC_URL || '').replace(/^https?:\/\//, '').replace(/\/$/, ''))}</p></main></body></html>`); };
+    const found = accounts.reportMailFind(rmM[1]);
+    if (!found) return page('This link is not valid any more', '<p>Nothing was changed. If you want the weekly report, ask the person who runs the workspace to add your address again.</p>', 404);
+    if (method === 'GET') return page(found.ok ? `Weekly report for ${found.name}` : `Do you want the weekly report for ${found.name}?`,
+      `<p>${found.ok ? `<b>${escH(found.email)}</b> gets a short report every Monday: what was done, how long it took, what is waiting. No chat and no code.` : `Someone at <b>${escH(found.name)}</b> listed <b>${escH(found.email)}</b> for a short report every Monday: what was done, how long it took, what is waiting. No chat and no code. Nothing is sent unless you say yes.`}</p>`
+      + (found.ok ? '' : '<form method="post" action="?do=yes"><button type="submit">Yes, send me the report</button></form>') + `<form method="post" action="?do=stop"><button type="submit" class="plain">${found.ok ? 'Stop sending it' : 'No, do not send it'}</button></form>`);
+    const what = url.searchParams.get('do');
+    if (what !== 'yes' && what !== 'stop') return page('Nothing was changed', '<p>That link is incomplete.</p>', 400);
+    const done = accounts.reportMailSet(rmM[1], what);
+    if (!done) return page('This link is not valid any more', '<p>Nothing was changed.</p>', 404);
+    withWorkspace(done.ws, () => audit({ username: 'chamber' }, { action: what === 'yes' ? 'report-recipient-confirmed' : 'report-recipient-stopped', address: done.email.replace(/^(.).*(@.*)$/, '$1…$2') }, true), { rid: 'report-mail' });
+    return page(what === 'yes' ? 'You will get the weekly report' : 'You will not get this report', what === 'yes' ? `<p>The report for <b>${escH(done.name)}</b> goes to <b>${escH(done.email)}</b> every Monday. Every report has a link to stop it.</p>` : `<p><b>${escH(done.email)}</b> is off the list for <b>${escH(done.name)}</b>. Nothing more is sent.</p>`);
+  }
   const reportM = url.pathname.match(/^\/report\/([A-Za-z0-9_-]{16,64})$/);     // T-0202: the private weekly report page (no login; the link is the key)
   if (accounts.enabled && reportM && method === 'GET') {
     const found = accounts.reportByToken(reportM[1]);

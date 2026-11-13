@@ -508,6 +508,7 @@
   }
 .tm-files-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}.tm-files-row img{max-width:140px;max-height:110px;border-radius:6px;border:1px solid var(--line);display:block}.tm-files-row a{overflow-wrap:anywhere}
 #tm-draft{border:1px dashed var(--line-strong);border-radius:8px;padding:10px 12px;margin-top:10px;background:var(--surface)}#tm-draft>div{margin:5px 0;overflow-wrap:anywhere}#tm-draft .draft-head{color:var(--text-dim);font-size:12px}#tm-draft .draft-plan{white-space:pre-wrap;margin-top:2px}
+.auto-tag{display:inline-block;margin:0 6px 0 2px;padding:0 6px;border:1px solid var(--line-strong);border-radius:9px;font-size:11px;line-height:16px;color:var(--text-dim);text-decoration:none;vertical-align:middle;white-space:nowrap}.auto-tag:hover{color:var(--text);border-color:var(--text-dim)}
 </style>
 </head>
 <body>
@@ -871,6 +872,8 @@
         <p class="dim small">Triage (worker 1.3+): before claiming, the worker checks a ticket is about this repo. One it cannot do is left unclaimed with the reason in the ticket's run log, and it tells the approver when it is the only worker online. A ticket that fails after claiming is released, not left in progress.</p></div>
       <div class="aw-step"><b>3. Paste this on the machine</b> <span class="dim small" id="aw-where">(as a user who can sudo; the installer refuses to run without root)</span>
         <pre id="aw-cmd" class="aw-cmd"></pre><div class="aw-row"><button class="btn btn-primary btn-sm" onclick="awCopy()">Copy command</button><span id="aw-copied" class="dim small"></span></div>
+        <div class="aw-row" id="aw-key-row"><button class="btn btn-sm" type="button" onclick="awCopyKey()">Copy key</button><span id="aw-key-copied" class="dim small"></span><span class="dim small">The command asks for the key: paste it then. This keeps the key out of that computer's command history.</span></div>
+        <label class="dim small" style="display:block;margin-top:4px"><input type="checkbox" id="aw-keyin" onchange="awRender()"> Put the key in the command instead (one paste, but the key stays in that computer's command history)</label>
         <div class="dim small" id="aw-signin"></div></div>
       <div class="aw-step"><b>Then check it arrived</b> <span class="dim small">the installer checks itself; this confirms it from Chamber's side</span>
         <div class="aw-row"><button class="btn btn-sm" id="aw-watch-btn" onclick="awWatch()">Start watching for it</button><span id="aw-status" class="small"></span></div>
@@ -1478,6 +1481,15 @@ async function openDM(username) {                                        // [new
 }
 // T-0035/T-0065: one renderer for live messages, older history and search jumps. Avatar + header, grouped by relayout(),
 // attachments (T-0064), full date on hover, own messages get edit / delete actions.
+// T-0214: a message nobody typed just now says so. A schedule posts under the name of the person who set it up (so agents treat it
+// as that person's request), which looked exactly as if that person had written it. The tag links to that schedule or webhook.
+function autoTag(m) {
+  const s = String(m.source || ''), sched = /^schedule:([a-f0-9]{1,16})$/.exec(s), hook = /^webhook:([a-f0-9]{1,16})$/.exec(s);
+  if (!sched && !hook) return '';
+  const tip = sched ? `Posted automatically by a schedule ${m.username} set up. Nobody typed this just now. Tap to see the schedule (Account page, Automation).`
+                    : 'Posted automatically when another service called a webhook. Nobody typed this just now. Tap to see the webhook (Account page, Automation).';
+  return `<a class="auto-tag" href="/billing#${sched ? 'sched-' + esc(sched[1]) : 'hook-' + esc(hook[1])}" target="_blank" rel="noopener" title="${escA(tip)}" aria-label="${escA(tip)}">${sched ? 'Scheduled' : 'Webhook'}</a>`;
+}
 function renderMsg(m, users) {
   const d = new Date(m.ts), day = dayKey(d), t = d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' }), full = d.toLocaleString();
   if (m.type === 'system') return `<div class="msg system-msg" data-id="${esc(m.id)}" data-user="" data-ts="${m.ts}" data-day="${day}">${esc(m.text)}</div>`;
@@ -1495,7 +1507,7 @@ function renderMsg(m, users) {
   }
   return `<div class="msg${mentionsMe ? ' mentions-me' : ''}${m.reply_to ? ' is-reply' : ''}${m.type === 'status' ? ' status' : ''}${m.pinned ? ' pinned-msg' : ''}" data-id="${esc(m.id)}" data-ver="${m.updated || m.edited || m.deleted || ''}" data-user="${escA(m.username)}" data-ts="${m.ts}" data-day="${day}"${m.reply_to ? ` data-reply="${escA(m.reply_to)}"` : ''} tabindex="-1">`
     + `<span class="gutter">${avatar(m.username, role)}<time class="t-small">${t}</time></span>`
-    + `<div class="msg-main">${quote}<div class="msg-head"><span class="user ${role}">${esc(m.username)}</span><time class="time" data-ts="${m.ts}" title="${full}">${fmtRel(m.ts)}</time>${m.pinned ? `<span class="pin-mark" title="pinned by ${escA(m.pinned.by || '')}">📌 pinned</span>` : ''}</div>${body}${renderAtts(m.attachments, m)}${renderRun(m)}${renderReacts(m)}<div class="thread-sum" data-for="${esc(m.id)}" onclick="openThread('${escJ(m.id)}')"></div></div>${actions}</div>`;
+    + `<div class="msg-main">${quote}<div class="msg-head"><span class="user ${role}">${esc(m.username)}</span>${autoTag(m)}<time class="time" data-ts="${m.ts}" title="${full}">${fmtRel(m.ts)}</time>${m.pinned ? `<span class="pin-mark" title="pinned by ${escA(m.pinned.by || '')}">📌 pinned</span>` : ''}</div>${body}${renderAtts(m.attachments, m)}${renderRun(m)}${renderReacts(m)}<div class="thread-sum" data-for="${esc(m.id)}" onclick="openThread('${escJ(m.id)}')"></div></div>${actions}</div>`;
 }
 let editingId = null; let repoUrl = '';                                      // T-0047: filled from /api/me
 const msgCache = {}; let replyingTo = null;                                   // T-0049
@@ -2264,18 +2276,19 @@ function openAgentWizard() {
 }
 function closeAgentWizard() { document.getElementById('agent-wizard').classList.remove('show'); clearInterval(awTimer); awTimer = null; }
 function awRender() {
+  const keyIn = document.getElementById('aw-keyin').checked; document.getElementById('aw-key-row').hidden = keyIn;   // T-0217: by default the command asks for the key instead of carrying it
   const kind = awKind(), name = document.getElementById('aw-name').value.trim() || (kind === 'worker' ? 'chamber-worker' : 'my-agent');
   document.getElementById('aw-connector-fields').hidden = kind === 'worker' || kind === 'mcp'; document.getElementById('aw-worker-fields').hidden = kind !== 'worker';
   if (kind === 'mcp') {                                                        // T-0198: an MCP server for an AI tool the person already uses; no root, the key in a file only they can read
     const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN';
-    document.getElementById('aw-cmd').textContent = `curl -fsSLo ~/.local/bin/chamber-mcp --create-dirs ${location.origin}/chamber-mcp.py && chmod +x ~/.local/bin/chamber-mcp \\\n    && ~/.local/bin/chamber-mcp --setup --url ${location.origin} --token ${awQ(token)}`;
+    document.getElementById('aw-cmd').textContent = `curl -fsSLo ~/.local/bin/chamber-mcp --create-dirs ${location.origin}/chamber-mcp.py && chmod +x ~/.local/bin/chamber-mcp \\\n    && ~/.local/bin/chamber-mcp --setup --url ${location.origin} --token ${keyIn ? awQ(token) : '-'}`;
     document.getElementById('aw-where').textContent = '(in a terminal on the computer where your AI tool runs, as yourself, no sudo; it needs python3)';
     document.getElementById('aw-signin').innerHTML = 'It checks the key, saves it in a file only you can read, and prints the line that adds it to Claude Code, Codex or Cursor. Your AI can then read rooms and tickets, post, propose tickets and add notes, never approve. Everything it does is on the record under this name, and it shows as online while your AI tool is in use.';
     document.getElementById('aw-copied').textContent = ''; return;
   }
   if (kind === 'laptop') {                                                     // T-0186: no root, everything in the user's home folder
     const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN', cmd = document.getElementById('aw-commanders').value.trim(), rooms = document.getElementById('aw-rooms').value.trim(), be = document.getElementById('aw-backend').value, model = document.getElementById('aw-model').value.trim();
-    const lp = ['cd /path/to/your/project', `curl -fsSL ${location.origin}/laptop.sh | sh -s -- --token ${awQ(token)}`];
+    const lp = ['cd /path/to/your/project', `curl -fsSL ${location.origin}/laptop.sh | sh -s -- --token ${keyIn ? awQ(token) : '-'}`];
     if (cmd) lp.push(`--commanders ${awQ(cmd)}`); if (rooms && rooms !== 'general') lp.push(`--rooms ${awQ(rooms)}`); if (be !== 'claude') lp.push(`--backend ${be}`); if (model) lp.push(`--model ${awQ(model)}`);
     document.getElementById('aw-cmd').textContent = lp[0] + '\n' + lp.slice(1).join(' \\\n    ');
     document.getElementById('aw-where').textContent = '(in a terminal on your Mac or Linux computer, as yourself, no sudo. Change the first line to your project folder. Add --background to keep it running after you close the terminal.)';
@@ -2284,7 +2297,7 @@ function awRender() {
   }
   document.getElementById('aw-where').textContent = '(as a user who can sudo; the installer refuses to run without root)';
   const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN';
-  const parts = [`curl -fsSL ${location.origin}/install.sh | sudo bash -s --`, `--role ${kind}`, `--token ${awQ(token)}`];
+  const parts = [`curl -fsSL ${location.origin}/install.sh | sudo bash -s --`, `--role ${kind}`, `--token ${keyIn ? awQ(token) : '-'}`];
   if (kind === 'connector') {
     const cmd = document.getElementById('aw-commanders').value.trim(), rooms = document.getElementById('aw-rooms').value.trim(), be = document.getElementById('aw-backend').value, model = document.getElementById('aw-model').value.trim();
     if (cmd) parts.push(`--commanders ${awQ(cmd)}`); if (rooms && rooms !== 'general') parts.push(`--rooms ${awQ(rooms)}`);
@@ -2313,6 +2326,7 @@ async function awCreateToken() {                                            // T
     document.getElementById('aw-token').value = d.token; st.textContent = '✓ Key created and put into the command below. It is shown only this once, so copy the command now.'; document.getElementById('aw-mkkey').disabled = true; awRender();
   } catch (e) { st.textContent = 'Could not reach the server. Try again.'; }
 }
+async function awCopyKey() { const k = document.getElementById('aw-token').value.trim(), el = document.getElementById('aw-key-copied'); if (!k) { el.textContent = 'make the key first (step 1)'; return; } try { await navigator.clipboard.writeText(k); el.textContent = 'copied \u2713'; } catch { el.textContent = 'open "I already have a key" above and copy it from there'; } }   // T-0217
 async function awCopy() { try { await navigator.clipboard.writeText(document.getElementById('aw-cmd').textContent); document.getElementById('aw-copied').textContent = 'copied ✓'; } catch { document.getElementById('aw-copied').textContent = 'select the text and copy it'; } }
 function awWatch() {
   const name = document.getElementById('aw-name').value.trim(); if (!name) return;

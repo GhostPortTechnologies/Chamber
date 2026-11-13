@@ -5,6 +5,7 @@ Context Protocol) work with Chamber directly (T-0198). Python 3.9+ standard libr
 Set up (the Add an agent window in Chamber writes this line with your key in it):
   curl -fsSLo ~/.local/bin/chamber-mcp --create-dirs https://chamber.ghostporttechnologies.com/chamber-mcp.py && chmod +x ~/.local/bin/chamber-mcp
   ~/.local/bin/chamber-mcp --setup --url https://chamber.ghostporttechnologies.com --token chk_...
+With --token - (or no --token) it asks for the key instead, so the key is not left in your command history.
 --setup saves the address and the agent key in ~/.config/chamber/mcp.env (only you can read it), checks the key with Chamber, and
 prints the exact line for Claude Code, Cursor and Codex. The key is then not in any of those tools' settings files. CHAMBER_URL and
 CHAMBER_TOKEN in the environment (or --env FILE) work too.
@@ -20,7 +21,7 @@ SPDX-License-Identifier: AGPL-3.0-only  |  Copyright (C) 2026 GhostPort Technolo
 """
 import calendar, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]          # newest first; we answer with the client's if we know it
 DEFAULT_ENV = os.path.expanduser("~/.config/chamber/mcp.env")
 TID_RE, SID_RE = re.compile(r"^T-\d{4}$"), re.compile(r"^S-\d{1,5}$")
@@ -255,6 +256,10 @@ def setup(argv):
     arg = lambda k: argv[argv.index(k) + 1] if k in argv and argv.index(k) + 1 < len(argv) else ""
     url, token = (arg("--url") or "https://chamber.ghostporttechnologies.com").rstrip("/"), arg("--token")
     path = os.path.expanduser(arg("--env") or DEFAULT_ENV)
+    if token in ("", "-"):                                               # 1.1.0 (T-0217): ask for the key, so it is not left in the command history
+        import getpass
+        try: token = getpass.getpass("Paste the agent key from Chamber (it starts with chk_ and will not be shown): ").strip()
+        except (EOFError, KeyboardInterrupt): token = ""
     if not token.startswith("chk_"): sys.exit("chamber-mcp: --token must be an agent key from Chamber (it starts with chk_). Make one in Chamber: gear menu > Add an agent.")
     p = url_problem(url)
     if p: sys.exit("chamber-mcp: " + p)

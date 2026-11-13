@@ -33,8 +33,16 @@ run() { if [ $DRY = 1 ]; then echo "  (dry) $*"; else "$@"; fi; }
 case "$ROLE" in connector|worker) ;; *) red "--role connector or --role worker is required"; exit 2;; esac
 command -v python3 >/dev/null || { red "python3 is required"; exit 1; }
 command -v curl >/dev/null || { red "curl is required"; exit 1; }
-if [ $UNINSTALL = 0 ] && [ $DRY = 0 ] && [ -z "$TOKEN" ] && ! grep -qs '^CHAMBER_TOKEN=chk_' "/etc/chamber-$( [ $ROLE = worker ] && echo worker || echo agent ).env"; then
-  red "--token chk_... is required the first time (Chamber -> Account -> AI agents -> Create token)"; exit 2; fi
+# T-0217: "--token -" (or no --token the first time) asks for the key on the terminal, so it is not left in this machine's command history.
+ASK_KEY=0; if [ "$TOKEN" = "-" ]; then TOKEN=""; ASK_KEY=1; fi
+if [ $UNINSTALL = 0 ] && [ $DRY = 0 ] && [ -z "$TOKEN" ] && { [ $ASK_KEY = 1 ] || ! grep -qs '^CHAMBER_TOKEN=chk_' "/etc/chamber-$( [ $ROLE = worker ] && echo worker || echo agent ).env"; }; then
+  if (exec < /dev/tty) 2>/dev/null; then
+    printf 'Paste the agent key from Chamber (it starts with chk_ and will not be shown), then press Enter: ' > /dev/tty
+    stty -echo < /dev/tty 2>/dev/null || true; IFS= read -r TOKEN < /dev/tty || TOKEN=""; stty echo < /dev/tty 2>/dev/null || true; printf '\n' > /dev/tty
+    TOKEN=$(printf '%s' "$TOKEN" | tr -d '[:space:]')
+  fi
+  case "$TOKEN" in chk_*) ;; *) red "An agent key is needed the first time (it starts with chk_). Run this in a terminal and paste the key when asked, or pass --token chk_... (Chamber -> gear menu -> Add an agent)."; exit 2;; esac
+fi
 
 if [ $ROLE = connector ]; then USER_=chamber-agent; OPT=/opt/chamber-agent; ENVF=/etc/chamber-agent.env; UNIT=chamber-agent; SRC=/agent/chamber-agent.py; SCRIPT=chamber-agent.py   # T-0174: was /source, which is the whole source archive, so step 3 failed for every new connector
 else USER_=chamber-worker; OPT=/opt/chamber-worker; ENVF=/etc/chamber-worker.env; UNIT=chamber-worker; SRC=/worker; SCRIPT=chamber-worker.py

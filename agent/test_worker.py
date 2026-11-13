@@ -301,6 +301,12 @@ sent7 = json.dumps([b for _, _, b in said]) + json.dumps(GH["posts"][0][1] if GH
 check("review 13 Nov: what the AI wrote goes to the room, the ticket and the pull request with anything that looks like a key taken out", "ghp_aaaa" not in sent7 and "[redacted secret]" in sent7 and "[redacted secret]" in (GH["posts"][0][1].get("body", "") if GH["posts"] else ""), sent7[-300:])
 srcR = open(os.path.join(HERE, "chamber-worker.py")).read(); liveR = srcR.split("def work(t):", 1)[1].split("\ndef ", 1)[0]
 check("review 13 Nov: the live-folder job runs its checks the same way", liveR.count('"py_compile", f], cwd=wt, env=env)') == 1 and liveR.count('"pytest", "-q", "-x"], cwd=wt, timeout=600, env=env)') == 1)
+print("T-0217: the AI session is held inside its work folder; protected names count at any depth")
+srcT = open(os.path.join(HERE, "chamber-worker.py")).read()
+check("1.11.0: the session may read, change and search files only inside its work folder: scoped rules, no unscoped Read, Edit, Write, Grep or Glob among what is allowed outright, and all six tools still exist",
+      W.TOOLS[:3] == ["Read(./**)", "Edit(./**)", "Write(./**)"] and not any(t in W.TOOLS for t in ("Read", "Edit", "Write", "Grep", "Glob")) and W.TOOL_NAMES == ["Read", "Edit", "Write", "Grep", "Glob", "Bash"] and srcT.count("list(TOOL_NAMES)") == 2, W.TOOLS)
+check("1.11.0: a session's command line carries exactly that", "--tools Bash Edit Glob Grep Read Write --allowedTools Read(./**) Edit(./**) Write(./**) Bash(python3 -m pytest:*)" in argtxt, argtxt[:260])
+check("1.11.0: a protected name counts at any depth, not only at the top of the repository", W.denied("config/auth.json") and W.denied("deploy/backups/dump.sql") and W.denied("a/b/server.pem") and W.denied("auth.json") and W.denied("backups/x") and not W.denied("src/authjson.py") and not W.denied("docs/backups.md") and not W.denied("app.py"))
 del os.environ["FAKE_SLEEP"]; ghs.shutdown()
 for k in ("WORKER_MODE", "WORKER_GITHUB_TOKEN", "WORKER_GITHUB_API", "WORKER_GITHUB_REPO", "WORKER_PARALLEL", "FAKE_ENV_OUT"): os.environ.pop(k, None)
 

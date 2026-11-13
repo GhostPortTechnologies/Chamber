@@ -192,6 +192,10 @@ async function run(size) {
       await page.fill('#aw-name', 'check-bot-' + size); await page.click('#aw-mkkey');
       // 2026-11-13: this used to wait for "--token chk_<letter>", which the placeholder chk_PASTE_THE_TOKEN also matches, so now and then the
       // command was read before the real key had come back and the check failed for no reason. Wait for a key that is not the placeholder.
+      await page.waitForFunction(() => document.getElementById('aw-token').value.startsWith('chk_') && /--token -( |$)/m.test(document.getElementById('aw-cmd').textContent));   // T-0217: by default the command asks for the key
+      const cmd0 = await page.locator('#aw-cmd').textContent(), keyRow = await page.locator('#aw-key-row').isVisible(), fits0 = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
+      check(`${size}: by default the install command asks for the key instead of carrying it, and the key has its own Copy button`, /--token -( |$)/m.test(cmd0) && !/chk_/.test(cmd0) && keyRow && fits0, cmd0); await shot('add-agent-ask-key');
+      await page.check('#aw-keyin');
       await page.waitForFunction(() => { const t = document.getElementById('aw-cmd').textContent; return /--token '?chk_/.test(t) && !/PASTE/.test(t); });
       const cmd = await page.locator('#aw-cmd').textContent();
       check(`${size}: Add an agent makes the key itself and writes the full install command`, /install\.sh \| sudo bash/.test(cmd) && /--role connector/.test(cmd) && /--commanders /.test(cmd) && !/PASTE/.test(cmd), cmd.replace(/chk_[A-Za-z0-9_-]+/, "chk_…")); await shot('add-agent');
@@ -285,6 +289,19 @@ async function run(size) {
       await item.locator('button', { hasText: 'Deny' }).click(); await page.locator('#ask-bar').waitFor({ state: 'hidden' });
       let left = 9; for (let i = 0; i < 20 && left; i++) { await sleep(150); left = asks(await notes()).length; }
       check(`${size}: a question answered in the app takes its notification off this device`, before === 1 && left === 0, JSON.stringify({ before, left }));
+    });
+    await step('a scheduled message says it was scheduled', async () => {                              // T-0214
+      const made = await page.evaluate(async () => {
+        const r = await fetch('/account/workspace/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ spec: '* * * * *', tz: 'UTC', room: 'general', text: 'Scheduled check: is everything still running?' }) });
+        const d = await r.json(); await fetch('/api/_test/tick?at=' + Date.now());
+        return { status: r.status, id: d.schedule && d.schedule.id };
+      });
+      await page.click('.tab[data-view="chat"]'); await page.evaluate(() => { if (currentRoom !== 'general') switchRoom('general'); });
+      const tag = page.locator('.msg', { hasText: 'Scheduled check: is everything still running?' }).last().locator('.auto-tag'); await tag.waitFor(); await shot('scheduled-tag');
+      const info = await tag.evaluate(a => ({ text: a.textContent, href: a.getAttribute('href'), title: a.getAttribute('title'), plain: document.querySelectorAll('.msg .auto-tag').length, all: document.querySelectorAll('.msg').length }));
+      const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
+      check(`${size}: a message a schedule posted carries a Scheduled tag next to the name, says nobody typed it, and links to that schedule; ordinary messages have no tag`, made.status === 201 && info.text === 'Scheduled' && info.href === '/billing#sched-' + made.id && /Nobody typed this just now/.test(info.title || '') && info.plain < info.all && fits, JSON.stringify({ made, info, fits }));
+      await page.evaluate(async id => { await fetch('/account/workspace/schedules/' + id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ delete: true }) }); }, made.id);
     });
     await step('accent row: RGB and the custom colour', async () => {                            // 2026-11-13: RGB added; the colour chooser used to look like a sixth ready-made colour
       await page.click('.tab[data-view="chat"]'); await page.click('#gear-btn'); await page.locator('#theme-picker').waitFor();

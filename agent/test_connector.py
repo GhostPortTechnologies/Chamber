@@ -295,7 +295,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.25.0")
+check("the connector reports its version", m.AGENT_VERSION == "3.26.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -749,6 +749,18 @@ st_ap = {"proposals": {t: {"room": "general", "msg_id": None, "has_diff": True} 
 ma.save_state = lambda s: None; ma.LAST_APPROVED_CHECK = 0; ma.apply_approved(st_ap)
 check("a ticket approved in advance by a standing approval is never applied as a patch from here", "T-0101" not in applied and st_ap["proposals"]["T-0101"].get("done") == "standing", (applied, st_ap["proposals"]["T-0101"]))
 check("a change that is not the version a person approved is refused and said so; the approved one is applied", applied == ["T-0103"] and st_ap["proposals"]["T-0102"].get("done") == "reported" and any(p.startswith("/api/tickets/T-0102/") and "not the version alice approved" in n for p, n in noted) and st_ap["proposals"]["T-0103"].get("done") == "applied", (applied, noted, st_ap["proposals"]))
+print("scheduled and webhook messages say so (3.26.0, T-0214)")
+m214 = load("ollama", "m")
+h_s = {"id": "s1", "ts": 1794583200000, "username": "alice", "text": "@test-bot DIGEST: what happened yesterday?", "source": "schedule:597f1dca"}
+h_w = {"id": "w1", "ts": 1794583260000, "username": "deploy-bot", "text": "**CI** webhook:\nbuild failed", "source": "webhook:ab12cd34"}
+h_p = {"id": "p1", "ts": 1794583320000, "username": "alice", "text": "I never asked that. @test-bot who did?"}
+dt214 = m214.data_text("general", [h_s, h_w, h_p], h_p)
+check("in the conversation the agent sees, a scheduled post and a webhook post are marked as automatic, and a typed message is not",
+      "alice (posted automatically by a schedule alice set up; nobody typed this just now): @test-bot DIGEST" in dt214 and "deploy-bot (posted automatically by a webhook, when another service called it; nobody typed this): **CI** webhook" in dt214
+      and "alice: I never asked that." in dt214 and dt214.rstrip().endswith("The message to answer, from alice:\nI never asked that. @test-bot who did?"), dt214[-700:])
+dt214b = m214.data_text("general", [h_s], h_s)
+check("when the message to answer is itself a scheduled post, the agent is told so, and still answers the person who set the schedule up", "The message to answer, from alice (posted automatically by a schedule alice set up; nobody typed this just now):" in dt214b, dt214b[-300:])
+check("only a schedule or a webhook gets the mark", m214.auto_hint({"username": "a", "source": "ask:A-1"}) == "" and m214.auto_hint({"username": "a"}) == "" and m214.auto_hint({"username": "a", "source": "reminder"}) == "")
 sys.argv = ["chamber-agent.py"]
 srv.shutdown()
 print(f"\n{passed} passed, {failed} failed")

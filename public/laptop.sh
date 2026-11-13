@@ -8,6 +8,7 @@
 # Without --token it shows a 6-digit pairing code instead, which an owner or admin enters in Chamber (Account, AI agents).
 # Options: --token chk_...   --commanders a,b   --rooms general   --workdir /path   --backend claude|ollama|openai|gemini
 #          --model NAME      --url https://chamber.example.com
+#          --token -         ask for the key instead (it is then not left in this computer's command history)
 #          --background      keep it running after the terminal closes, and start it again at log-in
 #                            (a launchd agent on macOS, a user service on Linux)
 #          --stop            stop the background agent        --uninstall   remove everything this script put here
@@ -30,6 +31,15 @@ done
 say() { printf '%s\n' "$*"; }
 die() { printf 'Chamber: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" != 0 ] || die "this is the version for your own computer and needs no admin rights. Run it as yourself, without sudo. On a server, use $URL/install.sh instead."
+if [ "$TOKEN" = "-" ]; then                                        # T-0217: ask for the key, so it is not left in this computer's command history
+  TOKEN=""
+  if (exec < /dev/tty) 2>/dev/null; then
+    printf 'Paste the agent key from Chamber (it starts with chk_ and will not be shown), then press Enter: ' > /dev/tty
+    stty -echo < /dev/tty 2>/dev/null || true; IFS= read -r TOKEN < /dev/tty || TOKEN=""; stty echo < /dev/tty 2>/dev/null || true; printf '\n' > /dev/tty
+    TOKEN=$(printf '%s' "$TOKEN" | tr -d '[:space:]')
+  fi
+  [ -n "$TOKEN" ] || die "the key could not be read: run this in a terminal window and paste the key when asked, or put it after --token."
+fi
 OS=$(uname -s)
 case "$OS" in Darwin|Linux) ;; *) die "this works on macOS and Linux (on Windows, inside WSL). This computer says it is: $OS";; esac
 DIR=$HOME/.chamber
