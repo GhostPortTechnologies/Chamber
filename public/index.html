@@ -1153,6 +1153,10 @@ function connectEvents() {
 function enterChamber(username, role) {                                  // [new] start the app for a signed-in user
     connectEvents();
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});   // T-0013: installable
+    if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => {    // T-0210: a tap on a question's notification brings the open app to that question
+      const h = e.data && e.data.kind === 'chamber-open' && String(e.data.url || '').match(/#m=[a-z0-9]+$/i); if (!h) return;
+      if (location.hash === h[0]) openHash(); else location.hash = h[0];
+    });
     currentUser = username;
     currentRole = role;
     document.getElementById('login-overlay').classList.add('hidden');
@@ -2373,6 +2377,10 @@ async function loadAsks() {
   try { const r = await fetch(`${API}/api/asks?status=waiting`); if (!r.ok) return; asksCache = (await r.json()).asks || []; } catch { return; }
   renderAsks();
   clearInterval(asksTimer); asksTimer = asksCache.length ? setInterval(askTick, 1000) : null;
+  clearAskNotes();
+}
+function clearAskNotes() {                                                      // T-0210: a question answered here (or out of time) takes its notification off this device (public/sw.js does it)
+  try { if ('serviceWorker' in navigator) navigator.serviceWorker.ready.then(reg => reg.active && reg.active.postMessage({ kind: 'chamber-asks', live: asksCache.filter(a => a.status === 'waiting').map(a => a.id) })).catch(() => {}); } catch {}
 }
 function askLeft(a) { const s = Math.max(0, Math.round((a.expiresAt - Date.now()) / 1000)); return s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${s}s`; }
 function askTick() {                                                          // the countdown only; the buttons are not redrawn under a finger
@@ -2384,7 +2392,7 @@ function renderAsks() {
   const list = asksCache.filter(a => a.room === currentRoom && a.status === 'waiting' && a.expiresAt > Date.now());
   bar.hidden = !list.length;
   bar.innerHTML = list.map(a => `<div class="ask-item" data-ask="${esc(a.id)}">
-    <div><b>${esc(a.agent)}</b> asks to ${a.tool === 'Bash' ? 'run this command:' : esc(a.summary)}</div>${a.tool === 'Bash' ? `<pre>${esc(a.summary.replace(/^run this command: /, ''))}</pre>` : ''}
+    <div><b>${esc(a.agent)}</b>${a.ticket ? ` (working on <a href="#" onclick="openTicketModal('${escJ(a.ticket)}');return false">${esc(a.ticket)}</a>)` : ''} asks to ${a.tool === 'Bash' ? 'run this command:' : esc(a.summary)}</div>${a.tool === 'Bash' ? `<pre>${esc(a.summary.replace(/^run this command: /, ''))}</pre>` : ''}
     <div class="ask-btns">${a.canAnswer ? `<button class="btn btn-primary btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','allow')">Allow once</button><button class="btn btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','deny')">Deny</button>` : '<span class="dim small">Waiting for someone who may approve.</span>'}
     <span class="dim small">${esc(a.id)} · no answer in <span data-left="${esc(a.id)}">${askLeft(a)}</span> means no</span></div></div>`).join('');
 }

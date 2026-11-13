@@ -344,7 +344,7 @@
       <div id="ws-actions"></div>
       <div class="msg" id="ws-msg"></div>
       <h2 class="sec">Notifications</h2>
-      <p class="sub" id="pn-sub">Get a notification on this device when someone mentions you or sends you a direct message. On iPhone, first add Chamber to your home screen (Share → Add to Home Screen), then open it from there.</p>
+      <p class="sub" id="pn-sub">Get a notification on this device when someone mentions you or sends you a direct message. When an agent's question is waiting for your answer, the notification shows the exact command with <b>Allow once</b> and <b>Deny</b> (Chrome and Edge, on Android and on a computer), so one tap answers it. On iPhone, first add Chamber to your home screen (Share → Add to Home Screen), then open it from there.</p>
       <button class="btn ghost" id="pn-enable" type="button">Enable on this device</button> <button class="btn ghost" id="pn-clear" type="button" hidden>Turn off everywhere</button>
       <div class="msg" id="pn-msg"></div>
       <h2 class="sec">Security</h2>
@@ -855,7 +855,7 @@
     $('tok-box').hidden = false;
     $('tok-list').innerHTML = d.tokens.length ? d.tokens.map(t => `<div class="row-item"><span>${esc(t.name)} <span class="pill">${esc(t.username)}</span><br><small class="meta">${t.lastUsed ? 'last used ' + new Date(t.lastUsed).toLocaleString() : 'never used'}</small><br><label class="meta ask-toggle"><input type="checkbox" data-mayask="${esc(t.id)}"${t.mayAsk ? ' checked' : ''}> may ask to run things (you tap Allow or Deny)</label></span><a href="#" data-revoke="${esc(t.id)}" class="danger">revoke</a></div>`).join('') : '<p class="empty">No agent tokens yet. Create one below, or pair a device with a 6-digit code.</p>';
     document.querySelectorAll('[data-mayask]').forEach(c => c.addEventListener('change', async () => {   // T-0188
-      try { const r = await api('/account/workspace/tokens/ask', { id: c.dataset.mayask, on: c.checked }); show($('tok-msg'), r.mayAsk ? 'This agent may now ask. Each question appears in the room with Allow once and Deny for the people who may approve; no answer means no. It needs connector 3.22 or newer.' : 'Asking is off for this agent.', 'ok'); }
+      try { const r = await api('/account/workspace/tokens/ask', { id: c.dataset.mayask, on: c.checked }); show($('tok-msg'), r.mayAsk ? 'This agent may now ask. Each question appears in the room with Allow once and Deny for the people who may approve; no answer means no. It needs connector 3.22 or newer, or ticket worker 1.9 or newer in pull-request mode.' : 'Asking is off for this agent.', 'ok'); }
       catch (err) { c.checked = !c.checked; show($('tok-msg'), err.message, 'err'); } }));
     document.querySelectorAll('[data-revoke]').forEach(a => a.addEventListener('click', async e => { e.preventDefault();
       if (a.textContent !== 'confirm revoke') { a.textContent = 'confirm revoke'; return; }

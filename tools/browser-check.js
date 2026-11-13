@@ -227,6 +227,7 @@ async function run(size) {
       const made = await page.evaluate(async () => {
         const k = await (await fetch('/account/workspace/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Asker', username: 'asker-' + Date.now().toString(36).slice(-5) }) })).json();
         await fetch('/account/workspace/tokens/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: k.id, on: true }) });
+        sessionStorage.setItem('bcAsker', k.token || '');                        // T-0210: the notification step asks with the same agent
         const r = await fetch('/api/asks', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + k.token }, body: JSON.stringify({ room: 'general', tool: 'Bash', summary: 'run this command: npm test -- --watch=false', waitSec: 300 }) });
         return { status: r.status, err: k.error };
       });
@@ -236,6 +237,48 @@ async function run(size) {
       check(`${size}: a question from an agent shows in the room with the exact command, Allow once and Deny, inside the screen`, made.status === 201 && /npm test -- --watch=false/.test(txt) && /Allow once/.test(txt) && /Deny/.test(txt) && fits, JSON.stringify({ made, txt: txt.slice(0, 160), fits }));
       await item.locator('button', { hasText: 'Allow once' }).click(); await page.locator('#ask-bar').waitFor({ state: 'hidden' });
       check(`${size}: Allow once answers it and the question goes away`, true);
+    });
+    await step('a question arrives as a notification with Allow once / Deny', async () => {       // T-0210
+      // The test browser (headless shell) cannot display notifications at all, so the two display calls of the service worker are
+      // replaced by a recorder. Everything else is the real thing: the push event, the worker's own request for the waiting
+      // questions and its answer, both over the signed-in session.
+      const sw = await page.evaluate(async () => { const reg = await navigator.serviceWorker.ready; await new Promise(r => setTimeout(r, 300)); return { active: !!reg.active, max: Notification.maxActions || 0 }; });
+      const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 8000 });
+      await worker.evaluate(() => { const shown = self.__shown = [];
+        self.registration.showNotification = async (title, o) => { const old = shown.findIndex(n => n.tag === (o || {}).tag); if (old >= 0) shown.splice(old, 1); const n = { title, ...(o || {}), close() { const i = shown.indexOf(n); if (i >= 0) shown.splice(i, 1); } }; shown.push(n); };
+        self.registration.getNotifications = async () => shown.slice(); });
+      const made = await page.evaluate(async () => {
+        const token = sessionStorage.getItem('bcAsker');
+        const ask = async cmd => { const r = await fetch('/api/asks', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ room: 'general', tool: 'Bash', summary: 'run this command: ' + cmd, waitSec: 300 }) }); return (await r.json()).id || ('HTTP ' + r.status); };
+        return { a: await ask('pip install requests-mock'), b: await ask('git push origin main'), c: await ask('npm audit fix') };
+      });
+      const cdp = await ctx.newCDPSession(page); let regId = null, pushed = 'a real push event';
+      cdp.on('ServiceWorker.workerRegistrationUpdated', e => { for (const r of e.registrations || []) if (!r.isDeleted) regId = r.registrationId; });
+      await cdp.send('ServiceWorker.enable'); for (let i = 0; i < 30 && !regId; i++) await sleep(100);
+      const notes = () => worker.evaluate(() => self.__shown.map(n => ({ title: n.title, body: n.body, tag: n.tag, actions: (n.actions || []).map(a => a.action + '=' + a.title), ask: n.data && n.data.ask, url: n.data && n.data.url })));
+      const asks = ns => ns.filter(n => /^ask-A-/.test(n.tag));
+      try { await cdp.send('ServiceWorker.deliverPushMessage', { origin: BASE, registrationId: regId, data: '' }); } catch (e) { pushed = 'push not deliverable here: ' + e.message.slice(0, 80); }
+      let ns = []; for (let i = 0; i < 25; i++) { ns = await notes(); if (asks(ns).length >= 3) break; await sleep(200); }
+      if (asks(ns).length < 3) { pushed = 'the push handler called directly; ' + pushed; await worker.evaluate(async () => { await showAsks(await waitingAsks() || []); }); ns = await notes(); }
+      const na = ns.find(n => n.ask === made.a);
+      check(`${size}: a waiting question becomes a notification with the exact command, Allow once and Deny, and no second "new message" notification (${pushed})`, sw.active && !!na && asks(ns).length === 3 && /asks: may I run this command\?$/.test(na.title) && /^pip install requests-mock\n/.test(na.body) && /No answer by .+ means no\.$/.test(na.body)
+        && (sw.max >= 2 ? na.actions.join() === 'allow=Allow once,deny=Deny' : /Tap to open Chamber and answer/.test(na.body)) && /^\/app#m=[a-z0-9]+$/i.test(na.url) && !ns.some(n => n.tag === 'chamber'), JSON.stringify({ sw, made, ns }).slice(0, 700));
+      const tap = (id, decision) => worker.evaluate(async ([id, decision]) => { const n = self.__shown.find(x => x.data && x.data.ask === id); const d = n ? n.data : { ask: id, what: '', url: '/app' }; if (n) n.close(); return answerAsk(d, decision); }, [id, decision]);
+      const t1 = await tap(made.a, 'allow'), t2 = await tap(made.b, 'deny');
+      const state = ids => page.evaluate(async ids => { const r = await (await fetch('/api/asks')).json(); return ids.map(id => { const a = (r.asks || []).find(x => x.id === id) || {}; return [a.status, a.answeredBy, a.via]; }); }, ids);
+      const after = await state([made.a, made.b]), said = (await notes()).find(n => n.tag === 'ask-note');
+      check(`${size}: a tap on Allow once or Deny answers over the signed-in session, says what was done, and the record says it came from the notification`, t1 === null && t2 === null && after[0][0] === 'allowed' && after[1][0] === 'denied' && after.every(x => x[2] === 'notification' && !!x[1]) && said?.title === 'You said no', JSON.stringify({ t1, t2, after, said }));
+      const late = await tap(made.b, 'allow'), still = (await state([made.b]))[0][0], lateNote = (await notes()).find(n => n.tag === 'ask-note');
+      check(`${size}: a tap after the question was answered changes nothing and says so`, /already denied/.test(late || '') && still === 'denied' && lateNote?.title === 'Not answered', JSON.stringify({ late, still, lateNote }));
+      await page.click('.tab[data-view="tickets"]');                                   // a plain tap (no buttons, as on iPhone): the worker tells the open app where the question is
+      await worker.evaluate(async url => { for (const c of await clients.matchAll({ type: 'window', includeUncontrolled: true })) c.postMessage({ kind: 'chamber-open', url }); }, na ? na.url : '/app');
+      let onChat = false; for (let i = 0; i < 25 && !onChat; i++) { await sleep(150); onChat = await page.evaluate(() => document.querySelector('nav.tabs .tab.active')?.dataset.view === 'chat' && !location.hash); }
+      check(`${size}: where notifications have no buttons, a tap brings the open app to the question`, onChat);
+      await page.click('.tab[data-view="chat"]'); await page.evaluate(() => { if (currentRoom !== 'general') switchRoom('general'); return loadAsks(); });
+      const item = page.locator('#ask-bar .ask-item', { hasText: 'npm audit fix' }); await item.waitFor(); const before = asks(await notes()).length;
+      await item.locator('button', { hasText: 'Deny' }).click(); await page.locator('#ask-bar').waitFor({ state: 'hidden' });
+      let left = 9; for (let i = 0; i < 20 && left; i++) { await sleep(150); left = asks(await notes()).length; }
+      check(`${size}: a question answered in the app takes its notification off this device`, before === 1 && left === 0, JSON.stringify({ before, left }));
     });
     await step('accent row: RGB and the custom colour', async () => {                            // 2026-11-13: RGB added; the colour chooser used to look like a sixth ready-made colour
       await page.click('.tab[data-view="chat"]'); await page.click('#gear-btn'); await page.locator('#theme-picker').waitFor();

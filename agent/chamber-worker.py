@@ -35,8 +35,51 @@ this worker is never claimed: a run-log line says why, and if no other worker is
 A ticket that fails after claiming is RELEASED (back to approved, unassigned) with the reason, never left in progress.
 Standing approvals (1.8.0, T-0200): a ticket a person approved in advance (ticket.standing) is taken only by the agent it names
 and only in pull-request mode; before pushing, Chamber checks the changed files against its limits. A refused claim stops the work.
+Asking (1.9.0, T-0212): in pull-request mode, when the workspace owner switched "may ask" on for this worker (Account, AI agents),
+the AI may ask a person to allow one command that is not in its list (for example installing a test library). The exact command
+shows in the room with Allow once / Deny for the people who may approve tickets. Allow runs it once and the job goes on; Deny or
+no answer within WORKER_ASK_WAIT_SEC (default 300) hands the ticket back with the reason, and nothing is pushed. Off by default.
+WORKER_ASK_TOOLS (default Bash; WebFetch can be added; empty = never ask) is the machine operator's side of the switch. The
+live-folder mode never asks.
 """
-import os, re, sys, json, time, shutil, subprocess, urllib.request, urllib.error, urllib.parse, fnmatch, base64, threading
+import os, re, sys, json, time, shutil, subprocess, urllib.request, urllib.error, urllib.parse, fnmatch, base64, threading, uuid, tempfile
+
+def _ask_mcp_main():
+    """1.9.0 (T-0212): `chamber-worker.py --ask-mcp DIR WAIT_SEC` is the permission helper Claude Code calls (--permission-prompt-tool
+    mcp__chamber_ask__ask) when the AI wants to run a command it was not given outright. The same helper as the chat connector's
+    (chamber-agent.py, T-0188). It runs before any setting is read, so it holds no key, and it talks to nobody but the worker: it
+    leaves the question in DIR (a folder the AI may neither read nor write) and waits for the worker to put the person's answer
+    next to it. No answer in time means no. On 'allow' Claude Code runs the command once, exactly as it was shown."""
+    i = sys.argv.index("--ask-mcp"); d = sys.argv[i + 1]
+    try: wait = float(sys.argv[i + 2])
+    except (IndexError, ValueError): wait = 300.0
+    send = lambda o: (sys.stdout.write(json.dumps(o) + "\n"), sys.stdout.flush())
+    tool = {"name": "ask", "description": "Ask a person in Chamber to allow one tool use.",
+            "inputSchema": {"type": "object", "properties": {"tool_name": {"type": "string"}, "input": {"type": "object"}, "tool_use_id": {"type": "string"}}, "required": ["tool_name", "input"]}}
+    for line in sys.stdin:
+        try: m = json.loads(line)
+        except ValueError: continue
+        if not isinstance(m, dict) or m.get("id") is None: continue        # notifications need no answer
+        mid, meth, params = m.get("id"), m.get("method"), m.get("params") or {}
+        if meth == "initialize": send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": params.get("protocolVersion") or "2025-11-25", "capabilities": {"tools": {}}, "serverInfo": {"name": "chamber_ask", "version": "1"}}}); continue
+        if meth == "tools/list": send({"jsonrpc": "2.0", "id": mid, "result": {"tools": [tool]}}); continue
+        if meth != "tools/call": send({"jsonrpc": "2.0", "id": mid, "result": {}}); continue
+        a = params.get("arguments") or {}; inp = a.get("input") if isinstance(a.get("input"), dict) else {}
+        rid = uuid.uuid4().hex; req, ans = os.path.join(d, rid + ".req.json"), os.path.join(d, rid + ".ans.json")
+        try:
+            fd = os.open(req + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.write(fd, json.dumps({"tool_name": a.get("tool_name"), "input": inp, "tool_use_id": a.get("tool_use_id")}).encode()); os.close(fd); os.replace(req + ".tmp", req)
+        except OSError as e: res = {"behavior": "deny", "message": f"Could not ask a person ({e}), so it is not allowed."}
+        else:
+            res, end = None, time.time() + wait + min(30.0, wait)
+            while res is None and time.time() < end:
+                try:
+                    with open(ans) as f: v = json.load(f)
+                    res = {"behavior": "allow", "updatedInput": inp} if v.get("decision") == "allow" else {"behavior": "deny", "message": str(v.get("message") or "A person said no in Chamber.")[:500]}
+                except (OSError, ValueError): time.sleep(0.5)
+            if res is None: res = {"behavior": "deny", "message": "Nobody answered in time, so it is not allowed."}
+        send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": json.dumps(res)}]}})
+if "--ask-mcp" in sys.argv: _ask_mcp_main(); sys.exit(0)
 
 URL = os.environ.get("CHAMBER_URL", "https://chamber.ghostporttechnologies.com").rstrip("/")
 TOKEN = os.environ.get("CHAMBER_TOKEN", "")
@@ -72,6 +115,14 @@ BASE = os.environ.get("WORKER_BASE", "").strip()                        # branch
 try: PARALLEL = max(1, min(5, int(os.environ.get("WORKER_PARALLEL", "1")))) if MODE == "pr" else 1
 except ValueError: PARALLEL = 1
 REPO_LOCK, STATE_LOCK = threading.Lock(), threading.Lock()              # repo-wide git steps (worktree add/remove, fetch, push) one at a time
+# 1.9.0 (T-0212): asking a person mid-job, in pull-request mode only. When the workspace owner switched "may ask" on for this worker
+# (Account, AI agents) and the AI needs a command that is not in its list, the exact command is shown in the room with Allow once /
+# Deny for the people who may approve. Allow lets the job go on; Deny or no answer hands the ticket back with the reason. The
+# live-folder mode never asks: there a change goes straight onto a running server.
+ASK_TOOLS = [t for t in (x.strip() for x in os.environ.get("WORKER_ASK_TOOLS", "Bash").split(",")) if t in ("Bash", "WebFetch")]   # what may be asked for; empty = this machine never asks
+try: ASK_WAIT = max(60, min(1800, int(os.environ.get("WORKER_ASK_WAIT_SEC", "300"))))   # no answer within this many seconds means no
+except ValueError: ASK_WAIT = 300
+ASK_POLL = 2.0                                                          # seconds between looks at a waiting question
 
 if not TOKEN:
     sys.exit("CHAMBER_TOKEN is required")
@@ -151,7 +202,7 @@ def health_ok():
     return False
 
 
-WORKER_VERSION = "worker-1.8.0"
+WORKER_VERSION = "worker-1.9.0"
 
 
 def wlog(tid, line, model=None):
@@ -449,6 +500,181 @@ def git_env():
     return env
 
 
+# ── 1.9.0 (T-0212): asking a person mid-job (pull-request mode) ────────────────────────────────────────────────────────────────
+SECRET_RE = re.compile(r"(sk-ant-[A-Za-z0-9_-]{20,}|sk_(live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}|chk_[a-f0-9]{8}_[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[abp]-[A-Za-z0-9-]{10,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})")
+def redact(text): return SECRET_RE.sub("[redacted secret]", text or "")   # a command's output goes on the record: nothing that looks like a key
+SHELL_META_RE = re.compile(r"[;&|<>`$\n\\(){}]")
+ASK_RULES = ("\nOne more thing you may do: if the job cannot be finished without {tools} for something that is not in your list (for example "
+             "installing a test library), you may use it, but every such use is first shown to a person in Chamber, who allows that one use "
+             "or says no. To look at files use Read, Grep and Glob, never Bash. Ask only for what the ticket needs, one plain command at a "
+             "time (no chains, pipes or redirection). If the answer is no, stop there: the ticket is handed back to a person with your reason.")
+
+
+def may_ask():
+    """Asking needs three things: pull-request mode, the owner's "may ask" switch for this worker in Chamber, and WORKER_ASK_TOOLS
+    not empty on this machine. Read fresh for every job, so the owner's switch works without a restart."""
+    if MODE != "pr" or not ASK_TOOLS: return False
+    try: return bool(api("GET", "/api/me").get("mayAsk"))
+    except Exception as e: log(f"could not read the 'may ask' switch ({e}); working without asking"); return False
+
+
+def ask_root(): return os.path.join(HOME, "asks")
+def ask_dir():
+    """A fresh folder for one job's questions, readable by this user only; None when it cannot be made (then the job runs without asking)."""
+    try: os.makedirs(ask_root(), mode=0o700, exist_ok=True); return tempfile.mkdtemp(prefix="run-", dir=ask_root())
+    except OSError as e: log(f"asking is on, but its folder could not be made ({e}); working without asking"); return None
+
+
+def ask_settings():
+    """Claude Code settings for a job with asking: the AI may neither read nor write the questions folder, and every use of an
+    ask tool goes through the question, also the ones Claude Code would otherwise wave through as harmless."""
+    return {"permissions": {"deny": [f"{v}(//{ask_root().lstrip('/')}/**)" for v in ("Read", "Edit", "Write")], "ask": list(ASK_TOOLS)}}
+
+
+def ask_mcp_config(askdir):
+    """Claude Code's MCP setting for the permission helper: this same file in --ask-mcp mode. It carries no key."""
+    return json.dumps({"mcpServers": {"chamber_ask": {"command": sys.executable, "args": [os.path.abspath(__file__), "--ask-mcp", askdir, str(ASK_WAIT)]}}})
+
+
+def ask_preapproved(tool, inp):
+    """Is this a command from the worker's own list (TOOLS)? Only plain commands count: anything with chained commands, redirection
+    or substitution goes to a person even when it starts with an allowed prefix."""
+    if tool != "Bash" or not isinstance(inp, dict): return False
+    cmd = str(inp.get("command") or "").strip()
+    if not cmd or SHELL_META_RE.search(cmd): return False
+    for t in TOOLS:
+        mm = re.fullmatch(r"Bash\((.+)\)", t)
+        if not mm: continue
+        pat = mm.group(1)
+        if pat.endswith(":*") and (cmd == pat[:-2] or cmd.startswith(pat[:-2] + " ")): return True
+        if not pat.endswith(":*") and cmd == pat: return True
+    return False
+
+
+def ask_summary(tool, inp):
+    """What the person is asked about, in plain words, with the exact command or address."""
+    inp = inp if isinstance(inp, dict) else {}
+    if tool == "Bash": return "run this command: " + str(inp.get("command") or "")[:1500]
+    if tool == "WebFetch": return f"fetch the web page {inp.get('url')}"
+    return f"use {tool}: " + json.dumps(inp)[:1000]
+
+
+def ask_answer(askdir, rid, decision, message=""):
+    p = os.path.join(askdir, rid + ".ans.json"); fd = os.open(p + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, json.dumps({"decision": decision, "message": message}).encode()); os.close(fd); os.replace(p + ".tmp", p)
+
+
+def api_why(e):
+    """The reason Chamber gave for refusing a call, in its own words when it sent any."""
+    if isinstance(e, urllib.error.HTTPError):
+        try: return str(json.loads(e.read().decode("utf-8", "replace") or "{}").get("error") or e)[:300]
+        except Exception: return str(e)[:300]
+    return str(e)[:300]
+
+
+def ask_pump(askdir, t, asks):
+    """One pass over the questions the helper left in askdir. Commands from the worker's own list are answered here; a tool that
+    cannot be asked for is refused here (as before asking existed); anything else becomes a question in Chamber for the ticket,
+    and its answer is written back for the helper. asks: {request id: state}. Returns (a person is being waited for, the
+    refusal in plain words or None)."""
+    tid, waiting, refused = t["id"], False, None
+    try: names = sorted(n for n in os.listdir(askdir) if n.endswith(".req.json"))
+    except OSError: return False, None
+    for n in names:
+        rid = n[:-len(".req.json")]; a = asks.get(rid)
+        if a is None:
+            try:
+                with open(os.path.join(askdir, n)) as f: q = json.load(f)
+            except (OSError, ValueError): continue
+            tool, inp = str(q.get("tool_name") or "?"), q.get("input") if isinstance(q.get("input"), dict) else {}
+            a = asks[rid] = {"tool": tool, "input": inp, "tool_use_id": q.get("tool_use_id"), "done": False}
+            if ask_preapproved(tool, inp): ask_answer(askdir, rid, "allow"); a.update(done=True, decision="allow"); continue
+            if tool not in ASK_TOOLS:                                    # for example a file outside the worktree: refused as it always was, nobody is asked
+                ask_answer(askdir, rid, "deny", "Not allowed for this worker: work only inside the current directory, with the tools you were given.")
+                a.update(done=True, decision="deny"); continue
+            a["summary"] = summary = ask_summary(tool, inp)
+            try:
+                r = api("POST", "/api/asks", {"room": ROOM, "tool": tool, "summary": summary, "detail": json.dumps(inp)[:4000], "for": t.get("approved_by"), "waitSec": ASK_WAIT, "ticket": tid})
+                a.update(id=r.get("id"), next=time.time() + ASK_POLL); wlog(tid, f"asked a person ({a['id']}): may I {summary}"[:300])
+            except Exception as e:
+                why = api_why(e); log(f"{tid}: could not ask in Chamber: {why}")
+                ask_answer(askdir, rid, "deny", "Could not ask a person in Chamber, so it is not allowed."); a.update(done=True, decision="deny")
+                refused = refused or f"to finish this I needed to {summary[:400]}, and I could not ask a person in Chamber ({why})."
+                continue
+        if not a["done"] and a.get("id") and time.time() >= a.get("next", 0):
+            a["next"] = time.time() + ASK_POLL
+            try: s = api("GET", f"/api/asks/{a['id']}")
+            except Exception as e: log(f"ask {a['id']}: {e}"); s = {}
+            st = s.get("status"); by = s.get("answeredBy") or "someone"
+            if st == "allowed":
+                ask_answer(askdir, rid, "allow"); a.update(done=True, decision="allow"); wlog(tid, f"{by} allowed it once ({a['id']})")
+            elif st in ("denied", "expired", "cancelled"):
+                why = f"{by} said no" if st == "denied" else ("the question was withdrawn" if st == "cancelled" else f"nobody answered within {max(1, ASK_WAIT // 60)} minute{'' if ASK_WAIT < 120 else 's'}, which means no")
+                ask_answer(askdir, rid, "deny", f"{by} said no in Chamber." if st == "denied" else "Nobody answered in time, so it is not allowed.")
+                a.update(done=True, decision="deny"); wlog(tid, f"{why} ({a['id']})")
+                refused = refused or f"to finish this I needed to {a['summary'][:400]}, and {why} ({a['id']})."
+        if not a["done"]: waiting = True
+    return waiting, refused
+
+
+def ask_finish(askdir, asks, results):
+    """After the session: the result of each use a person allowed goes on the record; questions still waiting are withdrawn."""
+    for a in asks.values():
+        if not a.get("id"): continue
+        try:
+            if not a.get("done"): api("POST", f"/api/asks/{a['id']}/cancel", {})
+            elif a.get("decision") == "allow" and a.get("tool_use_id") in results:
+                r = results[a["tool_use_id"]]; api("POST", f"/api/asks/{a['id']}/result", {"ok": not r["error"], "output": redact(r["out"])[:2000]})
+        except Exception as e: log(f"ask {a.get('id')}: {api_why(e)}")
+    shutil.rmtree(askdir, ignore_errors=True)
+
+
+def ask_session(cmd, wt, env, t, askdir):
+    """The model session with asking on. Claude Code's permission questions go to the helper, the helper leaves them in askdir,
+    and ask_pump() turns them into questions in Chamber. The session's clock stops while a person is being waited for. A no (or
+    no answer) ends the session at once. Returns (exit code, closing text, usage or None, the refusal in plain words or None);
+    raises subprocess.TimeoutExpired like subprocess.run does. Output is stream-json here, so the result of each allowed use can
+    be put on the record."""
+    proc = subprocess.Popen(cmd, cwd=wt, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    out, err, asks, results, refused, timed_out = [], [], {}, {}, None, False
+    def drain(f, into):
+        for line in f: into.append(line)
+    ths = [threading.Thread(target=drain, args=(proc.stdout, out), daemon=True), threading.Thread(target=drain, args=(proc.stderr, err), daemon=True)]
+    for th in ths: th.start()
+    try:
+        deadline = time.time() + TIMEOUT; last = time.time()
+        while proc.poll() is None:
+            now = time.time(); waiting, refused = ask_pump(askdir, t, asks)
+            if waiting: deadline += now - last                           # a person's thinking time is not the model's
+            last = now
+            if refused: time.sleep(1.5); break                           # give the helper a moment to pass the no on
+            if now > deadline: timed_out = True; break
+            time.sleep(0.5)
+        if proc.poll() is None:
+            proc.terminate()
+            try: proc.wait(5)
+            except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+        for th in ths: th.join(5)
+        final = None
+        for line in out:
+            try: o = json.loads(line)
+            except ValueError: continue
+            if not isinstance(o, dict): continue
+            if o.get("type") == "user":
+                for c in (o.get("message") or {}).get("content") or []:
+                    if not isinstance(c, dict) or c.get("type") != "tool_result": continue
+                    v = c.get("content")
+                    if isinstance(v, list): v = "\n".join(str(x.get("text", "")) for x in v if isinstance(x, dict))
+                    results[c.get("tool_use_id")] = {"out": str(v or ""), "error": bool(c.get("is_error"))}
+            elif o.get("type") == "result": final = o
+    finally:
+        ask_finish(askdir, asks, results)
+    if timed_out: raise subprocess.TimeoutExpired(cmd, TIMEOUT)
+    summary, usage = parse_claude_json(json.dumps(final)) if final else ("", None)
+    if not summary.strip() and (proc.returncode or not final): summary = ("".join(out) + "".join(err))[-4000:]
+    return proc.returncode, summary, usage, refused
+
+
 def base_branch():
     if BASE: return BASE
     _, b = git("rev-parse", "--abbrev-ref", "HEAD")
@@ -482,14 +708,24 @@ def work_pr(t):
                   "If the ticket asks for a change to code that is not in this repo, change nothing and reply with exactly one line: "
                   "CANNOT: <where the code actually lives and why you cannot do it here>.")
         env = {k: v for k, v in os.environ.items() if k not in ("CHAMBER_TOKEN", "WORKER_GITHUB_TOKEN")}; env["HOME"] = HOME
-        tools = sorted({x.split("(")[0] for x in TOOLS})
-        cmd = [CLAUDE, "-p", prompt, "--output-format", "json", "--tools", *tools, "--allowedTools", *TOOLS, "--permission-mode", "dontAsk", "--max-turns", "60"]
+        tools = sorted({x.split("(")[0] for x in TOOLS}); refused = None
+        askdir = ask_dir() if may_ask() else None                        # 1.9.0 (T-0212): the owner lets this worker ask a person, one use at a time
         try:
-            p = subprocess.run(cmd, cwd=wt, capture_output=True, text=True, timeout=TIMEOUT, env=env); rc = p.returncode
-            summary, usage = parse_claude_json(p.stdout)
-            if rc and not summary.strip(): summary = (p.stdout + p.stderr)[-4000:]
+            if askdir:
+                wlog(tid, "asking is on: a command outside my list is shown to a person in the room, who allows that one use or says no")
+                cmd = [CLAUDE, "-p", prompt + ASK_RULES.format(tools=" or ".join(ASK_TOOLS)), "--output-format", "stream-json", "--verbose", "--tools", *sorted(set(tools) | set(ASK_TOOLS)), "--allowedTools", *TOOLS,
+                       "--permission-mode", "manual", "--strict-mcp-config", "--mcp-config", ask_mcp_config(askdir), "--permission-prompt-tool", "mcp__chamber_ask__ask",
+                       "--settings", json.dumps(ask_settings()), "--max-turns", "60"]
+                env["MCP_TOOL_TIMEOUT"] = str((ASK_WAIT + 90) * 1000)    # a person may take minutes to answer
+                rc, summary, usage, refused = ask_session(cmd, wt, env, t, askdir)
+            else:
+                cmd = [CLAUDE, "-p", prompt, "--output-format", "json", "--tools", *tools, "--allowedTools", *TOOLS, "--permission-mode", "dontAsk", "--max-turns", "60"]
+                p = subprocess.run(cmd, cwd=wt, capture_output=True, text=True, timeout=TIMEOUT, env=env); rc = p.returncode
+                summary, usage = parse_claude_json(p.stdout)
+                if rc and not summary.strip(): summary = (p.stdout + p.stderr)[-4000:]
         except subprocess.TimeoutExpired: return False, f"model session exceeded {TIMEOUT}s; no pull request", None
         if usage: ticket("log", tid, usage=usage)
+        if refused: return False, f"blocked: {refused} Nothing was pushed. Add a note to the ticket if I should try again.", None
         if rc: return False, f"model session failed (rc={rc}): {summary[-800:]}", None
         _, changed = git("status", "--porcelain", cwd=wt)
         files = [l[3:].strip() for l in changed.splitlines() if l.strip() and not junk(l[3:].strip())]
@@ -577,6 +813,7 @@ def run_one_pr(t, key, st):
         if "standing approval" in msg: say(f"{tid}: {msg[15:].strip()[:400]}")
         log(f"{tid}: {msg[:300]}"); presence("idle"); return
     tag = "DECLINED: " if msg.startswith("out of scope") else ("BLOCKED: " if msg.startswith("blocked") else "FAILED: ")
+    if msg.startswith("blocked:"): msg = msg[8:].strip(); msg = msg[:1].upper() + msg[1:]   # 1.9.0: the tag already says blocked
     if not ticket("release", tid, note=tag + msg[:900]): ticket("update", tid, note=tag + msg)
     if not tag.startswith("DECLINED"): say(tag.title().strip(": ") + " " + tid + ": " + msg)
     presence("idle")
