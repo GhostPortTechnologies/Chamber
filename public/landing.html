@@ -395,6 +395,15 @@
         <p class="sub meta-block">For routine jobs, anyone who may approve can also set up a <b>standing approval</b> in the app (Tickets tab, Standing approvals): that kind of job, by that agent, starts without waiting, within limits they choose, as a pull request a person merges.</p>
         <button class="btn" id="ap-save" type="button">Save approval rules</button>
         <div class="msg" id="ap-msg"></div>
+        <div id="gh-box" hidden>   <!-- T-0197 -->
+        <h2 class="sec" id="github">GitHub issues</h2>
+        <p class="sub">Link one GitHub repository. Each open issue with your label becomes a proposed ticket here (a person still approves it). When the ticket is approved, started, done or turned down, Chamber writes a short comment on the issue, and it closes the issue when the ticket is done. The comments say only the status and the ticket number; notes, reasons and names stay in Chamber.</p>
+        <div id="gh-state" class="sub"></div>
+        <div class="inline-form" id="gh-form"><input id="gh-repo" placeholder="owner/repository" maxlength="201" style="flex:1 1 160px"><input id="gh-label" placeholder="label" value="chamber" maxlength="50" style="flex:0 1 120px"><input id="gh-token" type="password" placeholder="GitHub key (github_pat_…)" autocomplete="off" style="flex:1 1 180px"><button class="btn" id="gh-link" type="button">Link</button></div>
+        <p class="sub meta-block">Use a fine-grained GitHub key for this one repository with only <b>Issues: Read and write</b>. Chamber stores it encrypted and uses it only to read issues with your label, comment on them and close them. It never touches code or other repositories. If your issue templates add the label by themselves, anyone who can open an issue can create a proposed ticket, so pick a label only your team adds.</p>
+        <button class="btn ghost" id="gh-remove" type="button" hidden>Unlink</button>
+        <div class="msg" id="gh-msg"></div>
+        </div>
         <h2 class="sec" id="audit">Activity &amp; audit</h2>
         <p class="sub">Who did what in this workspace: agent writes and administrative actions by people, newest first. Each entry carries a request id you can quote to support.</p>
         <div class="inline-form"><input id="au-q" placeholder="search (action, ticket, room…)" style="flex:1 1 160px"><select id="au-actor" style="flex:0 1 160px"><option value="">everyone</option></select><button class="btn ghost" type="button" id="au-go">Filter</button><span id="au-export" style="display:none"><a class="btn ghost sm" id="au-csv" href="/account/workspace/audit?format=csv">Export CSV</a> <a class="btn ghost sm" id="au-json" href="/account/workspace/audit?format=json">JSON</a></span></div>
@@ -827,6 +836,19 @@
   $('hk-add')?.addEventListener('click', async () => {
     try { const r = await api('/account/workspace/hooks', { name: $('hk-name').value, room: $('hk-room').value, instruction: $('hk-instr').value, bot: $('hk-bot').value }); $('hk-show').hidden = false; $('hk-show').textContent = `${r.message}\n\n${r.url}\n\nTest it:  curl -X POST -H 'Content-Type: application/json' -d '{"text":"hello from curl"}' ${r.url}`; $('hk-name').value = ''; $('hk-instr').value = ''; show($('hk-msg'), '', ''); renderAutomation(); } catch (err) { show($('hk-msg'), err.message, 'err'); }
   });
+  const renderGithub = async () => {                                                      // T-0197
+    if (!me || !me.workspace || me.workspace.role !== 'owner') return;
+    let d; try { d = await api('/api/github-link'); } catch { return; }
+    $('gh-box').hidden = false; $('gh-remove').hidden = !d.linked; $('gh-form').hidden = !!d.linked;
+    $('gh-state').textContent = d.linked ? `Linked: ${d.repo}, label "${d.label}". ${d.issues} issue${d.issues === 1 ? '' : 's'} so far.${d.lastSync ? ' Last checked ' + new Date(d.lastSync).toLocaleString() + '.' : ' Not checked yet.'}${d.lastError ? ' Problem: ' + d.lastError : ''}` : 'Not linked.';
+  };
+  $('gh-link')?.addEventListener('click', async () => {
+    try { const d = await api('/api/github-link', { repo: $('gh-repo').value, label: $('gh-label').value, token: $('gh-token').value }); $('gh-token').value = ''; show($('gh-msg'), d.message, 'ok'); renderGithub(); }
+    catch (err) { show($('gh-msg'), err.message, 'err'); }
+  });
+  $('gh-remove')?.addEventListener('click', async () => {
+    try { const d = await api('/api/github-link/remove', {}); show($('gh-msg'), d.message, 'ok'); renderGithub(); } catch (err) { show($('gh-msg'), err.message, 'err'); }
+  });
   const renderTokens = async () => {
     if (!me || !me.workspace || me.workspace.role !== 'owner') return;
     let d; try { d = await api('/account/workspace/tokens'); } catch { return; }
@@ -981,7 +1003,7 @@
       catch (e) { show($('su-msg'), e.message, 'err'); }
     } else if (view === '/signup') { try { const c = await api('/account/config'); if (c.inviteRequired) { $('su-invite-wrap').hidden = false; $('su-invite').required = true; } } catch {} }
     if (view === '/billing') {
-      renderBilling(); renderWorkspace(); renderTokens(); renderPolicy(); renderPush(); renderAutomation();
+      renderBilling(); renderWorkspace(); renderTokens(); renderGithub(); renderPolicy(); renderPush(); renderAutomation();
       renderTotp();                                                                               // T-0092: was wrongly nested in the password-submit handler, so the 2FA pill stuck on …
       $('so-all').onclick = async () => { try { const d = await api('/account/logout-all', {}); show($('so-msg'), d.message); } catch (err) { show($('so-msg'), err.message, 'err'); } };   // T-0032
       if (me?.logins?.length) $('login-hist').innerHTML = 'Recent sign-ins: ' + me.logins.slice().reverse().map(l => `${esc(new Date(l.at).toLocaleString())} from ${esc(l.ip)}`).join(' · ');

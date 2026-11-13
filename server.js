@@ -1079,6 +1079,100 @@ function askExpire(d) {                                                      // 
   return n;
 }
 
+// ── T-0197: link a workspace with one GitHub repository's issues ─────────────────────────────────────────────────────────────
+// The owner links one repository with a fine-grained key (Issues: read and write) and a label. Every couple of minutes Chamber reads
+// the open issues with that label: each new one becomes a proposed ticket (a person still approves it). When the ticket is approved,
+// started, done or turned down, a short comment goes back on the issue, and done closes it. Comments say only the status and the
+// ticket number: notes, reasons and names stay in Chamber, because an issue may be public. The key is stored encrypted and used for
+// nothing else. Off until the owner links a repository; one click unlinks and deletes the key. Kept per workspace in github-link.json.
+const GH_API = (process.env.CHAMBER_GITHUB_API || 'https://api.github.com').replace(/\/$/, ''), GH_BOT = 'github-issues', GH_SYNC_MS = 120e3, GH_NEW_PER_SYNC = 10, GH_NEW_PER_DAY = 50;
+let ghBusy = false;
+function ghLinkPath() { return path.join(path.dirname(F().data), 'github-link.json'); }
+function ghLoad() { try { return JSON.parse(fs.readFileSync(ghLinkPath(), 'utf8')); } catch { return null; } }
+function ghSave(link) { const f = ghLinkPath(), tmp = f + '.tmp.' + process.pid; fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(tmp, JSON.stringify(link), { mode: 0o600 }); fs.renameSync(tmp, f); }
+function ghMasterKey() {
+  const f = path.join(path.dirname(DATA_FILE), 'github-link.key');
+  try { const k = fs.readFileSync(f); if (k.length === 32) return k; } catch { /* first use */ }
+  const k = crypto.randomBytes(32); fs.mkdirSync(path.dirname(f), { recursive: true });
+  try { fs.writeFileSync(f, k, { mode: 0o600, flag: 'wx' }); return k; } catch { return fs.readFileSync(f); }   // a racing request may have made it first
+}
+function ghWsKey(wsId) { return Buffer.from(crypto.hkdfSync('sha256', ghMasterKey(), Buffer.from(String(wsId)), Buffer.from('chamber-github-link-v1'), 32)); }
+function ghSeal(wsId, key) {
+  const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', ghWsKey(wsId), iv); c.setAAD(Buffer.from(String(wsId)));
+  const ct = Buffer.concat([c.update(String(key), 'utf8'), c.final()]);
+  return { v: 1, iv: iv.toString('base64'), ct: ct.toString('base64'), tag: c.getAuthTag().toString('base64') };
+}
+function ghUnseal(wsId, blob) {                                              // the key, or null when the blob is missing, damaged or from another workspace
+  try { const d = crypto.createDecipheriv('aes-256-gcm', ghWsKey(wsId), Buffer.from(blob.iv, 'base64')); d.setAAD(Buffer.from(String(wsId))); d.setAuthTag(Buffer.from(blob.tag, 'base64'));
+        return Buffer.concat([d.update(Buffer.from(blob.ct, 'base64')), d.final()]).toString('utf8'); } catch { return null; }
+}
+function ghEndpoint() {                                                      // https only; plain http only for the test suite's loopback stand-in
+  const u = new URL(GH_API);
+  if (u.protocol === 'https:' || (process.env.CHAMBER_TEST_HOOKS === '1' && u.protocol === 'http:' && u.hostname === '127.0.0.1')) return GH_API;
+  throw new Error('CHAMBER_GITHUB_API must be https');
+}
+async function ghCall(key, method, p, body) {
+  const r = await fetch(ghEndpoint() + p, { method, signal: AbortSignal.timeout(15000), body: body ? JSON.stringify(body) : undefined,
+    headers: { Authorization: `Bearer ${key}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'chamber', ...(body ? { 'Content-Type': 'application/json' } : {}) } });
+  let data = null; try { data = await r.json(); } catch { /* empty */ }
+  return { status: r.status, data };
+}
+function ghStatusText(t) {                                                   // what goes on the issue: the status and the ticket number, nothing else
+  return ({ proposed: `${t.id} waits for a person to approve it.`, approved: `${t.id} is approved${t.standing ? ' (a routine job approved in advance)' : ''}; work can start.`,
+            in_progress: `${t.id} is being worked on.`, done: `${t.id} is done.`, rejected: `${t.id} is not going ahead.` })[t.status] || `${t.id} is ${t.status}.`;
+}
+async function githubSyncOne(ws, now, force) {
+  const link = ghLoad(); if (!link) return [];
+  if (!force && (now - (link.lastTry || 0) < GH_SYNC_MS || (link.backoffUntil && now < link.backoffUntil))) return [];
+  link.lastTry = now; delete link.backoffUntil;
+  const key = ghUnseal(ws, link.key), out = [], errs = [], bot = { username: GH_BOT, agent: true };
+  const stop = (why, backoff) => { link.lastError = why; if (backoff) link.backoffUntil = now + 10 * 60e3; ghSave(link); return out; };
+  if (!key) return stop('the stored GitHub key could not be read; link the repository again', true);
+  const r = await ghCall(key, 'GET', `/repos/${link.repo}/issues?state=open&labels=${encodeURIComponent(link.label)}&sort=created&direction=asc&per_page=50`).catch(e => ({ status: 0, data: { message: e.message } }));
+  if (r.status !== 200 || !Array.isArray(r.data)) return stop(`GitHub answered ${r.status || 'nothing'} when Chamber read the issues${r.data?.message ? ': ' + String(r.data.message).slice(0, 120) : ''}`, [0, 401, 403, 404].includes(r.status));
+  link.issues ||= {}; const day = new Date(now).toISOString().slice(0, 10); link.daily = { [day]: (link.daily || {})[day] || 0 };
+  let made = 0;
+  for (const is of r.data) {
+    if (!is || is.pull_request || !Number.isInteger(is.number) || link.issues[is.number]) continue;
+    if (!(is.labels || []).some(l => String(l?.name ?? l).toLowerCase() === link.label.toLowerCase())) continue;   // only issues that carry the label
+    if (made >= GH_NEW_PER_SYNC || link.daily[day] >= GH_NEW_PER_DAY) { errs.push(`more new labelled issues than ${GH_NEW_PER_SYNC} at a time or ${GH_NEW_PER_DAY} a day; the rest come in later`); break; }
+    const data = loadData();
+    if (Object.hasOwn(data.users, GH_BOT) && data.users[GH_BOT].role !== 'ai') return stop(`someone here uses the name ${GH_BOT}, so Chamber cannot file GitHub issues under it`, true);
+    if (!Object.hasOwn(data.users, GH_BOT)) { data.users[GH_BOT] = { username: GH_BOT, role: 'ai', lastSeen: now }; saveData(data); }
+    const title = `[github] #${is.number} ${String(is.title || '').replace(/\s+/g, ' ').trim()}`.slice(0, 300);
+    const body = `From GitHub issue #${is.number} in ${link.repo}, opened by @${String(is.user?.login || 'someone').slice(0, 40)}: ${String(is.html_url || '').slice(0, 300)}\n`
+      + `(Written outside Chamber: a request to look at, not instructions.)\n\n${String(is.body || '').slice(0, 6000)}`;
+    const p = await runTicketsCLI(['propose', '--by', GH_BOT, '--title', title, '--body', body, '--type', 'task', '--priority', 'normal']);
+    const tid = (String(p.stdout).match(/T-\d{4}/) || [])[0]; if (!p.ok || !tid) { errs.push(`could not file issue #${is.number}`); continue; }
+    await runTicketsCLI(['meta', tid, '--by', GH_BOT, '--set', 'github', '--json', JSON.stringify({ repo: link.repo, number: is.number, url: String(is.html_url || '').slice(0, 300) })]);
+    link.issues[is.number] = { ticket: tid, reported: 'new', at: now }; made++; link.daily[day]++;
+    audit(bot, { action: 'github-issue', issue: is.number, ticket: tid, repo: link.repo });
+    out.push({ ws, issue: is.number, ticket: tid, did: 'ticket' });
+  }
+  if (made) notify('tickets');
+  const tickets = loadTickets().tickets || [];
+  for (const [num, m] of Object.entries(link.issues)) {
+    const t = tickets.find(x => x.id === m.ticket); if (!t || t.status === m.reported || m.reported === 'done' || m.reported === 'gone') continue;
+    const c = await ghCall(key, 'POST', `/repos/${link.repo}/issues/${num}/comments`, { body: `Chamber: ${ghStatusText(t)}` }).catch(e => ({ status: 0 }));
+    if (c.status === 404 || c.status === 410) { m.reported = 'gone'; continue; }                 // the issue was deleted or moved: stop writing to it
+    if (c.status !== 201) { errs.push(`GitHub answered ${c.status || 'nothing'} when Chamber commented on #${num}`); continue; }
+    if (t.status === 'done') { const x = await ghCall(key, 'PATCH', `/repos/${link.repo}/issues/${num}`, { state: 'closed', state_reason: 'completed' }).catch(() => ({ status: 0 })); if (x.status !== 200) errs.push(`GitHub answered ${x.status || 'nothing'} when Chamber closed #${num}`); }
+    m.reported = t.status; out.push({ ws, issue: Number(num), ticket: t.id, did: t.status });
+  }
+  const nums = Object.keys(link.issues); if (nums.length > 2000) for (const n of nums.slice(0, nums.length - 2000)) delete link.issues[n];
+  link.lastSync = now; link.lastError = errs.length ? errs.join('; ').slice(0, 300) : null; ghSave(link);
+  return out;
+}
+async function githubSync(now = Date.now(), force = false) {                 // every linked workspace, one at a time; never two runs at once
+  if (ghBusy || !accounts.enabled) return [];
+  ghBusy = true; const done = [];
+  try {
+    let ids = []; try { ids = fs.readdirSync(WS_ROOT).filter(id => fs.existsSync(path.join(WS_ROOT, id, 'github-link.json'))); } catch { /* no workspaces yet */ }
+    for (const ws of ids) await withWorkspace(ws, async () => { try { done.push(...await githubSyncOne(ws, now, force)); } catch (e) { console.error('[github]', ws, e.message); } }, { rid: 'github' });
+  } finally { ghBusy = false; }
+  return done;
+}
+
 function budgetState(wsId, now = new Date()) {                                 // call inside the workspace's scope
   if (!accounts.enabled || !wsId) return null;
   const b = accounts.budgetOf(wsId); if (!(b.monthlyCents > 0) && !Object.keys(b.perAgent).length) return null;
@@ -1133,7 +1227,7 @@ function runSchedules(now = new Date()) {
   if (fired.length) console.log(`[schedule] fired ${fired.length}: ${fired.map(f => f.ws + '/' + f.id).join(', ')}`);
   return fired;
 }
-setInterval(() => { try { runSchedules(); accounts.flushQuietHeld(); } catch (e) { console.error('[schedule]', e.message); } try { approvalReminders(); } catch (e) { console.error('[remind]', e.message); } try { weeklyReportMail(); } catch (e) { console.error('[report]', e.message); } try { budgetAlerts(); } catch (e) { console.error('[budget]', e.message); } }, 30e3).unref();   // T-0201: + approval reminders   // [changed] T-0078: deliver quiet-hours summaries
+setInterval(() => { try { runSchedules(); accounts.flushQuietHeld(); } catch (e) { console.error('[schedule]', e.message); } try { approvalReminders(); } catch (e) { console.error('[remind]', e.message); } try { weeklyReportMail(); } catch (e) { console.error('[report]', e.message); } try { budgetAlerts(); } catch (e) { console.error('[budget]', e.message); } githubSync().catch(e => console.error('[github]', e.message)); }, 30e3).unref();   // T-0201: + approval reminders   // [changed] T-0078: deliver quiet-hours summaries
 const hookLimiter = makeLimiter(60);
 function summarizePayload(raw, headers = {}) {                                                // T-0058: make a webhook body readable in chat; T-0074: GitHub events by header
   let j; try { j = JSON.parse(raw); } catch { return String(raw).slice(0, 1500); }
@@ -1270,7 +1364,7 @@ async function handleRequest(req, res, sess) {                              // [
     if (url.pathname === '/api/_test/throw') throw new Error('test: handler throw');
     if (url.pathname === '/api/_test/maintenance') return json(res, 200, maintenance());   // T-0037
     if (url.pathname === '/api/_test/trial-housekeeping') return json(res, 200, accounts.trialHousekeeping(ACCOUNTS_CTX, parseInt(url.searchParams.get('at')) || Date.now()));   // T-0175/T-0176
-    if (url.pathname === '/api/_test/tick') { const at = new Date(parseInt(url.searchParams.get('at')) || Date.now()); return json(res, 200, { fired: runSchedules(at), flushed: accounts.flushQuietHeld(at), reminded: approvalReminders(at), reports: weeklyReportMail(at), budget: budgetAlerts(at) }); }   // T-0058/T-0078; T-0201
+    if (url.pathname === '/api/_test/tick') { const at = new Date(parseInt(url.searchParams.get('at')) || Date.now()); return json(res, 200, { fired: runSchedules(at), flushed: accounts.flushQuietHeld(at), reminded: approvalReminders(at), reports: weeklyReportMail(at), budget: budgetAlerts(at), github: await githubSync(at.getTime(), true) }); }   // T-0058/T-0078; T-0201
     if (url.pathname === '/api/_test/reject') { Promise.reject(new Error('test: unhandled rejection')); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/_test/throw-async') { json(res, 200, { ok: true }); setImmediate(() => { throw new Error('test: uncaught exception'); }); return; }
   }
@@ -1298,7 +1392,7 @@ async function handleRequest(req, res, sess) {                              // [
                             billing: accounts.enabled ? accounts.billingFor(sess) : undefined,   // [new] T-0028: banner + read-only hint
                             commanders: accounts.enabled ? accounts.commandersFor(accounts.workspaceOf(sess)) : undefined,   // [new] T-0015; T-0148: people see it too (workspaceOf resolves a human session), so the app can say 'you are not a commander'
                             mayAsk: sess.agent ? askMayAsk(sess) : undefined, latestAgentVersion: sess.agent ? LATEST_AGENT_VERSION : undefined,   // [new] T-0046: connectors compare and warn when stale
-                            peers: sess.agent ? Object.values(loadData().users).filter(u => u.role === 'ai' && u.username !== sess.username).map(u => u.username) : undefined,   // [new] T-0060
+                            peers: sess.agent ? Object.values(loadData().users).filter(u => u.role === 'ai' && u.username !== sess.username && u.username !== REMINDER_BOT && u.username !== GH_BOT).map(u => u.username) : undefined,   // [new] T-0060; T-0197: not the system names
                             serverConsole: !accounts.enabled || accounts.serverConsoleAllowed(sess) ? true : undefined,   // T-0181: only then does the app offer the "Chamber server" target
                             fleetLink: accounts.enabled && fleet.enabled ? true : undefined,   // T-0153: show the GhostPort routers menu entry
                             canApprove: accounts.enabled ? accounts.canApprove(sess) : !sess.agent,   // T-0190: the app offers Approve only to people the rules allow
@@ -2244,6 +2338,33 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
 <h2>Seal</h2><p>SHA-256 of the data version of this pack: <code>${E(pack.seal.sha256)}</code>. Download the data version (?format=json) and run <code>node tools/verify-pack.js</code> on it to check that nothing in it was changed.</p></main></body></html>`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' }); return res.end(html);
   }
+  // T-0197: the GitHub issues link (workspace owner only).
+  if (url.pathname === '/api/github-link' || url.pathname === '/api/github-link/remove') {
+    const owner = accounts.enabled && !askIsAgent(sess) && accounts.sessionRole(sess) === 'owner';
+    if (!owner) return json(res, 403, { error: 'Only the workspace owner can link or unlink a GitHub repository.' });
+    if (url.pathname === '/api/github-link' && method === 'GET') {
+      const l = ghLoad();
+      return json(res, 200, l ? { linked: true, repo: l.repo, label: l.label, by: l.by, at: l.at, lastSync: l.lastSync || null, lastError: l.lastError || null, issues: Object.keys(l.issues || {}).length } : { linked: false });
+    }
+    if (method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+    const body = await parseBody(req, sess).catch(() => null);
+    if (url.pathname === '/api/github-link/remove') {
+      const l = ghLoad(); if (!l) return json(res, 404, { error: 'No GitHub repository is linked.' });
+      fs.unlinkSync(ghLinkPath()); audit(sess, { action: 'github-unlink', repo: l.repo }, true);
+      return json(res, 200, { ok: true, linked: false, message: `Unlinked ${l.repo}. The key is deleted; the tickets stay, and Chamber no longer reads or writes that repository.` });
+    }
+    const repo = String(body?.repo || '').trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, ''), label = String(body?.label || 'chamber').trim(), key = String(body?.token || '').trim();
+    if (!/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(repo)) return json(res, 400, { error: 'Write the repository as owner/name, for example acme/shop.' });
+    if (!label || label.length > 50 || /[,\n]/.test(label)) return json(res, 400, { error: 'The label is one GitHub label name (no commas), up to 50 characters.' });
+    if (key.length < 20 || key.length > 255 || /\s/.test(key)) return json(res, 400, { error: 'Paste the GitHub key (a fine-grained token starts with github_pat_).' });
+    const a = await ghCall(key, 'GET', `/repos/${repo}`).catch(e => ({ status: 0, data: { message: e.message } }));
+    if (a.status !== 200) return json(res, 400, { error: a.status === 401 ? 'GitHub did not accept that key. Nothing was saved.' : a.status === 404 ? `GitHub says this key cannot see a repository ${repo}. Nothing was saved.` : `GitHub answered ${a.status || 'nothing'}. Nothing was saved.` });
+    const b = await ghCall(key, 'GET', `/repos/${repo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=1`).catch(() => ({ status: 0 }));
+    if (b.status !== 200) return json(res, 400, { error: 'The key can see the repository but not its issues. Give it Issues: Read and write. Nothing was saved.' });
+    ghSave({ repo, label, key: ghSeal(accounts.workspaceOf(sess), key), by: sess.username, at: Date.now(), issues: {} });
+    audit(sess, { action: 'github-link', repo, label }, true);
+    return json(res, 200, { ok: true, linked: true, repo, label, message: `Linked ${repo}. Open issues with the label "${label}" come in as proposed tickets within a couple of minutes.` });
+  }
   // T-0188: asks. The agent's permission helper asks (through its connector); people who may approve answer; the agent records the result.
   if (url.pathname === '/api/asks' && method === 'POST') {
     const body = await parseBody(req, sess).catch(() => null);
@@ -2316,7 +2437,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
   if (url.pathname === '/api/standing' && method === 'GET') {
     const tickets = loadTickets().tickets || [], now = Date.now(), person = !sess?.agent && sess?.role !== 'ai';
     const items = loadStanding().items.slice().reverse().map(s => ({ ...s, state: standingState(s, now), usedThisWeek: standingUses(s, tickets, now), usedTotal: tickets.filter(t => t.standing && t.standing.id === s.id).length }));
-    return json(res, 200, { standing: items, canManage: person && (accounts.enabled ? accounts.canApprove(sess) : true), agents: Object.entries(loadData().users).filter(([n, u]) => u.role === 'ai' && n !== REMINDER_BOT).map(([n]) => n).sort(), never: STANDING_NEVER, maxDays: STANDING_MAX_DAYS });
+    return json(res, 200, { standing: items, canManage: person && (accounts.enabled ? accounts.canApprove(sess) : true), agents: Object.entries(loadData().users).filter(([n, u]) => u.role === 'ai' && n !== REMINDER_BOT && n !== GH_BOT).map(([n]) => n).sort(), never: STANDING_NEVER, maxDays: STANDING_MAX_DAYS });
   }
   const standingActM = url.pathname.match(/^\/api\/standing(?:\/(S-\d{1,5})\/(withdraw|confirm))?$/i);
   if (standingActM && method === 'POST') {

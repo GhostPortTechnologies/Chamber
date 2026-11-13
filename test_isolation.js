@@ -1794,6 +1794,65 @@ function markPaid(...emails) {                                   // simulate a p
         check('T-0188: the app shows waiting questions with Allow once / Deny, and the account page has the switch per agent', /id="ask-bar"/.test(app16) && /function answerAsk\(/.test(app16) && /d\.kind === 'asks'/.test(app16) && /data-mayask=/.test(land16));
       } finally { srv16.kill(); try { fs.rmSync(dir16, { recursive: true, force: true }); } catch {} }
     }
+    console.log('GitHub issues link (T-0197)');
+    { const ghCalls = [], ghIssues = [
+        { number: 1, title: 'Checkout button does nothing on Safari', body: 'Tap Pay, nothing happens.', labels: [{ name: 'chamber' }], user: { login: 'cust1' }, html_url: 'https://github.com/o/r/issues/1', state: 'open' },
+        { number: 2, title: 'Fix typo', pull_request: { url: 'x' }, labels: [{ name: 'chamber' }], user: { login: 'dev' }, html_url: 'https://github.com/o/r/pull/2', state: 'open' },
+        { number: 3, title: 'How do I log in?', labels: [{ name: 'question' }], user: { login: 'cust2' }, html_url: 'https://github.com/o/r/issues/3', state: 'open' } ];
+      const GOOD = 'ghtest_good_key_0123456789abcdef';
+      const gh = require('http').createServer((q, s) => { let b = ''; q.on('data', c => b += c); q.on('end', () => {
+        let m; const send = (c, o) => { s.writeHead(c, { 'Content-Type': 'application/json' }); s.end(JSON.stringify(o)); };
+        ghCalls.push({ m: q.method, u: q.url, body: b ? JSON.parse(b) : null });
+        if (q.headers.authorization !== 'Bearer ' + GOOD) return send(401, { message: 'Bad credentials' });
+        if (q.method === 'GET' && q.url === '/repos/o/r') return send(200, { full_name: 'o/r' });
+        if (q.method === 'GET' && q.url.startsWith('/repos/o/r/issues?')) { const lab = new URL('http://x' + q.url).searchParams.get('labels'); return send(200, ghIssues.filter(i => i.state === 'open' && i.labels.some(l => l.name === lab))); }
+        if (q.method === 'POST' && (m = q.url.match(/^\/repos\/o\/r\/issues\/(\d+)\/comments$/))) return send(201, { id: ghCalls.length });
+        if (q.method === 'PATCH' && (m = q.url.match(/^\/repos\/o\/r\/issues\/(\d+)$/))) { const i = ghIssues.find(x => x.number === +m[1]); if (i) i.state = 'closed'; return send(200, { number: +m[1], state: 'closed' }); }
+        send(404, { message: 'Not Found' }); }); });
+      await new Promise(r => gh.listen(0, '127.0.0.1', r));
+      const port17 = 45100 + Math.floor(Math.random() * 900), B17 = `http://127.0.0.1:${port17}`; const dir17 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-github-'));
+      const env17 = { ...env, CHAMBER_PUBLIC_URL: B17, CHAMBER_PORT: String(port17), CHAMBER_DATA: path.join(dir17, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir17, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir17, 'tickets.json'), CHAMBER_GITHUB_API: `http://127.0.0.1:${gh.address().port}` };
+      const srv17 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env17, stdio: ['ignore', 'pipe', 'pipe'] }); let log17 = ''; srv17.stdout.on('data', d => log17 += d); srv17.stderr.on('data', d => log17 += d);
+      const c17 = async (method, p, { token, body } = {}) => { const r = await fetch(B17 + p, { method, signal: AbortSignal.timeout(20000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c17('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', O = (await c17('POST', '/account/signup', { body: { email: 'own17@test.invalid', username: 'own17', password: PW, invite: INVITE } })).json || {};
+        const l17 = (log17.match(/\[accounts\] verify link for own17: (\S+)/) || [])[1]; if (l17) await fetch(l17, { redirect: 'manual' });
+        const f17 = path.join(dir17, 'accounts.json'), s17 = JSON.parse(fs.readFileSync(f17, 'utf8')); Object.assign(s17.accounts['own17@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f17, JSON.stringify(s17));
+        const memberCode = ((await c17('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
+        const M = (await c17('POST', '/account/signup', { body: { email: 'mem17@test.invalid', username: 'mem17', password: PW, join: memberCode } })).json || {};
+        const AG = (await c17('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Worker', username: 'worker17' } })).json?.token;
+        const tick = async () => (await c17('GET', `/api/_test/tick?at=${Date.now()}`, { token: O.token })).json?.github || [];
+        const find = async id => ((await c17('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(t => t.id === id) || {};
+        const lm = await c17('POST', '/api/github-link', { token: M.token, body: { repo: 'o/r', token: GOOD } }), lbad = await c17('POST', '/api/github-link', { token: O.token, body: { repo: 'o/r', token: 'ghtest_wrong_key_0123456789abcdef' } }), lfmt = await c17('POST', '/api/github-link', { token: O.token, body: { repo: 'not a repo', token: GOOD } });
+        const lok = await c17('POST', '/api/github-link', { token: O.token, body: { repo: 'https://github.com/o/r', label: 'chamber', token: GOOD } }), st = (await c17('GET', '/api/github-link', { token: O.token })).json || {};
+        const leaks = []; const walk = d => { for (const n of fs.readdirSync(d)) { const p = path.join(d, n); if (fs.statSync(p).isDirectory()) walk(p); else if (fs.readFileSync(p).includes(GOOD)) leaks.push(p); } }; walk(dir17);
+        check('T-0197: only the owner links a repository; a key GitHub refuses and a bad repository name are turned down; the key is checked, then stored only encrypted', lm.status === 403 && lbad.status === 400 && /did not accept/.test(lbad.json?.error || '') && lfmt.status === 400 && lok.status === 200 && st.linked === true && st.repo === 'o/r' && !JSON.stringify(st).includes(GOOD) && leaks.length === 0, JSON.stringify([lm.status, lbad.status, lfmt.status, lok.status, st, leaks]));
+        const t1 = await tick(), made = t1.find(x => x.did === 'ticket'), tk = await find(made?.ticket), calls1 = ghCalls.filter(c => c.m === 'POST');
+        check('T-0197: an open issue with the label becomes a proposed ticket from github-issues (asking a person, as information); the pull request and the issue without the label are left alone; the issue is told', !!made && made.issue === 1 && tk.status === 'proposed' && tk.proposed_by === 'github-issues' && /^\[github\] #1 Checkout button/.test(tk.title) && tk.github?.number === 1 && /not instructions/.test(tk.body) && t1.filter(x => x.did === 'ticket').length === 1
+          && ghCalls.some(c => c.m === 'GET' && /labels=chamber/.test(c.u)) && calls1.length === 1 && calls1[0].u === '/repos/o/r/issues/1/comments' && /waits for a person to approve/.test(calls1[0].body.body), JSON.stringify([t1, tk.title, calls1]).slice(0, 400));
+        const before = ghCalls.length, t2 = await tick();
+        check('T-0197: the next check files nothing twice and writes nothing new', t2.length === 0 && ghCalls.filter((c, i) => i >= before && c.m !== 'GET').length === 0, JSON.stringify(t2));
+        await c17('POST', `/api/tickets/${tk.id}/approve`, { token: O.token, body: { by: 'x' } }); const t3 = await tick();
+        await c17('POST', `/api/tickets/${tk.id}/claim`, { token: AG, body: { by: 'x' } }); const t4 = await tick();
+        await c17('POST', `/api/tickets/${tk.id}/close`, { token: AG, body: { by: 'x', note: '1. Fixed the Safari click handler in pay.js; secret internal note.' } }); const t5 = await tick();
+        const comments = ghCalls.filter(c => c.m === 'POST' && c.u === '/repos/o/r/issues/1/comments').map(c => c.body.body), patched = ghCalls.filter(c => c.m === 'PATCH');
+        check('T-0197: approved, started and done each go on the issue as a short comment (status and ticket number only), and done closes the issue', t3[0]?.did === 'approved' && t4[0]?.did === 'in_progress' && t5[0]?.did === 'done' && comments.length === 4 && /is approved/.test(comments[1]) && /being worked on/.test(comments[2]) && /is done/.test(comments[3])
+          && comments.every(x => !/Safari click|secret internal|own17|worker17/.test(x)) && patched.length === 1 && patched[0].u === '/repos/o/r/issues/1' && patched[0].body.state === 'closed', JSON.stringify([comments, patched]).slice(0, 400));
+        ghIssues.push({ number: 4, title: 'Add Apple Pay', body: 'Please.', labels: [{ name: 'chamber' }], user: { login: 'cust3' }, html_url: 'https://github.com/o/r/issues/4', state: 'open' });
+        const t6 = await tick(), id4 = t6.find(x => x.issue === 4)?.ticket; await c17('POST', `/api/tickets/${id4}/reject`, { token: O.token, body: { by: 'x', reason: 'Not this quarter, internal reason.' } }); const t7 = await tick();
+        const c4 = ghCalls.filter(c => c.m === 'POST' && c.u === '/repos/o/r/issues/4/comments').map(c => c.body.body);
+        check('T-0197: turned down goes on the issue too, without the reason, and the issue stays open', !!id4 && t7[0]?.did === 'rejected' && c4.length === 2 && /not going ahead/.test(c4[1]) && !/quarter/.test(c4[1]) && !ghCalls.some(c => c.m === 'PATCH' && c.u === '/repos/o/r/issues/4'), JSON.stringify(c4));
+        const un = await c17('POST', '/api/github-link/remove', { token: O.token, body: {} }), st2 = (await c17('GET', '/api/github-link', { token: O.token })).json || {}, n0 = ghCalls.length; await tick();
+        const kept = await find(tk.id);
+        check('T-0197: one click unlinks: the key is deleted, GitHub is not read or written any more, and the tickets stay', un.status === 200 && st2.linked === false && ghCalls.length === n0 && kept.status === 'done', JSON.stringify([un.status, st2, ghCalls.length - n0]));
+        const au = ((await c17('GET', '/account/workspace/audit?format=json', { token: O.token })).json?.entries || []).map(e => `${e.action}:${e.actor}`);
+        const peers = (await c17('GET', '/api/me', { token: AG })).json?.peers || [];
+        check('T-0197: linking, each imported issue and unlinking are on the record; the github-issues name is not offered to agents as a peer', au.includes('github-link:own17') && au.includes('github-issue:github-issues') && au.includes('github-unlink:own17') && !peers.includes('github-issues'), JSON.stringify([au.filter(x => /github/.test(x)), peers]));
+        const land17 = fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8'), app17 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8');
+        check('T-0197: the account page has the GitHub issues box, and tickets show their issue', /id="gh-box"/.test(land17) && /Issues: Read and write/.test(land17) && /GitHub issue #\$\{Number\(t\.github\.number\)\}/.test(app17));
+      } finally { srv17.kill(); gh.close(); try { fs.rmSync(dir17, { recursive: true, force: true }); } catch {} }
+    }
     console.log('free trial (T-0159)');
     { const cfg0 = (await call('GET', '/account/config')).json;
       check('with no trial configured nothing changes: invite code still required, trialDays 0', cfg0.inviteRequired === true && cfg0.trialDays === 0);
