@@ -295,7 +295,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.26.0")
+check("the connector reports its version", m.AGENT_VERSION == "3.27.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -761,6 +761,84 @@ check("in the conversation the agent sees, a scheduled post and a webhook post a
 dt214b = m214.data_text("general", [h_s], h_s)
 check("when the message to answer is itself a scheduled post, the agent is told so, and still answers the person who set the schedule up", "The message to answer, from alice (posted automatically by a schedule alice set up; nobody typed this just now):" in dt214b, dt214b[-300:])
 check("only a schedule or a webhook gets the mark", m214.auto_hint({"username": "a", "source": "ask:A-1"}) == "" and m214.auto_hint({"username": "a"}) == "" and m214.auto_hint({"username": "a", "source": "reminder"}) == "")
+print("an agent sees no files until someone attaches them (3.27.0, T-0218)")
+r218 = os.path.realpath(tempfile.mkdtemp(prefix="reach-")); st218 = os.path.join(r218, "state", "state.json"); J218 = lambda *a: os.path.join(r218, *a)
+os.makedirs(J218("proj", "notes")); os.makedirs(J218("My Other (old)")); os.makedirs(J218("odd[1]")); os.makedirs(J218("outside")); open(J218("one.txt"), "w").write("x"); open(J218("proj", "a.txt"), "w").write("x")
+os.symlink(J218("proj"), J218("link-to-proj"))
+envA = {"CHAMBER_STATE": st218, "CHAMBER_REACH": "attached", "CHAMBER_ALLOWED_TOOLS": "Read,Grep,Glob,Bash(git status:*)", "CHAMBER_ATTACH_HINT": "chamber-attach <folder>"}
+def cli218(*a, env=None):
+    e = {"PATH": os.environ.get("PATH", ""), "HOME": r218, "CHAMBER_ENV_FILE": J218("none.env"), **(env or envA)}          # no URL and no key: attaching needs neither
+    p = subprocess.run([sys.executable, str(HERE / "chamber-agent.py"), "--attach", *a], capture_output=True, text=True, env=e, timeout=30); return p.returncode, p.stdout + p.stderr
+c0 = cli218(); c1 = cli218(J218("link-to-proj")); c2 = cli218(J218("one.txt"), J218("My Other (old)")); c3 = cli218("--private", J218("proj", "notes"))
+c4 = cli218(J218("nope")); c5 = cli218("/"); c6 = cli218(J218("odd[1]")); c7 = cli218("--bogus"); c8 = cli218("--remove"); saved218 = json.load(open(J218("state", "attached.json")))
+check("attaching happens on the machine with one command, needs no key, and says in plain words what the agent can now read",
+      c0[0] == 0 and "Nothing is attached" in c0[1] and c1[0] == 0 and "  " + J218("proj") in c1[1] and c2[0] == 0 and c3[0] == 0 and "For your eyes only" in c3[1] and "may run commands" in c3[1] and "no restart is needed" in c3[1]
+      and saved218 == {"paths": [J218("proj"), J218("one.txt"), J218("My Other (old)")], "private": [J218("proj", "notes")], "all": False}, (c0, c1, saved218))
+check("a mistake changes nothing and says why: no such folder, the whole disk (say --everything), a name the rules cannot express, an unknown word, a missing folder name",
+      c4[0] != 0 and "Nothing was changed" in c4[1] and c5[0] != 0 and "--everything" in c5[1] and c6[0] != 0 and "cannot express" in c6[1] and c7[0] == 2 and "--private PATH" in c7[1] and c8[0] != 0 and "needs a folder" in c8[1]
+      and json.load(open(J218("state", "attached.json"))) == saved218 and (os.stat(J218("state", "attached.json")).st_mode & 0o777) == 0o600, (c4, c5, c6, c7[0], c8))
+m218 = load("claude", extra=envA)
+mode218, paths218, priv218 = m218.reach_now(); R218 = lambda t, p: f"{t}(//{p.lstrip('/')})"
+names218, rules218 = m218.reach_rules(["Read", "Grep", "Glob", "Bash(git status:*)"], mode218, paths218, "/tmp/scratch-x")
+check("the file tools are held to what is attached: a folder as a whole, a single file alone, the chat-files folder for reading; Grep and Glob are never allowed by name",
+      mode218 == "attached" and names218 == ["Bash(git status:*)"] and rules218 == [R218("Read", J218("proj") + "/**"), R218("Read", J218("one.txt")), R218("Read", J218("My Other (old)") + "/**"), R218("Read", os.path.realpath("/tmp/scratch-x"))]
+      and m218.reach_rules(["Read", "Edit", "Write"], "attached", [J218("proj")])[1] == [R218(t, J218("proj") + "/**") for t in ("Read", "Edit", "Write")]
+      and set(m218.reach_deny(priv218)) == {R218(v, J218("proj", "notes") + tail) for v in ("Read", "Edit") for tail in ("", "/**")}, (names218, rules218))
+check("the agent is told what it can read and how a person attaches more, and Chamber is told folder names only, never where they are",
+      "you can read only what was attached to you" in m218.reach_text() and "chamber-attach <folder>" in m218.reach_text() and m218.reach_report() == {"mode": "attached", "private": 1, "names": ["proj", "one.txt", "My Other (old)"], "cmd": True}
+      and r218 not in json.dumps(m218.reach_report()) and m218.ping_body([])["reach"]["names"][0] == "proj", m218.reach_report())
+sc218 = J218("spyclaude"); log218 = J218("spy.log")
+open(sc218, "w").write("""#!/usr/bin/env python3
+import json, os, sys
+open(os.environ["SPY218"], "a").write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "ls": os.listdir(".")}) + "\\n")
+print(json.dumps({"type": "system", "subtype": "init", "session_id": "s", "model": "fake"})); print(json.dumps({"type": "result", "subtype": "success", "result": "ok"}))
+"""); os.chmod(sc218, 0o755); os.environ["SPY218"] = log218; m218.CLAUDE_BIN = sc218
+spy218 = lambda: [json.loads(l) for l in open(log218)][-1]
+m218.ask_claude("general", [], {"id": "r1", "ts": int(time.time() * 1000), "username": "alice", "text": "@test-bot what is in the project?"}); s1 = spy218(); a1 = s1["argv"]; set1 = json.loads(argval(a1, "--settings"))["permissions"]
+check("a real spawn carries exactly that: the tools exist, only the command rule is allowed by name, reading is allowed inside the attachments alone, the private folder is denied, and the prompt says what is attached",
+      a1[a1.index("--tools") + 1:a1.index("--allowedTools")] == ["Bash", "Glob", "Grep", "Read"] and a1[a1.index("--allowedTools") + 1:a1.index("--permission-mode")] == ["Bash(git status:*)"]
+      and set1["allow"] == rules218[:3] and R218("Read", J218("proj", "notes") + "/**") in set1["deny"] and "you can read only what was attached to you" in argval(a1, "-p") and J218("proj") in argval(a1, "-p"), (a1[:12], set1.get("allow")))
+check("it starts in an empty folder of its own, because the folder Claude Code starts in is readable whatever the rules say", s1["cwd"] == os.path.realpath(m218.START_DIR) and s1["ls"] == [] and not m218.reach_inside(m218.START_DIR, paths218), s1["cwd"])
+check("every key-file rule is spelled so that Claude Code honors it (two leading slashes); with one slash a rule for /etc/... never took effect",
+      all(d.startswith(("Read(//", "Edit(//", "Write(//")) for d in set1["deny"]) and "Read(//etc/chamber-agent.env)" in set1["deny"] and "Read(//etc/wireguard/**)" in set1["deny"] and "Read(//**/.env)" in set1["deny"]
+      and f"Read(//{os.path.expanduser('~/.ssh/**').lstrip('/')})" in set1["deny"] and not any(d.startswith("Read(/etc") for d in set1["deny"]), [d for d in set1["deny"] if not d.startswith(("Read(//", "Edit(//", "Write(//"))])
+att218 = tempfile.mkdtemp(prefix="chamber-att-"); open(os.path.join(att218, "1-photo.png"), "wb").write(b"x")
+m218.ask_claude("general", [], {"id": "r1b", "ts": int(time.time() * 1000), "username": "alice", "text": "@test-bot look at this"}, files=[{"path": os.path.join(att218, "1-photo.png"), "name": "photo.png", "mime": "image/png", "size": 1}], scratch=att218)
+set1b = json.loads(argval(spy218()["argv"], "--settings"))["permissions"]
+check("a file sent in the chat still reaches the agent: its folder is readable for that answer", R218("Read", os.path.realpath(att218) + "/**") in set1b["allow"] and argval(spy218()["argv"], "--add-dir") == att218, set1b["allow"])
+c9 = cli218("--nothing"); mode0, paths0, _ = m218.reach_now(); m218.ask_claude("general", [], {"id": "r2", "ts": int(time.time() * 1000), "username": "alice", "text": "@test-bot hi"}); s0 = spy218(); a0 = s0["argv"]; set0 = json.loads(argval(a0, "--settings"))["permissions"]
+check("with nothing attached no file tool is allowed at all, and the agent is told to say so and how a person attaches a folder",
+      "Nothing is attached" in c9[1] and mode0 == "attached" and paths0 == [] and "allow" not in set0 and a0[a0.index("--allowedTools") + 1:a0.index("--permission-mode")] == ["Bash(git status:*)"]
+      and "No folder or file on this machine is attached to you" in argval(a0, "-p") and "chamber-attach <folder>" in argval(a0, "-p") and m218.reach_report() == {"mode": "attached", "private": 1, "names": [], "cmd": True}, (a0[:12], set0.get("allow")))
+mN = load("claude", extra={"CHAMBER_STATE": st218, "CHAMBER_REACH": "attached", "CHAMBER_ALLOWED_TOOLS": "Read,Grep,Glob"}); mN.CLAUDE_BIN = sc218
+mN.ask_claude("general", [], {"id": "r3", "ts": int(time.time() * 1000), "username": "alice", "text": "@test-bot hi"}); aN = spy218()["argv"]
+check("an agent with only file tools and nothing attached is started with no allowed tool at all", "--allowedTools" not in aN and aN[aN.index("--tools") + 1:aN.index("--permission-mode")] == ["Glob", "Grep", "Read"], aN[:12])
+cli218(J218("proj")); pd218 = tempfile.mkdtemp(prefix="ask-pump-"); asks218 = {}; posts218 = []
+def api218(method, path, body=None):
+    posts218.append((method, path, body)); return {"ok": True, "id": "A-9"} if path == "/api/asks" else {"id": "A-9", "status": "waiting"}
+mN.api = api218; mN.MAY_ASK = True; run218 = mN.Run("general", {"id": "m1", "username": "alice"})
+for n, q in (("aa", {"tool_name": "Read", "input": {"file_path": "/etc/hostname"}}), ("bb", {"tool_name": "Grep", "input": {"pattern": "x", "path": "/"}}), ("cc", {"tool_name": "Edit", "input": {"file_path": J218("outside", "x.txt")}}),
+             ("dd", {"tool_name": "Write", "input": {"file_path": J218("proj", "notes", "secret.txt")}}), ("ee", {"tool_name": "Edit", "input": {"file_path": J218("proj", "a.txt")}}), ("ff", {"tool_name": "Bash", "input": {"command": "npm test"}})):
+    json.dump({**q, "tool_use_id": n}, open(os.path.join(pd218, n + ".req.json"), "w"))
+mN.ask_pump(pd218, "general", {"id": "m1", "username": "alice"}, run218, asks218); ans218 = {n: json.load(open(os.path.join(pd218, n + ".ans.json"))) for n in ("aa", "bb", "cc", "dd") if os.path.exists(os.path.join(pd218, n + ".ans.json"))}
+check("with asking switched on, a file outside the attachments (or inside a private folder) is refused there and then, never turned into a question for a person; a change inside the attachments and a command are still asked about",
+      sorted(ans218) == ["aa", "bb", "cc", "dd"] and all(v["decision"] == "deny" and "not attached" in v["message"] for v in ans218.values()) and [p[2]["tool"] for p in posts218 if p[1] == "/api/asks"] == ["Edit", "Bash"], (ans218, posts218))
+mN.MAY_ASK = False; cE = cli218("--everything"); modeE = m218.reach_now()[0]; m218.ask_claude("general", [], {"id": "r4", "ts": int(time.time() * 1000), "username": "alice", "text": "@test-bot hi"}); sE = spy218(); aE = sE["argv"]
+check("a person can attach everything as one deliberate step: the agent then works as agents did before, except for what is marked private",
+      cE[0] == 0 and "everything this account can read" in cE[1] and modeE == "all" and aE[aE.index("--allowedTools") + 1:aE.index("--permission-mode")] == ["Read", "Grep", "Glob", "Bash(git status:*)"] and sE["cwd"] != os.path.realpath(m218.START_DIR)
+      and "allow" not in json.loads(argval(aE, "--settings"))["permissions"] and R218("Read", J218("proj", "notes")) in json.loads(argval(aE, "--settings"))["permissions"]["deny"] and m218.reach_report() == {"mode": "all", "private": 1, "cmd": True} and m218.reach_text() == "")
+cli218("--nothing"); cli218("--unprivate", J218("proj", "notes")); cL = cli218(env={"CHAMBER_STATE": st218, "CHAMBER_ALLOWED_TOOLS": "Read,Grep,Glob"})
+mL = load("claude", extra={"CHAMBER_STATE": st218, "CHAMBER_ALLOWED_TOOLS": "Read,Grep,Glob"}); mL.CLAUDE_BIN = sc218
+mL.ask_claude("general", [], {"id": "r5", "ts": int(time.time() * 1000), "username": "alice", "text": "@test-bot hi"}); sL = spy218(); aL = sL["argv"]
+check("an agent set up before this is unchanged (same tools by name, same folder, no new sentence in its instructions) and --attach says so and how to switch",
+      mL.reach_now() == ("all", [], []) and mL.reach_report() == {"mode": "all", "private": 0} and mL.reach_text() == "" and aL[aL.index("--allowedTools") + 1:aL.index("--permission-mode")] == ["Read", "Grep", "Glob"]
+      and sL["cwd"] == os.path.realpath(mL.WORKDIR) and "attached to you" not in argval(aL, "-p") and "set up before attachments existed" in cL[1] and "CHAMBER_REACH=attached" in cL[1] and "The list for then: nothing yet." in cL[1] and "cannot read any file" not in cL[1], (aL[:12], cL))
+mO = load("ollama", "m", extra={"CHAMBER_STATE": st218, "CHAMBER_REACH": "attached"}); mW = load("claude", extra={"CHAMBER_STATE": st218, "CHAMBER_REACH": "attached", "CHAMBER_ALLOWED_TOOLS": "WebSearch"})
+check("a model without file tools reports nothing about files, and an agent given no file tool says it reads none", "reach" not in mO.ping_body([]) and mW.reach_report() == {"mode": "none"})
+qa = subprocess.run([sys.executable, str(HERE / "chamber-agent.py"), "--ask", "what", "does", "--attach", "do"], capture_output=True, text=True, timeout=30,
+                    env={"PATH": os.environ.get("PATH", ""), "HOME": r218, "CHAMBER_ENV_FILE": J218("none.env"), "CHAMBER_STATE": st218, "CHAMBER_URL": "http://127.0.0.1:1", "CHAMBER_TOKEN": "chk_x", "CHAMBER_ASK": "off"})
+check("the word --attach inside a question for the phone AI is a question, not a command", "phone AI is switched off" in qa.stdout + qa.stderr and "ttached" not in qa.stdout + qa.stderr, (qa.stdout + qa.stderr)[:200])
+shutil.rmtree(r218, ignore_errors=True); shutil.rmtree(att218, ignore_errors=True); shutil.rmtree(pd218, ignore_errors=True)
 sys.argv = ["chamber-agent.py"]
 srv.shutdown()
 print(f"\n{passed} passed, {failed} failed")

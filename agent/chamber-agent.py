@@ -21,6 +21,9 @@ Setup (once):  create an agent token in Chamber (account page > AI AGENTS), then
         CHAMBER_ALLOWED_TOOLS=Read,Grep,Glob         # what claude may do unattended; keep it read-only unless you know better
         CHAMBER_CLAUDE_BIN=claude                   # path to the claude CLI if not on PATH
         CHAMBER_DENY_PATHS=~/.ssh/**,~/.aws/**     # optional extra secret paths Claude may never read (defaults cover the usual ones)
+        CHAMBER_REACH=attached                      # T-0218: the file tools reach only what was attached on this machine with
+                                                    #   python3 chamber-agent.py --attach <folder>   (the installers write this line and
+                                                    #   leave a chamber-attach command). Without it: whatever the account can read.
     Bring your own model (T-0055), instead of CHAMBER_CLAUDE_BIN / CHAMBER_ALLOWED_TOOLS:
         CHAMBER_BACKEND=ollama                      # ollama | openai | gemini   (default: claude)
         CHAMBER_MODEL=llama3.1:8b                   # model name for that backend (gpt-4o-mini, gemini-2.0-flash, ...)
@@ -49,6 +52,9 @@ Guardrails (T-0015, first cut):
     what it read and did; a new top-level mention starts a fresh session. Sessions end after CHAMBER_SESSION_IDLE_MIN minutes
     without a reply (60). Claude Code keeps the conversation on this machine in its usual place (~/.claude, which the agent
     itself may not read). CHAMBER_SESSIONS=off goes back to one fresh run per mention with no session file. Replies are redacted for anything that looks like a secret.
+  - T-0218 (3.27.0): with CHAMBER_REACH=attached the agent reads no file on this machine until a person attaches a folder or a
+    file here (--attach); what is marked private is never opened. Also fixed: the rules that keep the agent out of key files
+    under /etc (its own settings file among them) were spelled in a way Claude Code did not honor, so they never took effect.
   - T-0214 (3.26.0): a message posted by a schedule or a webhook is marked as automatic in what the agent reads.
   - 3.25.0 (review 2026-11-13): an approved patch is applied only when it is the version a person approved (the ticket carries
     its fingerprint), and never for a ticket approved in advance by a standing approval.
@@ -154,7 +160,7 @@ CLAUDE_BIN = os.environ.get("CHAMBER_CLAUDE_BIN", "claude")
 POLL_SEC = int(os.environ.get("CHAMBER_POLL_SEC", "5"))
 CLAUDE_TIMEOUT = int(os.environ.get("CHAMBER_CLAUDE_TIMEOUT", "300"))
 STATE = os.environ.get("CHAMBER_STATE", os.path.expanduser("~/.chamber-agent-state.json"))
-AGENT_VERSION = "3.26.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
+AGENT_VERSION = "3.27.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
 FALLBACK_SEC = int(os.environ.get("CHAMBER_FALLBACK_SEC", "20"))   # T-0046: poll + presence ping interval while the event stream is up
 BACKEND = os.environ.get("CHAMBER_BACKEND", "claude").strip().lower()           # T-0055
 MODEL = os.environ.get("CHAMBER_MODEL", "").strip()
@@ -203,6 +209,196 @@ DEFAULT_DENY = ["~/.ssh/**", "~/.aws/**", "~/.claude/**", "~/.config/**", "~/.gn
                 "/etc/ssh/**", "/etc/letsencrypt/**", "/proc/**", "**/*.pem", "**/*.key", "**/.env", "**/.env.*", "**/*.sqlite*", "**/*.db", "**/auth.json", "**/stripe.json"]
 DENY_PATHS = DEFAULT_DENY + [p.strip() for p in os.environ.get("CHAMBER_DENY_PATHS", "").split(",") if p.strip()]
 SECRET_RE = re.compile(r"(sk-ant-[A-Za-z0-9_-]{20,}|sk_(live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}|chk_[a-f0-9]{8}_[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[abp]-[A-Za-z0-9-]{10,}|ghp_[A-Za-z0-9]{30,})")
+
+# ── T-0218 (3.27.0): an agent sees no files until someone attaches them ────────────────────────────────────────────────────────
+# CHAMBER_REACH=attached (what the installers write from now on): the file tools (Read, Grep, Glob, and Edit / Write when the
+# operator gave them) work only inside the folders and single files a person attached on THIS machine, minus anything marked
+# private. Nothing attached means no file on this machine can be read. The list lives in a small file on this machine and is changed
+# only here (--attach, or the chamber-attach command the installer leaves behind); Chamber is told the names of what is attached
+# and cannot change it. Without CHAMBER_REACH (agents installed before this) nothing changes: the file tools reach whatever the
+# account can read, minus the private list and the key files below.
+# Three facts measured with Claude Code 2.1.323 on 2026-11-13, which the code below relies on:
+#   * the folder Claude Code starts in is readable whatever the rules say, so an agent in this mode starts in an empty folder;
+#   * a rule path with ONE leading slash means "inside the project": Read(/etc/x) does not cover the real /etc/x, Read(//etc/x) does;
+#   * a link inside an attached folder that points outside it is refused, so attached paths are stored with links resolved.
+# Honest limit: a Bash rule the operator allowed can still read what the account can; --attach says so when that is the case.
+REACH = os.environ.get("CHAMBER_REACH", "all").strip().lower()
+ATTACH_FILE = os.environ.get("CHAMBER_ATTACHED_FILE", "").strip() or os.path.join(os.path.dirname(os.path.abspath(STATE)), "attached.json")
+ATTACH_HINT = os.environ.get("CHAMBER_ATTACH_HINT", "").strip() or f"python3 {os.path.abspath(__file__)} --attach <folder>"
+START_DIR = os.path.join(os.path.dirname(os.path.abspath(STATE)), "start")   # stays empty
+ATTACH_MAX = 50
+ATTACH_BAD_RE = re.compile(r"[*?\[\]\\\n]")                           # a permission rule would read these as a pattern, not as part of a name
+FILE_TOOLS = ("Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit")
+
+def rule_path(p):
+    """How Claude Code spells a path in a permission rule: two leading slashes for a real absolute path (see the note above)."""
+    return "//" + (os.path.expanduser(p) if p.startswith("~") else p).lstrip("/")
+
+def deny_rules():
+    """The key and password files no agent opens (DENY_PATHS), as Claude Code deny rules. Before 3.27.0 the /etc/... entries were
+    written with one slash and so never took effect; the ~/... and **/... entries always did."""
+    return [f"Read({rule_path(p)})" for p in DENY_PATHS]
+
+def attached_read():
+    """{"paths": [...], "private": [...], "all": bool}; a missing or damaged file means nothing is attached."""
+    try:
+        with open(ATTACH_FILE, encoding="utf-8") as f: d = json.load(f)
+    except (OSError, ValueError): d = {}
+    d = d if isinstance(d, dict) else {}
+    clean = lambda v: [p for p in (v if isinstance(v, list) else []) if isinstance(p, str) and os.path.isabs(p) and not ATTACH_BAD_RE.search(p)][:ATTACH_MAX]
+    return {"paths": clean(d.get("paths")), "private": clean(d.get("private")), "all": d.get("all") is True}
+
+def attached_write(d):
+    """Replace the list in one step. A file the installer made keeps its owner, group and mode (root-owned on a server, so the
+    agent's own account cannot change what it is allowed to read)."""
+    try: old = os.stat(ATTACH_FILE)
+    except OSError: old = None
+    os.makedirs(os.path.dirname(ATTACH_FILE), mode=0o700, exist_ok=True)
+    tmp = ATTACH_FILE + ".tmp"; fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f: json.dump({"paths": d["paths"], "private": d["private"], "all": bool(d["all"])}, f, indent=1)
+    if old is not None:
+        try: os.chown(tmp, old.st_uid, old.st_gid)
+        except OSError: pass
+        os.chmod(tmp, old.st_mode & 0o777)
+    os.replace(tmp, ATTACH_FILE)
+
+def reach_now():
+    """What the file tools may reach right now: (mode, attached paths that exist, private paths). mode: "all" | "attached".
+    Read again for every answer, so a change on the machine applies from the next answer without a restart."""
+    a = attached_read()
+    if REACH != "attached" or a["all"]: return "all", [], a["private"]
+    return "attached", [p for p in a["paths"] if os.path.exists(p)], a["private"]
+
+def reach_inside(path, roots):
+    rp = os.path.realpath(path)
+    return any(rp == r or rp.startswith(r.rstrip("/") + "/") for r in roots)
+
+def reach_rules(tools, mode, paths, scratch=None):
+    """(tool names for --allowedTools, allow rules for the settings). In "attached" mode Read / Edit / Write are held to the attached
+    paths (reading also covers the folder with files sent in the chat); Grep and Glob follow the Read rules, so their bare names are
+    left out, because allowed by name they would search anywhere."""
+    if mode == "all": return list(tools), []
+    spell = lambda t, p: f"{t}({rule_path(p)}/**)" if os.path.isdir(p) else f"{t}({rule_path(p)})"
+    names, rules = [], []; scratch = os.path.realpath(scratch) if scratch else None   # (macOS keeps temporary folders behind a link)
+    for t in tools:
+        if t in ("Read", "Edit", "Write"): rules += [spell(t, p) for p in paths] + ([spell(t, scratch)] if scratch and t == "Read" else [])
+        elif t in ("Grep", "Glob"): continue
+        else: names.append(t)
+    return names, rules
+
+def reach_deny(private):
+    """What a person marked "for my eyes only": never opened or changed, whatever is attached and in either mode."""
+    return [f"{v}({rule_path(p)}{tail})" for p in private for v in ("Read", "Edit") for tail in ("", "/**")]
+
+def start_dir():
+    os.makedirs(START_DIR, mode=0o700, exist_ok=True); return START_DIR
+
+def reach_text():
+    """One sentence for the model: what it can read here, and what to say when asked about something it cannot see."""
+    mode, paths, _ = reach_now()
+    if mode == "all": return ""
+    if not paths: return (" No folder or file on this machine is attached to you, so you cannot read any file here (files sent in the chat still reach you). "
+                          "If the request needs files from this machine, say that nothing is attached yet, and that the person who runs this agent can attach a folder on that machine with:  " + ATTACH_HINT
+                          + "  Say it in the chat; do not propose a ticket about it.")
+    return (" On this machine you can read only what was attached to you: " + "; ".join(paths[:20]) + ". If the request needs anything else here, say you cannot see it, "
+            "and that the person who runs this agent can attach it on that machine with:  " + ATTACH_HINT + "  Say it in the chat; do not propose a ticket about it.")
+
+def reach_report():
+    """What Chamber is told and shows under People and agents: the names of attached folders, never full paths."""
+    if BACKEND != "claude": return None                              # other models have no file tools at all
+    names = {t.strip().split("(")[0] for t in ALLOWED_TOOLS.split(",") if t.strip()}
+    mode, paths, private = reach_now(); cmd = "Bash" in names
+    if not names & set(FILE_TOOLS) and not cmd: return {"mode": "none"}
+    r = {"mode": mode, "private": len(private)}
+    if mode == "attached": r["names"] = [os.path.basename(p.rstrip("/")) or p for p in paths][:12]
+    if cmd: r["cmd"] = True
+    return r
+
+ATTACH_USAGE = """Choose what the Chamber agent on this machine can read. It reads nothing here until you attach it.
+  --attach                        show what is attached
+  --attach FOLDER-OR-FILE ...     attach it: the agent can read and search it from its next answer
+  --attach --remove PATH ...      take it away again
+  --attach --private PATH ...     for your eyes only: never opened, whatever is attached around it
+  --attach --unprivate PATH ...   undo --private
+  --attach --everything           everything this account can read (how agents worked before attachments)
+  --attach --nothing              detach everything"""
+
+def _reads_as(user, p):
+    """Can that account read p? Asked in a child process that becomes the account (only root can do that). None = could not tell."""
+    try:
+        import pwd; pw = pwd.getpwnam(user); pid = os.fork()
+        if pid == 0:
+            try:
+                os.initgroups(user, pw.pw_gid); os.setgid(pw.pw_gid); os.setuid(pw.pw_uid)
+                os._exit(0 if os.access(p, os.R_OK | (os.X_OK if os.path.isdir(p) else 0)) else 1)
+            except BaseException: os._exit(2)
+        code = os.waitpid(pid, 0)[1] >> 8
+        return None if code == 2 else code == 0
+    except Exception: return None
+
+def _attach_cli():
+    rest, argv, i = [], sys.argv[sys.argv.index("--attach") + 1:], 0
+    while i < len(argv):                                              # --env FILE may stand before or after --attach
+        if argv[i] == "--env": i += 2; continue
+        rest.append(argv[i]); i += 1
+    words, paths = [w for w in rest if w.startswith("--")], [w for w in rest if not w.startswith("--")]
+    if len(words) > 1 or any(w not in ("--remove", "--private", "--unprivate", "--everything", "--nothing", "--help") for w in words):
+        print(ATTACH_USAGE); sys.exit(2)
+    word = words[0] if words else None
+    if word == "--help": print(ATTACH_USAGE); return
+    if word in ("--remove", "--private", "--unprivate") and not paths: sys.exit(f"{word} needs a folder or a file. Nothing was changed.")
+    if word in ("--everything", "--nothing") and paths: sys.exit(f"{word} takes no folder. Nothing was changed.")
+    a = attached_read(); notes = []
+    plain = lambda p: os.path.abspath(os.path.expanduser(p)); full = lambda p: os.path.realpath(plain(p))
+    def nameable(p):
+        if ATTACH_BAD_RE.search(p): sys.exit(f"{p}\nhas one of the characters * ? [ ] \\ in its name, which the permission rules cannot express. Attach the folder above it, or rename it. Nothing was changed.")
+    if word is None:
+        for raw in paths:
+            p = full(raw); nameable(p)
+            if not os.path.exists(p): sys.exit(f"There is no folder or file {p}. Nothing was changed.")
+            if p == "/": sys.exit("To let the agent read everything this account can read, say so in words: --attach --everything")
+            if p not in a["paths"]: a["paths"].append(p)
+            a["private"] = [x for x in a["private"] if x != p]
+            who = os.environ.get("CHAMBER_ATTACH_AS", "").strip()
+            if not who and p == os.path.realpath(os.path.expanduser("~")):
+                notes.append("Note: that is your whole home folder. The agent can read everything in it except key and password files and what you mark private (--attach --private PATH).")
+            if who and os.geteuid() == 0 and _reads_as(who, p) is False:
+                notes.append(f"Note: the agent runs as the account '{who}', which cannot read {p} yet, so attaching it changes nothing until you give that account access, for example:\n"
+                             f"  sudo setfacl -R -m u:{who}:rX '{p}'     (or put '{who}' in a group that can read it)")
+        if len(a["paths"]) > ATTACH_MAX: sys.exit(f"At most {ATTACH_MAX} folders and files can be attached. Attach a folder above them instead. Nothing was changed.")
+    elif word == "--remove":
+        gone = {x for raw in paths for x in (full(raw), plain(raw))}; a["paths"] = [x for x in a["paths"] if x not in gone]
+    elif word == "--private":
+        for raw in paths:
+            p = full(raw); nameable(p)
+            if p not in a["private"]: a["private"].append(p)
+            a["paths"] = [x for x in a["paths"] if x != p]
+        if len(a["private"]) > ATTACH_MAX: sys.exit(f"At most {ATTACH_MAX} private folders and files. Mark a folder above them instead. Nothing was changed.")
+    elif word == "--unprivate":
+        gone = {x for raw in paths for x in (full(raw), plain(raw))}; a["private"] = [x for x in a["private"] if x not in gone]
+    elif word == "--everything": a["all"] = True
+    elif word == "--nothing": a["all"] = False; a["paths"] = []
+    if word or paths:
+        try: attached_write(a)
+        except OSError as e: sys.exit(f"Could not save the list ({e.strerror or e}). On a server this needs root: sudo chamber-attach ...   Nothing was changed.")
+        a = attached_read()
+    listed = "\n".join("  " + p + ("" if os.path.exists(p) else "   (not there right now)") for p in a["paths"])
+    if REACH != "attached":                                           # an agent from before 3.27.0: say what is true for it today, and what the list would do
+        print("This agent was set up before attachments existed: it reads whatever its account can read, as before.\n"
+              "What you mark private is never opened either way. To hold it to what is attached, add the line\n"
+              "  CHAMBER_REACH=attached\nto its settings file and restart it (on a server: re-run the installer with --reach attached).\n")
+        print("The list for then: " + ("everything this account can read." if a["all"] else "\n" + listed if a["paths"] else "nothing yet."))
+    elif a["all"]: print("Attached: everything this account can read.")
+    elif a["paths"]: print("Attached (the agent can read and search these):\n" + listed)
+    else: print("Nothing is attached: the agent cannot read any file on this machine. Files sent to it in chat still reach it.")
+    if a["private"]: print("For your eyes only (never opened, whatever is attached):\n" + "\n".join("  " + p for p in a["private"]))
+    print("It also never opens key and password files (.env, *.key, *.pem, ~/.ssh and the like).")
+    for n in notes: print(n)
+    if any(t.strip().startswith("Bash") for t in ALLOWED_TOOLS.split(",")):
+        print("Note: this agent may run commands (its settings allow Bash). A command can read whatever the account can, so attachments hold its file tools only.")
+    print("Changes apply from the agent's next answer; no restart is needed. What it already read in a conversation that is still going stays in that conversation.")
+
+if "--attach" in sys.argv and "--ask" not in sys.argv: _attach_cli(); sys.exit(0)   # (after --ask the words are a question for the phone AI)
 
 if "--pair" in sys.argv:                                            # T-0048: device-code pairing needs no token yet
     _i = sys.argv.index("--pair"); URL = (sys.argv[_i + 1] if _i + 1 < len(sys.argv) and not sys.argv[_i + 1].startswith("--") else URL).rstrip("/")
@@ -413,6 +609,8 @@ def ping_body(dm_rooms):
     if LAST_ERROR["text"] and time.time() - LAST_ERROR["at"] < 3600: b["error"] = LAST_ERROR["text"]
     b["ask"] = ASK_STATUS.get("state", "off")                      # T-0131(b): "ready" | "off" | "error"
     if SHELL_ON: b["shell"] = "on"
+    r = reach_report()                                               # T-0218: what the file tools can reach here (names only)
+    if r: b["reach"] = r
     return b
 
 def note_error(e):
@@ -744,7 +942,7 @@ def ask_run(question):
     k = ask_key()
     if k: env["ANTHROPIC_API_KEY"] = k                               # T-0130(a): the key from the Chamber setup powers this too
     add_signin(env)                                                  # T-0134: or the subscription signed in from the phone
-    deny = {"permissions": {"deny": [f"Read({d if d.startswith('/') else '//' + os.path.expanduser(d).lstrip('/') if d.startswith('~') else '//' + d})" for d in DENY_PATHS]}}
+    deny = {"permissions": {"deny": deny_rules() + reach_deny(attached_read()["private"])}}   # T-0218: rules Claude Code honors, plus what was marked private
     cmd = ([CLAUDE_BIN, "-p"] + (["--continue"] if os.path.exists(mark) else []) + [q]
            + ["--tools", *ask_tools(), "--allowedTools", *ask_tools(),
               "--permission-mode", "dontAsk",            # nobody can approve a prompt from a phone
@@ -1073,6 +1271,11 @@ def ask_pump(askdir, room, msg, run, asks):
             except (OSError, ValueError): continue
             tool, inp = str(q.get("tool_name") or "?"), q.get("input") if isinstance(q.get("input"), dict) else {}
             a = asks[rid] = {"tool": tool, "input": inp, "tool_use_id": q.get("tool_use_id"), "done": False}
+            if tool in FILE_TOOLS:                                       # T-0218: what the file tools may reach is decided on this machine, by attaching, not by a question in the room
+                rmode, rpaths, rprivate = reach_now(); target = inp.get("file_path") or inp.get("notebook_path") or inp.get("path") or ""
+                if rmode == "attached" and (tool in ("Read", "Grep", "Glob") or not target or not reach_inside(target, rpaths) or reach_inside(target, rprivate)):
+                    ask_answer(askdir, rid, "deny", "That is not attached to this agent (or it is marked private), so it cannot be opened. The person who runs this agent can attach it on this machine with:  " + ATTACH_HINT + "  Say so in the chat; do not propose a ticket about it.")
+                    a.update(done=True, decision="deny", pre=True); continue
             if ask_preapproved(tool, inp):
                 ask_answer(askdir, rid, "allow"); a.update(done=True, decision="allow", pre=True); continue
             cov = ask_covered(asks, tool, inp)                           # T-0211: exactly this was allowed for the whole job
@@ -1126,7 +1329,7 @@ def ask_finish(askdir, asks, st):
 DRAFTS_ON = os.environ.get("CHAMBER_DRAFTS", "on").strip().lower() not in ("off", "0", "no", "false")
 DRAFT_LABELS = ("UNDERSTOOD", "PLAN", "TOUCHES", "RISK", "WHO", "QUESTION")
 def draft_rules(with_tools):
-    tools = ("You may use the tools you have been given to look at the project's files, so you can say what the request would touch."
+    tools = ("You may use the tools you have been given to look at the project's files, so you can say what the request would touch." + reach_text()   # T-0218
              if with_tools else "You have no tools: work from the request and the SYSTEM CONTEXT block, and write \"not sure\" where you cannot know.")
     return f"""You are "{ME}", an AI agent of a team that uses the Chamber app. A person outside the team (a client) sent the team the REQUEST below.
 Write a DRAFT that helps a person on the team decide on it quickly. Do not do the work, and change nothing.
@@ -1183,7 +1386,7 @@ def rules_text(room, with_tools, msg=None):
     """Our instructions to the model. Identical for every backend except the tools sentence.
     T-0072: a BUILD REQUEST, a DIGEST request and the asker's plain-language preference add a paragraph each."""
     if msg and msg.get("_draft"): return draft_rules(with_tools)                 # T-0207: a draft for a request has its own, narrower instructions
-    if with_tools: tools = "You may use the tools you have been given to look things up." + (ask_rules_text() if MAY_ASK and ASK_TOOLS else "")   # T-0188
+    if with_tools: tools = "You may use the tools you have been given to look things up." + reach_text() + (ask_rules_text() if MAY_ASK and ASK_TOOLS else "")   # T-0188, T-0218
     elif TOOL_ALLOW: tools = ("You have no tools except this: to look something up, reply with ONLY one line `RUN: <command>` where the command matches one of these patterns: "
                               + "; ".join(TOOL_ALLOW) + ". The output will be sent back to you and you may ask again (a few times at most). Anything else is refused. Otherwise answer from the conversation and the SYSTEM CONTEXT block.")
     else: tools = "You have no tools; answer from the conversation and the SYSTEM CONTEXT block, and say when you cannot know something."
@@ -1633,9 +1836,14 @@ def ask_claude(room, history, msg, files=None, scratch=None, run=None, _fresh=Fa
     # T-0041: locked spawn. --tools limits what EXISTS (not just what is pre-approved), dontAsk refuses anything else,
     # project-only settings skip the user's hooks and saved allow rules, no MCP, no skills, no session file on disk,
     # deny rules for secret paths, and the Chamber token is not in the child's environment.
-    deny = {"permissions": {"deny": [f"Read({p if p.startswith('/') else '//' + os.path.expanduser(p).lstrip('/') if p.startswith('~') else '//' + p})" for p in DENY_PATHS]}}
     tools = [t.strip() for t in ALLOWED_TOOLS.split(",") if t.strip()]
     base = sorted({t.split("(")[0] for t in tools})                 # --tools wants tool names; Bash(systemctl status:*) patterns go to --allowedTools
+    # T-0218: what the file tools may reach for THIS answer. "attached": only the attached folders and files (and the files sent in
+    # the chat), from an empty starting folder. "all": as before. Either way the key files and what was marked private stay closed.
+    rmode, rpaths, rprivate = reach_now(); has_files = bool(scratch and any(f.get("path") for f in files or []))
+    allowed, scoped = reach_rules(tools, rmode, rpaths, scratch if has_files else None)
+    deny = {"permissions": {"deny": deny_rules() + reach_deny(rprivate)}}
+    if scoped: deny["permissions"]["allow"] = scoped
     askdir = None
     if MAY_ASK and ASK_TOOLS and not msg.get("_draft"):                # T-0188: the owner lets this agent ask a person, one tool use at a time (never on behalf of an outside request, T-0207)
         askroot = os.path.join(os.path.dirname(os.path.abspath(STATE)), "asks")
@@ -1645,7 +1853,7 @@ def ask_claude(room, history, msg, files=None, scratch=None, run=None, _fresh=Fa
         base = sorted(set(base) | set(ASK_TOOLS))                    # those tools exist, but none is pre-allowed: every use is asked about
         deny["permissions"]["deny"] += [f"{v}(//{askroot.lstrip('/')}/**)" for v in ("Read", "Edit", "Write")]   # the AI may neither read nor write the questions folder
         deny["permissions"]["ask"] = list(ASK_TOOLS)                 # even uses Claude Code would wave through as harmless are asked about
-    cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "stream-json", "--verbose", "--tools", *base, "--allowedTools", *tools,
+    cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "stream-json", "--verbose", "--tools", *base, *(["--allowedTools", *allowed] if allowed else []),
            "--permission-mode", "manual" if askdir else "dontAsk", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ask_mcp_config(askdir) if askdir else '{"mcpServers":{}}',
            "--disable-slash-commands", *sess_args, "--settings", json.dumps(deny)]   # T-0187: session flags instead of --no-session-persistence
     if scratch and any(f.get("path") for f in files or []): cmd += ["--add-dir", scratch]        # T-0064
@@ -1655,7 +1863,7 @@ def ask_claude(room, history, msg, files=None, scratch=None, run=None, _fresh=Fa
     if askdir: env["MCP_TOOL_TIMEOUT"] = str((ASK_WAIT + 90) * 1000)                # T-0188: a person may take minutes to answer
     run.usage.setdefault("model", "claude"); run.step("Continuing the conversation in this thread (same Claude Code session)" if prior else "Asking Claude Code")
     try:
-        proc = subprocess.Popen(cmd, cwd=WORKDIR, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        proc = subprocess.Popen(cmd, cwd=WORKDIR if rmode == "all" else start_dir(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)   # T-0218
     except FileNotFoundError:
         if askdir: shutil.rmtree(askdir, ignore_errors=True)
         run.state = "failed"; note_error(f"{CLAUDE_BIN} not found"); return f"(Claude Code is not installed here: '{CLAUDE_BIN}' not found.)"

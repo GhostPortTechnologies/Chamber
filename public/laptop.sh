@@ -1,28 +1,33 @@
 #!/bin/sh
 # Chamber on your own computer, without admin rights (T-0186). macOS and Linux; on Windows, run it inside WSL.
-# Run it in the folder of the one project you want the agent to help with:
 #
-#   cd ~/code/my-project
 #   curl -fsSL https://chamber.ghostporttechnologies.com/laptop.sh | sh -s -- --token chk_...
 #
+# The agent reads nothing on this computer until you attach a folder or a file (T-0218). The installer asks which folder, if
+# any. Afterwards:  ~/.chamber/chamber-attach ~/code/my-project   (and --remove, --private, --everything, --nothing, --help).
 # Without --token it shows a 6-digit pairing code instead, which an owner or admin enters in Chamber (Account, AI agents).
-# Options: --token chk_...   --commanders a,b   --rooms general   --workdir /path   --backend claude|ollama|openai|gemini
+# Options: --token chk_...   --commanders a,b   --rooms general   --backend claude|ollama|openai|gemini
 #          --model NAME      --url https://chamber.example.com
+#          --attach /path    attach this folder or file now (may be given several times; then nothing is asked)
+#          --no-attach       attach nothing and ask nothing       --workdir /path   the older name for --attach
 #          --token -         ask for the key instead (it is then not left in this computer's command history)
 #          --background      keep it running after the terminal closes, and start it again at log-in
 #                            (a launchd agent on macOS, a user service on Linux)
 #          --stop            stop the background agent        --uninstall   remove everything this script put here
 # Everything stays in your own home folder: ~/.chamber (the agent and its state) and ~/.config/chamber/agent.env (its
-# settings and key, readable only by you). Nothing needs sudo. The agent reads the project folder and does not change it,
+# settings and key, readable only by you). Nothing needs sudo. The agent reads what you attached and does not change it,
 # unless you change CHAMBER_ALLOWED_TOOLS in that settings file yourself.
 # SPDX-License-Identifier: AGPL-3.0-only  |  Copyright (C) 2026 GhostPort Technologies
 set -eu
-URL=https://chamber.ghostporttechnologies.com; TOKEN=""; COMMANDERS=""; ROOMS=""; WORKDIR=""; BACKEND=""; MODEL=""
+URL=https://chamber.ghostporttechnologies.com; TOKEN=""; COMMANDERS=""; ROOMS=""; WORKDIR=""; BACKEND=""; MODEL=""; ATTACH=""; NOATTACH=0
+NL="
+"
 BG=0; STOP=0; UNINSTALL=0; NOSTART=${CHAMBER_NO_START:-0}      # CHAMBER_NO_START=1: set everything up but start nothing (tests)
 while [ $# -gt 0 ]; do
   case "$1" in
     --token) TOKEN=${2:-}; shift 2;; --commanders) COMMANDERS=${2:-}; shift 2;; --rooms) ROOMS=${2:-}; shift 2;;
-    --workdir) WORKDIR=${2:-}; shift 2;; --backend) BACKEND=${2:-}; shift 2;; --model) MODEL=${2:-}; shift 2;;
+    --workdir|--attach) [ -n "${2:-}" ] || { echo "Chamber: $1 needs a folder" >&2; exit 2; }; ATTACH="$ATTACH$2$NL"; shift 2;; --no-attach) NOATTACH=1; shift;;
+    --backend) BACKEND=${2:-}; shift 2;; --model) MODEL=${2:-}; shift 2;;
     --url) URL=${2%/}; shift 2;; --background) BG=1; shift;; --stop) STOP=1; shift;; --uninstall) UNINSTALL=1; shift;;
     -h|--help) echo "See the top of $URL/laptop.sh"; exit 0;;
     *) echo "Chamber: unknown option $1" >&2; exit 2;;
@@ -71,11 +76,9 @@ if [ -z "$CLAUDE" ] && [ "${BACKEND:-claude}" = claude ]; then
   say "Note: Claude Code was not found on this computer. The agent will connect, but it can only answer once Claude Code is installed and signed in."
 fi
 
-[ -n "$WORKDIR" ] || WORKDIR=$(pwd)
-WORKDIR=$(cd "$WORKDIR" 2>/dev/null && pwd) || die "there is no folder $WORKDIR"
-case "$WORKDIR" in
-  "$HOME"|/|/Users|/home|/tmp|/root) die "run this inside one project folder (cd into it first), not in $WORKDIR. The agent can read everything in the folder it works in, so give it only the project.";;
-esac
+# T-0218: is this the first time attachments are set up here, and was an older install working in a project folder?
+FIRST=1; if grep -q '^CHAMBER_REACH=' "$CONF" 2>/dev/null; then FIRST=0; fi
+OLDWD=$(grep -s '^CHAMBER_WORKDIR=' "$CONF" | head -1 | cut -d= -f2- || true)
 
 umask 077
 mkdir -p "$DIR" "$CONFDIR"; chmod 700 "$DIR" "$CONFDIR"
@@ -97,14 +100,65 @@ elif ! grep -q '^CHAMBER_TOKEN=chk_' "$CONF" 2>/dev/null; then
   "$PY" "$DIR/chamber-agent.py" --pair "$URL" --write "$CONF" || die "pairing did not finish. Run this again for a new code."
 fi
 setv CHAMBER_INSTALL laptop
-setv CHAMBER_WORKDIR "$WORKDIR"
 setv CHAMBER_STATE "$DIR/state.json"
+setv CHAMBER_REACH attached                                       # T-0218: the agent reads only what is attached
+setv CHAMBER_ATTACH_HINT "~/.chamber/chamber-attach <folder>"
 if [ -n "$CLAUDE" ]; then setv CHAMBER_CLAUDE_BIN "$CLAUDE"; fi
 if [ -n "$COMMANDERS" ]; then setv CHAMBER_COMMANDERS "$COMMANDERS"; fi
 if [ -n "$ROOMS" ]; then setv CHAMBER_ROOMS "$ROOMS"; fi
 if [ -n "$BACKEND" ]; then setv CHAMBER_BACKEND "$BACKEND"; fi
 if [ -n "$MODEL" ]; then setv CHAMBER_MODEL "$MODEL"; fi
 grep -q '^CHAMBER_ALLOWED_TOOLS=' "$CONF" || setv CHAMBER_ALLOWED_TOOLS "Read,Grep,Glob"
+
+# ── T-0218: what the agent may read. Nothing, until a folder or file is attached; the list is kept in ~/.chamber/attached.json.
+ATT=$DIR/chamber-attach
+cat > "$ATT" <<AT
+#!/bin/sh
+# chamber-attach (T-0218): choose what the Chamber agent on this computer can read. Written by laptop.sh.
+#   chamber-attach                   show what is attached        chamber-attach FOLDER-OR-FILE ...   attach it
+#   chamber-attach --remove PATH     take it away again           chamber-attach --private PATH       for your eyes only
+#   chamber-attach --unprivate PATH  --everything  --nothing  --help
+exec "$PY" "$DIR/chamber-agent.py" --env "$CONF" --attach "\$@"
+AT
+chmod 700 "$ATT"
+attach() { OUT=$("$ATT" "$@" 2>&1) || die "$OUT"; printf '%s\n' "$OUT" | grep '^Note: that is' || true; }   # the list itself is shown once, at the end
+tilde() { case "$1" in "~") printf '%s' "$HOME";; "~/"*) printf '%s/%s' "$HOME" "${1#??}";; *) printf '%s' "$1";; esac; }
+if [ -n "$ATTACH" ]; then                                         # named on the command line: attach exactly those, ask nothing
+  while IFS= read -r AP; do if [ -n "$AP" ]; then attach "$AP"; fi; done <<LIST
+$ATTACH
+LIST
+elif [ "$NOATTACH" = 1 ]; then :
+elif [ "$FIRST" = 1 ] && [ -n "$OLDWD" ] && [ -d "$OLDWD" ]; then   # an install from before attachments: it was told "this project folder", and now that is exactly what it gets
+  attach "$OLDWD"
+  say "This agent was set up to work in $OLDWD. From this version it reads only what is attached, so that folder is now attached and nothing else on this computer is readable to it."
+elif [ "$FIRST" = 1 ] && (exec < /dev/tty) 2>/dev/null; then       # first time, in a terminal: ask
+  printf '\nThe agent reads nothing on this computer until you attach a folder.\n' > /dev/tty
+  while :; do
+    printf 'Folder to attach now (Enter for none; you can attach folders any time later): ' > /dev/tty
+    IFS= read -r ANS < /dev/tty || ANS=""
+    [ -n "$ANS" ] || break
+    ANS=$(tilde "$ANS")
+    if OUT=$("$ATT" "$ANS" 2>&1); then
+      BASE=$(cd "$ANS" 2>/dev/null && pwd || true)
+      while [ -n "$BASE" ]; do
+        printf 'Anything inside it that is for your eyes only? Type a folder or file inside it (Enter for none): ' > /dev/tty
+        IFS= read -r PRIV < /dev/tty || PRIV=""
+        [ -n "$PRIV" ] || break
+        PRIV=$(tilde "$PRIV"); case "$PRIV" in /*) ;; *) PRIV=$BASE/$PRIV;; esac
+        OUT=$("$ATT" --private "$PRIV" 2>&1) || printf '%s\n' "$OUT" > /dev/tty
+      done
+      break
+    fi
+    printf '%s\n' "$OUT" > /dev/tty
+  done
+fi
+# Where the agent process itself runs: the first attached folder, or an empty folder of its own. What it may READ is the attached list.
+WORKDIR=$("$PY" -c 'import json, os, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: d = {}
+print(next((p for p in d.get("paths", []) if isinstance(p, str) and os.path.isdir(p)), ""))' "$DIR/attached.json" 2>/dev/null || true)
+if [ -z "$WORKDIR" ]; then WORKDIR=$DIR/work; mkdir -p "$WORKDIR"; fi
+setv CHAMBER_WORKDIR "$WORKDIR"
 
 # A background agent does not get your terminal's PATH, so give it the folders where python, claude and node live.
 P=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin
@@ -152,12 +206,16 @@ UN
     fi
     LOGHINT="journalctl --user -u chamber-agent -f"
   fi
-  say "Done. The agent runs in the background and starts again when you log in. It works in $WORKDIR and reads it without changing it."
+  say "Done. The agent runs in the background and starts again when you log in."
+  "$ATT" || true
+  say "Attach or remove folders any time: ~/.chamber/chamber-attach --help"
   say "See what it does: $LOGHINT"
   say "Stop it: curl -fsSL $URL/laptop.sh | sh -s -- --stop      Remove it: curl -fsSL $URL/laptop.sh | sh -s -- --uninstall"
   exit 0
 fi
-say "Starting the agent. It works in $WORKDIR and reads it without changing it."
+"$ATT" || true
+say "Attach or remove folders any time (in another terminal window): ~/.chamber/chamber-attach --help"
+say "Starting the agent."
 say "Leave this window open; Ctrl+C stops it. To keep it running after you close the window, run this again with --background."
 if [ "$NOSTART" = 1 ]; then exit 0; fi
 cd "$WORKDIR"

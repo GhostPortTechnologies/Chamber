@@ -4,7 +4,10 @@
 #   curl -fsSL https://chamber.ghostporttechnologies.com/install.sh | sudo bash -s -- --role connector --token chk_... --commanders you
 #   curl -fsSL https://chamber.ghostporttechnologies.com/install.sh | sudo bash -s -- --role worker --token chk_... --repo /srv/app --service myapp
 #
-# Options (connector): --token chk_...  --commanders a,b  [--rooms general]  [--workdir /path]  [--tools Read,Grep,Glob]
+# Options (connector): --token chk_...  --commanders a,b  [--rooms general]  [--attach /path]  [--tools Read,Grep,Glob]
+#         A new connector reads no file on this machine until you attach a folder (T-0218): --attach /path here (may be repeated), or
+#         afterwards  sudo chamber-attach /path  (--remove, --private, --everything, --nothing, --help). One installed before this
+#         keeps reading what its account can read; --reach attached switches it over, --reach all switches back.
 #                      [--backend claude|ollama|openai|gemini] [--model NAME] [--llm-url URL] [--llm-key KEY]
 #         (worker):    --token chk_...  --repo /path/to/live/git/repo  --service systemd-unit  [--health URL]  [--approvers a,b]  [--scope "what it owns"]  [--triage auto|strict|off]
 #         (worker, pull requests instead of the live folder, T-0191): --mode pr --repo /path/to/a/clone --github-token TOKEN [--base main] [--parallel 1..5]
@@ -14,11 +17,11 @@
 # adding the Claude sign-in later is just:  ... | sudo bash -s -- --role connector --oauth-token sk-ant-oat01-...
 set -uo pipefail
 URL=https://chamber.ghostporttechnologies.com; ROLE=""; TOKEN=""; COMMANDERS=""; ROOMS=""; WORKDIR=""; TOOLS=""   # T-0174: empty = "not given"; a re-run keeps what the settings file already says
-BACKEND=""; MODEL=""; LLM_URL=""; LLM_KEY=""; REPO=""; SERVICE=""; HEALTH=""; APPROVERS=""; OAUTH=""; NO_CLAUDE=0; DRY=0; UNINSTALL=0; SCOPE=""; TRIAGE=""; WMODE=live; GHTOKEN=""; WBASE=""; WPAR=""
+ATTACH=(); REACH=""; BACKEND=""; MODEL=""; LLM_URL=""; LLM_KEY=""; REPO=""; SERVICE=""; HEALTH=""; APPROVERS=""; OAUTH=""; NO_CLAUDE=0; DRY=0; UNINSTALL=0; SCOPE=""; TRIAGE=""; WMODE=live; GHTOKEN=""; WBASE=""; WPAR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE=$2; shift 2;; --token) TOKEN=$2; shift 2;; --commanders) COMMANDERS=$2; shift 2;; --rooms) ROOMS=$2; shift 2;;
-    --workdir) WORKDIR=$2; shift 2;; --tools) TOOLS=$2; shift 2;; --backend) BACKEND=$2; shift 2;; --model) MODEL=$2; shift 2;;
+    --workdir) WORKDIR=$2; ATTACH+=("$2"); shift 2;; --attach) ATTACH+=("$2"); shift 2;; --reach) REACH=$2; shift 2;; --tools) TOOLS=$2; shift 2;; --backend) BACKEND=$2; shift 2;; --model) MODEL=$2; shift 2;;
     --llm-url) LLM_URL=$2; shift 2;; --llm-key) LLM_KEY=$2; shift 2;; --repo) REPO=$2; shift 2;; --service) SERVICE=$2; shift 2;;
     --mode) WMODE=$2; shift 2;; --github-token) GHTOKEN=$2; shift 2;; --base) WBASE=$2; shift 2;; --parallel) WPAR=$2; shift 2;;   # T-0191/T-0192: worker pull-request mode
     --health) HEALTH=$2; shift 2;; --approvers) APPROVERS=$2; shift 2;; --scope) SCOPE=$2; shift 2;; --triage) TRIAGE=$2; shift 2;; --url) URL=${2%/}; shift 2;; --oauth-token) OAUTH=$2; shift 2;;
@@ -31,6 +34,7 @@ red() { printf '\033[31m%s\033[0m\n' "$*"; }; yel() { printf '\033[33m%s\033[0m\
 run() { if [ $DRY = 1 ]; then echo "  (dry) $*"; else "$@"; fi; }
 [ "$(id -u)" = 0 ] || { red "Run me as root:  curl -fsSL $URL/install.sh | sudo bash -s -- <options>"; exit 1; }
 case "$ROLE" in connector|worker) ;; *) red "--role connector or --role worker is required"; exit 2;; esac
+case "$REACH" in ""|attached|all) ;; *) red "--reach is attached (the agent reads only what you attach) or all (whatever its account can read)"; exit 2;; esac
 command -v python3 >/dev/null || { red "python3 is required"; exit 1; }
 command -v curl >/dev/null || { red "curl is required"; exit 1; }
 # T-0217: "--token -" (or no --token the first time) asks for the key on the terminal, so it is not left in this machine's command history.
@@ -89,6 +93,9 @@ if [ $DRY = 0 ]; then
   OLD_TOKEN=$(grep -s '^CHAMBER_TOKEN=' $ENVF | cut -d= -f2-); OLD_OAUTH=$(grep -s '^CLAUDE_CODE_OAUTH_TOKEN=' $ENVF | cut -d= -f2-)
   TOKEN=${TOKEN:-$OLD_TOKEN}; OAUTH=${OAUTH:-$OLD_OAUTH}
   old() { grep -s "^$1=" $ENVF | head -1 | cut -d= -f2-; }                    # T-0174: a re-run must not wipe settings it was not given
+  NEWINSTALL=1; [ -f $ENVF ] && NEWINSTALL=0
+  # T-0218: a new connector reads only what is attached. One installed before keeps how it worked unless --reach says otherwise.
+  REACH=${REACH:-$(old CHAMBER_REACH)}; [ $NEWINSTALL = 1 ] && REACH=${REACH:-attached}
   if [ $ROLE = connector ]; then COMMANDERS=${COMMANDERS:-$(old CHAMBER_COMMANDERS)}; ROOMS=${ROOMS:-$(old CHAMBER_ROOMS)}; WORKDIR=${WORKDIR:-$(old CHAMBER_WORKDIR)}; TOOLS=${TOOLS:-$(old CHAMBER_ALLOWED_TOOLS)}
     MODEL=${MODEL:-$(old CHAMBER_MODEL)}; BACKEND=${BACKEND:-$(old CHAMBER_BACKEND)}; LLM_URL=${LLM_URL:-$(old CHAMBER_LLM_URL)}; LLM_KEY=${LLM_KEY:-$(old CHAMBER_LLM_KEY)}; fi
   ROOMS=${ROOMS:-general}; TOOLS=${TOOLS:-Read,Grep,Glob}; BACKEND=${BACKEND:-claude}
@@ -96,6 +103,10 @@ if [ $DRY = 0 ]; then
     echo "CHAMBER_URL=$URL"; echo "CHAMBER_TOKEN=$TOKEN"
     if [ $ROLE = connector ]; then
       echo "CHAMBER_COMMANDERS=$COMMANDERS"; echo "CHAMBER_ROOMS=$ROOMS"; echo "CHAMBER_WORKDIR=${WORKDIR:-$HOMEDIR/work}"; echo "CHAMBER_ALLOWED_TOOLS=$TOOLS"
+      [ -n "$REACH" ] && echo "CHAMBER_REACH=$REACH"                                        # T-0218
+      echo "CHAMBER_ATTACHED_FILE=/etc/chamber-agent.attached.json"; echo "CHAMBER_ATTACH_HINT=sudo chamber-attach <folder>"
+      # Lines someone added by hand (CHAMBER_DENY_PATHS, CHAMBER_ASK_TOOLS, CHAMBER_GIT_REPO, ...) survive a re-run; the ones this installer writes itself do not come twice.
+      grep -sE '^[A-Z_][A-Z0-9_]*=' $ENVF | while IFS= read -r L; do case " CHAMBER_URL CHAMBER_TOKEN CHAMBER_COMMANDERS CHAMBER_ROOMS CHAMBER_WORKDIR CHAMBER_ALLOWED_TOOLS CHAMBER_MODEL CHAMBER_BACKEND CHAMBER_LLM_URL CHAMBER_LLM_KEY CLAUDE_CODE_OAUTH_TOKEN CHAMBER_REACH CHAMBER_ATTACHED_FILE CHAMBER_ATTACH_HINT " in *" ${L%%=*} "*) ;; *) echo "$L";; esac; done
       [ -n "$MODEL" ] && echo "CHAMBER_MODEL=$MODEL"   # 3.16.1: for Claude too (e.g. claude-opus-5-5)
       [ "$BACKEND" != claude ] && { echo "CHAMBER_BACKEND=$BACKEND"; [ -n "$LLM_URL" ] && echo "CHAMBER_LLM_URL=$LLM_URL"; [ -n "$LLM_KEY" ] && echo "CHAMBER_LLM_KEY=$LLM_KEY"; }
     else echo "WORKER_REPO=$REPO"; echo "WORKER_SERVICE=$SERVICE"; echo "WORKER_HEALTH=$HEALTH"; echo "WORKER_APPROVERS=${APPROVERS:-$COMMANDERS}"
@@ -104,6 +115,23 @@ if [ $DRY = 0 ]; then
     [ -n "$OAUTH" ] && echo "CLAUDE_CODE_OAUTH_TOKEN=$OAUTH"
   } > $ENVF.new; chown root:$USER_ $ENVF.new; chmod 0640 $ENVF.new; mv $ENVF.new $ENVF
   [ $ROLE = connector ] && install -d -o $USER_ -g $USER_ ${WORKDIR:-$HOMEDIR/work} 2>/dev/null || true
+  if [ $ROLE = connector ]; then
+    # T-0218: the list of what the agent may read. Root owns it, so the agent's own account can read the list and never change it.
+    [ -f /etc/chamber-agent.attached.json ] || echo '{"paths": [], "private": [], "all": false}' > /etc/chamber-agent.attached.json
+    chown root:$USER_ /etc/chamber-agent.attached.json; chmod 0640 /etc/chamber-agent.attached.json
+    cat > /usr/local/bin/chamber-attach <<'AT'
+#!/bin/sh
+# chamber-attach (T-0218): choose what the Chamber agent on this machine can read. Written by install.sh.
+#   sudo chamber-attach                   show what is attached        sudo chamber-attach FOLDER-OR-FILE ...   attach it
+#   sudo chamber-attach --remove PATH     take it away again           sudo chamber-attach --private PATH       for your eyes only
+#   sudo chamber-attach --unprivate PATH  --everything  --nothing  --help
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+CHAMBER_ATTACH_AS=chamber-agent; export CHAMBER_ATTACH_AS
+exec python3 /opt/chamber-agent/chamber-agent.py --env /etc/chamber-agent.env --attach "$@"
+AT
+    chmod 755 /usr/local/bin/chamber-attach
+    if [ $NEWINSTALL = 1 ] || [ "$REACH" = attached ]; then for A in ${ATTACH[@]+"${ATTACH[@]}"}; do OUT=$(/usr/local/bin/chamber-attach "$A" 2>&1) || red "    could not attach $A: $OUT"; grep -A1 '^Note: the agent runs as' <<<"$OUT" | sed 's/^/    /'; done; fi
+  fi
 fi
 
 say "5/7 service $UNIT"
@@ -133,6 +161,7 @@ if [ "$BACKEND" = claude ] && [ $NO_CLAUDE = 0 ]; then V=$(sudo -u $USER_ -H $HO
   if grep -q '^CLAUDE_CODE_OAUTH_TOKEN=.' $ENVF; then grn "  PASS  Claude sign-in is in $ENVF"; else SIGNIN=1; yel "  TO DO Claude sign-in (one step left, see below)"; fi; fi
 if [ $ROLE = worker ]; then sudo -u $USER_ test -w "$REPO" && sudo -u $USER_ git -C "$REPO" status --short >/dev/null 2>&1; ck "$USER_ can write and run git in $REPO" $? "check group write on the repo"; fi
 ONLINE=1; for i in $(seq 1 15); do curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$URL/api/presence" | grep -q "\"username\": *\"$ME\"" && { ONLINE=0; break; }; sleep 3; done; ck "$ME shows up in Chamber's People & agents" $ONLINE "it has not pinged yet; check the service log"
+if [ $ROLE = connector ]; then say "    what ${ME:-the agent} can read on this machine (change it any time: sudo chamber-attach --help)"; /usr/local/bin/chamber-attach 2>&1 | sed 's/^/      /'; fi   # T-0218
 say "7/7 hello"
 if [ -n "$ME" ]; then curl -s -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"username\":\"$ME\",\"room\":\"${ROOMS%%,*}\",\"type\":\"status\",\"text\":\"installed on $(hostname) as a $ROLE by $URL/install.sh\"}" "$URL/api/messages" >/dev/null && grn "  posted 'installed on $(hostname)' to #${ROOMS%%,*}"; fi
 if [ $FAILS = 0 ] && [ $SIGNIN = 1 ]; then                                   # T-0174: not a failure, and said in a way a new person can follow

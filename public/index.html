@@ -852,7 +852,7 @@
       <p class="meta-row">Three steps: name it, paste one command on the machine it should work on, and watch it appear here. <a href="/help#agents" target="_blank" rel="noopener">Which kind do I want?</a></p>
       <div class="aw-step"><b>1. What kind?</b>
         <label class="aw-opt"><input type="radio" name="aw-kind" value="connector" checked onchange="awRender()"> <b>Chat agent</b> <span class="dim">answers when you @mention it, and from the Ask AI tab. Start with this one.</span></label>
-        <label class="aw-opt"><input type="radio" name="aw-kind" value="laptop" onchange="awRender()"> <b>Chat agent on my own computer</b> <span class="dim">the same chat agent, on your Mac or Linux laptop, with no admin rights. It works in one project folder and reads it without changing it.</span></label>
+        <label class="aw-opt"><input type="radio" name="aw-kind" value="laptop" onchange="awRender()"> <b>Chat agent on my own computer</b> <span class="dim">the same chat agent, on your Mac or Linux laptop, with no admin rights. It reads nothing there until you attach a folder; the installer asks which.</span></label>
         <label class="aw-opt"><input type="radio" name="aw-kind" value="worker" onchange="awRender()"> <b>Ticket worker</b> <span class="dim">carries out approved agent tickets on one code project: change, test, release, roll back. Needs a git project on that machine.</span></label>
         <label class="aw-opt"><input type="radio" name="aw-kind" value="mcp" onchange="awRender()"> <b>Any AI tool (MCP)</b> <span class="dim">lets Claude Code, Cursor, Codex or another AI tool you already use read rooms and tickets, post, and propose tickets. It cannot approve anything.</span></label></div>
       <div class="aw-step"><b>2. Name it</b>
@@ -2299,11 +2299,11 @@ function awRender() {
   }
   if (kind === 'laptop') {                                                     // T-0186: no root, everything in the user's home folder
     const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN', cmd = document.getElementById('aw-commanders').value.trim(), rooms = document.getElementById('aw-rooms').value.trim(), be = document.getElementById('aw-backend').value, model = document.getElementById('aw-model').value.trim();
-    const lp = ['cd /path/to/your/project', `curl -fsSL ${location.origin}/laptop.sh | sh -s -- --token ${keyIn ? awQ(token) : '-'}`];
+    const lp = [`curl -fsSL ${location.origin}/laptop.sh | sh -s -- --token ${keyIn ? awQ(token) : '-'}`];
     if (cmd) lp.push(`--commanders ${awQ(cmd)}`); if (rooms && rooms !== 'general') lp.push(`--rooms ${awQ(rooms)}`); if (be !== 'claude') lp.push(`--backend ${be}`); if (model) lp.push(`--model ${awQ(model)}`);
-    document.getElementById('aw-cmd').textContent = lp[0] + '\n' + lp.slice(1).join(' \\\n    ');
-    document.getElementById('aw-where').textContent = '(in a terminal on your Mac or Linux computer, as yourself, no sudo. Change the first line to your project folder. Add --background to keep it running after you close the terminal.)';
-    document.getElementById('aw-signin').innerHTML = 'It uses the Claude Code that is already signed in on that computer. If it is not signed in yet, run <code>claude</code> there once and log in.';
+    document.getElementById('aw-cmd').textContent = lp.join(' \\\n    ');
+    document.getElementById('aw-where').textContent = '(in a terminal on your Mac or Linux computer, as yourself, no sudo. Add --background to keep it running after you close the terminal.)';
+    document.getElementById('aw-signin').innerHTML = 'The agent reads nothing on that computer until you attach a folder (T-0218). The installer asks which folder, if any, and whether anything inside it is for your eyes only. Later: <code>~/.chamber/chamber-attach ~/code/my-project</code>. What it can read shows under its name in People and agents.<br>It uses the Claude Code that is already signed in on that computer. If it is not signed in yet, run <code>claude</code> there once and log in.';
     document.getElementById('aw-copied').textContent = ''; return;
   }
   document.getElementById('aw-where').textContent = '(as a user who can sudo; the installer refuses to run without root)';
@@ -2314,7 +2314,7 @@ function awRender() {
     if (cmd) parts.push(`--commanders ${awQ(cmd)}`); if (rooms && rooms !== 'general') parts.push(`--rooms ${awQ(rooms)}`);
     if (be !== 'claude') parts.push(`--backend ${be}`); if (model) parts.push(`--model ${awQ(model)}`);   // 3.16.1: --model works for Claude too
     document.getElementById('aw-signin').innerHTML = be === 'claude'
-      ? `When it finishes it tells you the one step left: signing the agent in to Claude. It prints two commands to copy. The first shows a link where you log in with your own Claude account and get a code; the second saves that code on that machine. Chamber never sees it.`
+      ? `When it finishes it tells you the one step left: signing the agent in to Claude. It prints two commands to copy. The first shows a link where you log in with your own Claude account and get a code; the second saves that code on that machine. Chamber never sees it.<br>The agent reads no file on that machine until you attach a folder there: <code>sudo chamber-attach /path/to/project</code> (or add <code>--attach /path/to/project</code> to the command above). What it can read shows under its name in People and agents.`
       : `This backend has no tool sandbox: the agent answers from the conversation plus any read-only commands you list in <code>CHAMBER_CONTEXT_CMDS</code> in <code>/etc/chamber-agent.env</code>.`;
   } else {
     const repo = document.getElementById('aw-repo').value.trim(), svc = document.getElementById('aw-service').value.trim(), health = document.getElementById('aw-health').value.trim(), appr = document.getElementById('aw-approvers').value.trim();
@@ -2859,6 +2859,23 @@ async function loadActivity() {
 }
 
 // ── Presence (sidebar enrichment) ──
+// T-0218: what an agent's file tools can reach on its own machine, as its connector reports it (folder names only). The line is
+// short; a tap (or the pointer resting on it) gives the full sentence, and who can change it.
+function reachLine(r) {
+  const cmd = r.cmd ? ' · runs commands' : '';
+  if (r.mode === 'none') return 'reads no files';
+  if (r.mode === 'all') return 'can read: all its account can' + cmd;
+  if (!r.names || !r.names.length) return 'can read: nothing attached yet' + cmd;
+  return 'can read: ' + r.names.slice(0, 3).join(', ') + (r.names.length > 3 ? ` +${r.names.length - 3} more` : '') + cmd;
+}
+function reachTitle(r) {
+  if (r.mode === 'none') return 'This agent has no file tools: it answers from the conversation.';
+  const priv = r.private ? ` ${r.private} ${r.private === 1 ? 'place is' : 'places are'} marked for the owner's eyes only and never opened.` : '';
+  const cmd = r.cmd ? ' It may also run commands there, and a command can read what its account can.' : '';
+  const who = ' Only the person who runs the agent can change this, on that machine (chamber-attach).';
+  if (r.mode === 'all') return 'On its own machine this agent can read whatever its account can read.' + priv + who;
+  return (r.names && r.names.length ? 'Attached on its machine: ' + r.names.join(', ') + '. It can read nothing else there.' : 'Nothing is attached on its machine, so it cannot read files there. Files sent to it in chat still reach it.') + priv + cmd + who;
+}
 async function loadPresence() {
   try {
     const r = await fetch(`${API}/api/presence`);
@@ -2876,6 +2893,7 @@ async function loadPresence() {
         const ag = p.agent;                                                                     // T-0071: what it is doing, and the last error the connector hit
         if (p.state !== 'offline' && ag.state === 'working') agentLine += `<div class="agent-state working" title="${escA((ag.task || '') + (ag.since ? ' · since ' + new Date(ag.since).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''))}">working${ag.room ? ' in ' + (ag.room.startsWith('dm:') ? 'a DM' : '#' + esc(ag.room)) : ''}${ag.task ? ' · ' + esc(ag.task.slice(0, 40)) : ''}</div>`;
         if (ag.error && ag.error.text) agentLine += `<div class="agent-state error" title="${escA(ag.error.text)} · ${escA(fmtDate(ag.error.at))}">last error: ${esc(ag.error.text.slice(0, 48))}</div>`;
+        if (ag.reach && p.state !== 'offline') agentLine += `<div class="claim-line agent-reach" title="${escA(reachTitle(ag.reach))}" onclick="event.stopPropagation();toast(this.title)">${esc(reachLine(ag.reach))}</div>`;   // T-0218
         agentLine += `<div class="claim-line"><a href="#" class="mem-link" onclick="event.preventDefault();event.stopPropagation();openMemory('${escJ(p.username)}')">memory</a></div>`;   // T-0059
         if (listening === false && p.state !== 'offline') notListening.push(p.username);
       }

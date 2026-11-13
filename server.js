@@ -149,6 +149,16 @@ function auditAll(dir) {                                                       /
   return out.sort((a, b) => a.ts - b.ts);
 }
 
+// T-0218: what a connector says its file tools can reach on its own machine. Folder NAMES only (the connector never sends where
+// they are), kept in memory with the rest of what it pings and shown under People and agents. Chamber cannot change it.
+function reachOf(r) {
+  if (!r || typeof r !== 'object' || !['all', 'attached', 'none'].includes(r.mode)) return undefined;
+  const out = { mode: r.mode, private: Math.max(0, Math.min(999, parseInt(r.private, 10) || 0)) };
+  if (r.mode === 'attached') out.names = (Array.isArray(r.names) ? r.names : []).slice(0, 12).map(n => String(n).slice(0, 60));
+  if (r.cmd === true) out.cmd = true;
+  return out;
+}
+
 const MAX_MESSAGES = 500;
 const MAX_REVIEWS = 200;
 const ACTIVE_TIMEOUT = 60000; // 60s — user considered active if seen within this window
@@ -3051,7 +3061,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
         last_seen: u.lastSeen,
         state,
         claimed,
-        agent: meta && now - meta.at < 180e3 ? { version: meta.version || null, rooms: meta.rooms || [], state: meta.state || 'idle', room: meta.room, task: meta.task, since: meta.since, error: meta.error, ask: meta.ask, shell: meta.shell, stale: !!(LATEST_AGENT_VERSION && meta.version && !/^worker-/.test(meta.version) && meta.version !== LATEST_AGENT_VERSION), loopGuard: (lg && now - lg < 300e3) || undefined } : (u.role === 'ai' ? { version: null, rooms: null, stale: false } : undefined),   // [new] T-0045/T-0089: rooms null = this connector is too old to say; loopGuard = throttled as a possible loop
+        agent: meta && now - meta.at < 180e3 ? { version: meta.version || null, rooms: meta.rooms || [], state: meta.state || 'idle', room: meta.room, task: meta.task, since: meta.since, error: meta.error, ask: meta.ask, shell: meta.shell, reach: meta.reach, stale: !!(LATEST_AGENT_VERSION && meta.version && !/^worker-/.test(meta.version) && meta.version !== LATEST_AGENT_VERSION), loopGuard: (lg && now - lg < 300e3) || undefined } : (u.role === 'ai' ? { version: null, rooms: null, stale: false } : undefined),   // [new] T-0045/T-0089: rooms null = this connector is too old to say; loopGuard = throttled as a possible loop
       };
     });
     presence.sort((a, b) => b.last_seen - a.last_seen);
@@ -3183,7 +3193,8 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
         shell: body.shell === 'on' ? 'on' : undefined,                                     // [new] T-0131: does that connector accept relayed commands at all?
         state, room: state === 'working' ? String(body.room || '').slice(0, 60) : undefined, task: state === 'working' ? String(body.task || '').slice(0, 120) : undefined,
         since: state !== prev.state ? Date.now() : prev.since,
-        error: body.error ? { text: String(body.error).slice(0, 200), at: Date.now() } : undefined });    // the connector resends its last error for an hour, then it clears
+        error: body.error ? { text: String(body.error).slice(0, 200), at: Date.now() } : undefined,       // the connector resends its last error for an hour, then it clears
+        reach: reachOf(body.reach) });                                                     // T-0218
     }
     return json(res, 200, { ok: true, latestAgentVersion: sess?.agent ? LATEST_AGENT_VERSION : undefined, drafts: sess?.agent ? draftCount(sess) : undefined,   // T-0207: requests waiting for a draft
       askConfig: sess?.agent ? loadAskConfig() : undefined });                          // [changed] T-0136: read from where it is really stored        // [new] T-0132: settings ride the ping the connector already sends

@@ -200,7 +200,8 @@ async function run(size) {
       const cmd = await page.locator('#aw-cmd').textContent();
       check(`${size}: Add an agent makes the key itself and writes the full install command`, /install\.sh \| sudo bash/.test(cmd) && /--role connector/.test(cmd) && /--commanders /.test(cmd) && !/PASTE/.test(cmd), cmd.replace(/chk_[A-Za-z0-9_-]+/, "chk_…")); await shot('add-agent');
       await page.check('input[name="aw-kind"][value="laptop"]'); const lcmd = await page.locator('#aw-cmd').textContent();   // T-0186
-      check(`${size}: Add an agent also writes a laptop command that needs no sudo`, /laptop\.sh \| sh -s -- --token chk_/.test(lcmd) && !/sudo/.test(lcmd) && /^cd /.test(lcmd), lcmd.replace(/chk_[A-Za-z0-9_-]+/, 'chk_…')); await shot('add-agent-laptop');
+      const lnote = await page.locator('#aw-signin').innerText();
+      check(`${size}: Add an agent also writes a laptop command that needs no sudo, and says the agent reads nothing until a folder is attached`, /laptop\.sh \| sh -s -- --token chk_/.test(lcmd) && !/sudo/.test(lcmd) && !/^cd /.test(lcmd) && /reads nothing on that computer until you attach a folder/.test(lnote) && /chamber-attach/.test(lnote), lcmd.replace(/chk_[A-Za-z0-9_-]+/, 'chk_…')); await shot('add-agent-laptop');
       await page.locator('#agent-wizard .close-x').click();
     });
     await step('standing approvals: set one up, offer it when proposing, withdraw it', async () => { try {      // T-0200
@@ -241,6 +242,18 @@ async function run(size) {
       check(`${size}: a question from an agent shows in the room with the exact command, Allow once and Deny, inside the screen`, made.status === 201 && /npm test -- --watch=false/.test(txt) && /Allow once/.test(txt) && /Deny/.test(txt) && fits, JSON.stringify({ made, txt: txt.slice(0, 160), fits }));
       await item.locator('button', { hasText: 'Allow once' }).click(); await page.locator('#ask-bar').waitFor({ state: 'hidden' });
       check(`${size}: Allow once answers it and the question goes away`, true);
+      const reach = await page.evaluate(async () => {                                        // T-0218: what the agent can read shows under its name
+        const h = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + sessionStorage.getItem('bcAsker') };
+        const me = await (await fetch('/api/me', { headers: h })).json();
+        const ping = reach => fetch('/api/ping', { method: 'POST', headers: h, body: JSON.stringify({ username: me.username, version: '3.27.0', rooms: ['general'], state: 'idle', reach }) });
+        const line = async () => { await loadPresence(); const li = [...document.querySelectorAll('#user-list .user-item')].find(x => x.querySelector('.uname')?.textContent === me.username), el = li && li.querySelector('.agent-reach'); return el ? { text: el.textContent, tip: el.title } : null; };
+        await ping({ mode: 'attached', names: [], private: 0 }); const b = await line();
+        await ping({ mode: 'all', private: 0, cmd: true }); const c = await line();
+        await ping({ mode: 'attached', names: ['shop', 'notes.txt'], private: 1 }); const a = await line();
+        return { a, b, c, user: me.username };
+      });
+      check(`${size}: under an agent's name it says what the agent can read on its own machine: the attached folders, nothing yet, or everything`, reach.a && reach.a.text === 'can read: shop, notes.txt' && /It can read nothing else there\./.test(reach.a.tip) && /1 place is marked/.test(reach.a.tip)
+        && reach.b && /nothing attached yet/.test(reach.b.text) && reach.c && /all its account can · runs commands/.test(reach.c.text), JSON.stringify(reach).slice(0, 400)); await shot('agent-reach');
       const madeJ = await page.evaluate(async () => { const r = await fetch('/api/asks', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + sessionStorage.getItem('bcAsker') }, body: JSON.stringify({ room: 'general', tool: 'Bash', summary: 'run this command: npm test', waitSec: 300, job: true }) }); return (await r.json()).id; });   // T-0211
       await page.evaluate(() => loadAsks()); const itemJ = page.locator('#ask-bar .ask-item', { hasText: 'npm test' }).first(); await itemJ.waitFor(); await shot('ask-bar-job');
       const txtJ = await itemJ.innerText(), fitsJ = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
