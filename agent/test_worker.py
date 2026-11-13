@@ -223,7 +223,9 @@ def api_ask(m, p, b=None):
     calls.append((m, p, b))
     if p == "/api/me": return {"mayAsk": ASKS["on"]}
     if m == "POST" and p == "/api/asks": ASKS["posts"].append(b); return {"id": "A-%d" % len(ASKS["posts"])}
-    if m == "GET" and p.startswith("/api/asks/"): return {"status": ASKS["status"], "answeredBy": "alice"}
+    if m == "GET" and p.startswith("/api/asks/"): return {"status": ASKS["status"], "answeredBy": "alice", "scope": ASKS.get("scope")}
+    if p.endswith("/use"): ASKS["uses"] = ASKS.get("uses", 0) + 1; return {"n": ASKS["uses"]}
+    if p.endswith("/end"): ASKS.setdefault("ends", []).append(p)
     if p.endswith("/result"): ASKS["results"].append((p, b))
     if p.endswith("/cancel"): ASKS["cancels"].append(p)
     return {}
@@ -264,6 +266,14 @@ ASKS.update(status="expired", posts=[]); del calls[:]
 WA.run_one_pr({"id": "T-0073", "title": "Fetch a script", "body": "x", "approved_by": "alice"}, "T-0073@0", st4)
 rel5 = [c[3].get("note", "") for c in calls if c[0] == "ticket" and c[1] == "release" and c[2] == "T-0073"]
 check("1.9.0: no answer in time is a no: the ticket is handed back saying so", len(rel5) == 1 and "nobody answered within 1 minute, which means no" in rel5[0] and not GH["posts"], rel5)
+open(ANS, "w").close(); GH["posts"].clear(); del calls[:]; ASKS.update(status="allowed", scope="job", posts=[], results=[], uses=0, ends=[])   # 1.10.0 (T-0211)
+os.environ["FAKE_ASKS"] = json.dumps([["Bash", {"command": "pip install requests-mock"}, True]] * 3 + [["Bash", {"command": "pip install requests-mock --upgrade"}, True]])
+ok6, msg6, info6 = WA.work_pr({"id": "T-0074", "title": "Run the same step three times", "body": "x", "approved_by": "alice"})
+logs6 = [c[3].get("line", "") for c in calls if c[0] == "ticket" and c[1] == "log" and c[2] == "T-0074"]
+check("1.10.0: after Allow for this job the same command runs three times on one question; a changed command is asked about; every run is recorded under the one answer and the job is ended",
+      ok6 and open(ANS).read().split() == ["allow"] * 4 and len(ASKS["posts"]) == 2 and ASKS["posts"][0].get("job") is True and ASKS["uses"] == 2 and sorted(r[1].get("use", 0) for r in ASKS["results"] if r[0] == "/api/asks/A-1/result") == [0, 1, 2]
+      and sorted(ASKS["ends"]) == ["/api/asks/A-1/end", "/api/asks/A-2/end"] and any("alice allowed it for this job (A-1)" in l for l in logs6) and any("covered by alice's answer for this job (A-1, run 3)" in l for l in logs6), (open(ANS).read().split(), {k: v for k, v in ASKS.items() if k != "posts"}, logs6))
+ASKS.update(scope=None)
 hd = tempfile.mkdtemp(prefix="chamber-helper-"); henv = {k: v for k, v in os.environ.items() if not k.startswith(("CHAMBER_", "WORKER_"))}
 hp = subprocess.Popen([sys.executable, os.path.join(HERE, "chamber-worker.py"), "--ask-mcp", hd, "1"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=henv)
 hout, herr = hp.communicate(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n" + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "ask", "arguments": {"tool_name": "Bash", "input": {"command": "id"}}}}) + "\n", timeout=30)
@@ -276,7 +286,7 @@ del os.environ["FAKE_SLEEP"]; ghs.shutdown()
 for k in ("WORKER_MODE", "WORKER_GITHUB_TOKEN", "WORKER_GITHUB_API", "WORKER_GITHUB_REPO", "WORKER_PARALLEL", "FAKE_ENV_OUT"): os.environ.pop(k, None)
 
 print("version")
-check("worker reports a worker-* version line", W.WORKER_VERSION.startswith("worker-") and W.WORKER_VERSION >= "worker-1.3.0", W.WORKER_VERSION)
+check("worker reports a worker-* version line", W.WORKER_VERSION.startswith("worker-") and tuple(int(x) for x in W.WORKER_VERSION[7:].split(".")) >= (1, 3, 0), W.WORKER_VERSION)   # compared as numbers: 1.10 is newer than 1.9
 
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

@@ -202,7 +202,7 @@ def health_ok():
     return False
 
 
-WORKER_VERSION = "worker-1.9.0"
+WORKER_VERSION = "worker-1.10.0"
 
 
 def wlog(tid, line, model=None):
@@ -559,6 +559,24 @@ def ask_summary(tool, inp):
     return f"use {tool}: " + json.dumps(inp)[:1000]
 
 
+def ask_sig(tool, inp):
+    """T-0211: what "exactly this again" means: the same tool with the same input, character for character (only a Bash call's
+    free-text description, which the person was never shown, is left out)."""
+    d = {k: v for k, v in (inp if isinstance(inp, dict) else {}).items() if not (tool == "Bash" and k == "description")}
+    return tool + " " + json.dumps(d, sort_keys=True, ensure_ascii=False)
+
+
+def ask_covered(asks, tool, inp):
+    """T-0211: did a person allow exactly this for the whole job? Chamber decides each time (it keeps the 30 minute clock and the
+    record of every run): {'id', 'by', 'n'} when it is covered, else None and a person is asked as usual."""
+    key = ask_sig(tool, inp); j = (asks.get("_job") or {}).get(key)
+    if not j: return None
+    try: n = api("POST", f"/api/asks/{j['id']}/use", {}).get("n")
+    except Exception as e: log(f"ask {j['id']} no longer covers this ({e}); asking again"); n = None
+    if not n: asks["_job"].pop(key, None); return None
+    return {"id": j["id"], "by": j["by"], "n": n}
+
+
 def ask_answer(askdir, rid, decision, message=""):
     p = os.path.join(askdir, rid + ".ans.json"); fd = os.open(p + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.write(fd, json.dumps({"decision": decision, "message": message}).encode()); os.close(fd); os.replace(p + ".tmp", p)
@@ -593,8 +611,12 @@ def ask_pump(askdir, t, asks):
                 ask_answer(askdir, rid, "deny", "Not allowed for this worker: work only inside the current directory, with the tools you were given.")
                 a.update(done=True, decision="deny"); continue
             a["summary"] = summary = ask_summary(tool, inp)
+            cov = ask_covered(asks, tool, inp)                           # 1.10.0 (T-0211): exactly this was allowed for the whole job
+            if cov:
+                ask_answer(askdir, rid, "allow"); a.update(done=True, decision="allow", id=cov["id"], use=cov["n"])
+                wlog(tid, f"covered by {cov['by']}'s answer for this job ({cov['id']}, run {cov['n'] + 1}): {summary}"[:300]); continue
             try:
-                r = api("POST", "/api/asks", {"room": ROOM, "tool": tool, "summary": summary, "detail": json.dumps(inp)[:4000], "for": t.get("approved_by"), "waitSec": ASK_WAIT, "ticket": tid})
+                r = api("POST", "/api/asks", {"room": ROOM, "tool": tool, "summary": summary, "detail": json.dumps(inp)[:4000], "for": t.get("approved_by"), "waitSec": ASK_WAIT, "ticket": tid, "job": True})
                 a.update(id=r.get("id"), next=time.time() + ASK_POLL); wlog(tid, f"asked a person ({a['id']}): may I {summary}"[:300])
             except Exception as e:
                 why = api_why(e); log(f"{tid}: could not ask in Chamber: {why}")
@@ -607,7 +629,9 @@ def ask_pump(askdir, t, asks):
             except Exception as e: log(f"ask {a['id']}: {e}"); s = {}
             st = s.get("status"); by = s.get("answeredBy") or "someone"
             if st == "allowed":
-                ask_answer(askdir, rid, "allow"); a.update(done=True, decision="allow"); wlog(tid, f"{by} allowed it once ({a['id']})")
+                job = s.get("scope") == "job"                          # 1.10.0 (T-0211): exactly this, for the rest of the job
+                if job: asks.setdefault("_job", {})[ask_sig(a["tool"], a["input"])] = {"id": a["id"], "by": by}; asks.setdefault("_jobs", []).append(a["id"])
+                ask_answer(askdir, rid, "allow"); a.update(done=True, decision="allow"); wlog(tid, f"{by} allowed it {'for this job' if job else 'once'} ({a['id']})")
             elif st in ("denied", "expired", "cancelled"):
                 why = f"{by} said no" if st == "denied" else ("the question was withdrawn" if st == "cancelled" else f"nobody answered within {max(1, ASK_WAIT // 60)} minute{'' if ASK_WAIT < 120 else 's'}, which means no")
                 ask_answer(askdir, rid, "deny", f"{by} said no in Chamber." if st == "denied" else "Nobody answered in time, so it is not allowed.")
@@ -619,13 +643,19 @@ def ask_pump(askdir, t, asks):
 
 def ask_finish(askdir, asks, results):
     """After the session: the result of each use a person allowed goes on the record; questions still waiting are withdrawn."""
+    jobs = asks.pop("_jobs", None) or []; asks.pop("_job", None)
     for a in asks.values():
         if not a.get("id"): continue
         try:
             if not a.get("done"): api("POST", f"/api/asks/{a['id']}/cancel", {})
             elif a.get("decision") == "allow" and a.get("tool_use_id") in results:
-                r = results[a["tool_use_id"]]; api("POST", f"/api/asks/{a['id']}/result", {"ok": not r["error"], "output": redact(r["out"])[:2000]})
+                r = results[a["tool_use_id"]]; body = {"ok": not r["error"], "output": redact(r["out"])[:2000]}
+                if a.get("use"): body["use"] = a["use"]                # 1.10.0 (T-0211): a run covered by an earlier answer
+                api("POST", f"/api/asks/{a['id']}/result", body)
         except Exception as e: log(f"ask {a.get('id')}: {api_why(e)}")
+    for jid in jobs:                                                    # the job is over, so the answer covers nothing more
+        try: api("POST", f"/api/asks/{jid}/end", {})
+        except Exception as e: log(f"ask {jid}: {api_why(e)}")
     shutil.rmtree(askdir, ignore_errors=True)
 
 

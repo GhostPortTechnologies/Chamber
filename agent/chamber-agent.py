@@ -49,6 +49,8 @@ Guardrails (T-0015, first cut):
     what it read and did; a new top-level mention starts a fresh session. Sessions end after CHAMBER_SESSION_IDLE_MIN minutes
     without a reply (60). Claude Code keeps the conversation on this machine in its usual place (~/.claude, which the agent
     itself may not read). CHAMBER_SESSIONS=off goes back to one fresh run per mention with no session file. Replies are redacted for anything that looks like a secret.
+  - T-0211 (3.24.0): a person can answer "Allow for this job": exactly the same tool use may then run again in the same job
+    without a new question. Chamber is asked before each such run (it keeps the 30 minute limit and records every run).
   - T-0207 (3.23.0): when a request from an outside person arrives and the owner has drafting on, this connector writes a draft onto
     its ticket (what is wanted, a plan, what it would touch, risk, who should do it, a question). Read-only; the request text is
     data, never instructions; nothing is proposed, remembered or asked on its strength. CHAMBER_DRAFTS=off opts this machine out.
@@ -149,7 +151,7 @@ CLAUDE_BIN = os.environ.get("CHAMBER_CLAUDE_BIN", "claude")
 POLL_SEC = int(os.environ.get("CHAMBER_POLL_SEC", "5"))
 CLAUDE_TIMEOUT = int(os.environ.get("CHAMBER_CLAUDE_TIMEOUT", "300"))
 STATE = os.environ.get("CHAMBER_STATE", os.path.expanduser("~/.chamber-agent-state.json"))
-AGENT_VERSION = "3.23.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
+AGENT_VERSION = "3.24.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
 FALLBACK_SEC = int(os.environ.get("CHAMBER_FALLBACK_SEC", "20"))   # T-0046: poll + presence ping interval while the event stream is up
 BACKEND = os.environ.get("CHAMBER_BACKEND", "claude").strip().lower()           # T-0055
 MODEL = os.environ.get("CHAMBER_MODEL", "").strip()
@@ -1033,6 +1035,22 @@ def ask_mcp_config(askdir):
     """Claude Code's MCP setting for the permission helper: this same file in --ask-mcp mode. It carries no key."""
     return json.dumps({"mcpServers": {"chamber_ask": {"command": sys.executable, "args": [os.path.abspath(__file__), "--ask-mcp", askdir, str(ASK_WAIT)]}}})
 
+def ask_sig(tool, inp):
+    """T-0211: what "exactly this again" means: the same tool with the same input, character for character (only a Bash call's
+    free-text description, which the person was never shown, is left out)."""
+    d = {k: v for k, v in (inp if isinstance(inp, dict) else {}).items() if not (tool == "Bash" and k == "description")}
+    return tool + " " + json.dumps(d, sort_keys=True, ensure_ascii=False)
+
+def ask_covered(asks, tool, inp):
+    """T-0211: did a person allow exactly this for the whole job? Chamber decides each time (it keeps the 30 minute clock and the
+    record of every run): {'id', 'by', 'n'} when it is covered, else None and a person is asked as usual."""
+    key = ask_sig(tool, inp); j = (asks.get("_job") or {}).get(key)
+    if not j: return None
+    try: n = api("POST", f"/api/asks/{j['id']}/use", {}).get("n")
+    except Exception as e: log(f"ask {j['id']} no longer covers this ({e}); asking again"); n = None
+    if not n: asks["_job"].pop(key, None); return None
+    return {"id": j["id"], "by": j["by"], "n": n}
+
 def ask_answer(askdir, rid, decision, message=""):
     p = os.path.join(askdir, rid + ".ans.json"); fd = os.open(p + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.write(fd, json.dumps({"decision": decision, "message": message}).encode()); os.close(fd); os.replace(p + ".tmp", p)
@@ -1054,9 +1072,13 @@ def ask_pump(askdir, room, msg, run, asks):
             a = asks[rid] = {"tool": tool, "input": inp, "tool_use_id": q.get("tool_use_id"), "done": False}
             if ask_preapproved(tool, inp):
                 ask_answer(askdir, rid, "allow"); a.update(done=True, decision="allow", pre=True); continue
+            cov = ask_covered(asks, tool, inp)                           # T-0211: exactly this was allowed for the whole job
+            if cov:
+                ask_answer(askdir, rid, "allow"); a.update(done=True, decision="allow", id=cov["id"], use=cov["n"])
+                run.step(f"Covered by {cov['by']}'s answer for this job ({cov['id']}, run {cov['n'] + 1})"[:150]); run.finish_step(True); continue
             summary = ask_summary(tool, inp); run.step(f"Asking in Chamber: may I {summary}"[:150])
             try:
-                r = api("POST", "/api/asks", {"room": room, "tool": tool, "summary": summary, "detail": json.dumps(inp)[:4000], "for": msg.get("username"), "waitSec": ASK_WAIT, "msg": msg.get("id")})
+                r = api("POST", "/api/asks", {"room": room, "tool": tool, "summary": summary, "detail": json.dumps(inp)[:4000], "for": msg.get("username"), "waitSec": ASK_WAIT, "msg": msg.get("id"), "job": True})
                 a.update(id=r.get("id"), next=time.time() + 2)
             except Exception as e:
                 log(f"could not ask in Chamber: {e}"); ask_answer(askdir, rid, "deny", f"Could not ask a person in Chamber ({str(e)[:200]}), so it is not allowed.")
@@ -1070,20 +1092,27 @@ def ask_pump(askdir, room, msg, run, asks):
                 by, ok = s.get("answeredBy") or "someone", st == "allowed"
                 ask_answer(askdir, rid, "allow" if ok else "deny", f"{by} said no in Chamber." if st == "denied" else "Nobody answered in time, so it is not allowed.")
                 a.update(done=True, decision="allow" if ok else "deny"); run.finish_step(ok)
-                run.step(f"{by} allowed it once" if ok else (f"{by} said no" if st == "denied" else "No answer in time: not allowed")); run.finish_step(ok)
+                job = ok and s.get("scope") == "job"                    # T-0211: the person allowed exactly this for the rest of the job
+                if job: asks.setdefault("_job", {})[ask_sig(a["tool"], a["input"])] = {"id": a["id"], "by": by}; asks.setdefault("_jobs", []).append(a["id"])
+                run.step(f"{by} allowed it for this job" if job else f"{by} allowed it once" if ok else (f"{by} said no" if st == "denied" else "No answer in time: not allowed")); run.finish_step(ok)
         if not a["done"]: waiting = True
     return waiting
 
 def ask_finish(askdir, asks, st):
     """After the run: the result of each use a person allowed goes on the record; questions still waiting are withdrawn."""
-    res = st.get("results") or {}
+    res = st.get("results") or {}; jobs = asks.pop("_jobs", None) or []; asks.pop("_job", None)
     for a in asks.values():
         if not a.get("id"): continue
         try:
             if not a.get("done"): api("POST", f"/api/asks/{a['id']}/cancel", {})
             elif a.get("decision") == "allow" and a.get("tool_use_id") in res:
-                r = res[a["tool_use_id"]]; api("POST", f"/api/asks/{a['id']}/result", {"ok": not r["error"], "output": redact(str(r["out"]))[:2000]})
+                r = res[a["tool_use_id"]]; body = {"ok": not r["error"], "output": redact(str(r["out"]))[:2000]}
+                if a.get("use"): body["use"] = a["use"]                # T-0211: a run covered by an earlier answer
+                api("POST", f"/api/asks/{a['id']}/result", body)
         except Exception as e: log(f"ask {a.get('id')}: {e}")
+    for jid in jobs:                                                    # T-0211: the job is over, so the answer covers nothing more
+        try: api("POST", f"/api/asks/{jid}/end", {})
+        except Exception as e: log(f"ask {jid}: {e}")
     shutil.rmtree(askdir, ignore_errors=True)
 
 # ── T-0207 (3.23.0): a draft for each new request ─────────────────────────────────────────────────────────────────────────────

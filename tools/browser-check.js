@@ -237,6 +237,12 @@ async function run(size) {
       check(`${size}: a question from an agent shows in the room with the exact command, Allow once and Deny, inside the screen`, made.status === 201 && /npm test -- --watch=false/.test(txt) && /Allow once/.test(txt) && /Deny/.test(txt) && fits, JSON.stringify({ made, txt: txt.slice(0, 160), fits }));
       await item.locator('button', { hasText: 'Allow once' }).click(); await page.locator('#ask-bar').waitFor({ state: 'hidden' });
       check(`${size}: Allow once answers it and the question goes away`, true);
+      const madeJ = await page.evaluate(async () => { const r = await fetch('/api/asks', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + sessionStorage.getItem('bcAsker') }, body: JSON.stringify({ room: 'general', tool: 'Bash', summary: 'run this command: npm test', waitSec: 300, job: true }) }); return (await r.json()).id; });   // T-0211
+      await page.evaluate(() => loadAsks()); const itemJ = page.locator('#ask-bar .ask-item', { hasText: 'npm test' }).first(); await itemJ.waitFor(); await shot('ask-bar-job');
+      const txtJ = await itemJ.innerText(), fitsJ = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
+      await itemJ.locator('button', { hasText: 'Allow for this job' }).click(); await page.locator('#ask-bar').waitFor({ state: 'hidden' });
+      const scopeJ = await page.evaluate(async id => ((await (await fetch('/api/asks')).json()).asks || []).find(a => a.id === id)?.scope, madeJ);
+      check(`${size}: an agent that can honour it gets a third button, Allow for this job, with what it trusts said plainly, inside the screen; a tap answers for the job`, /Allow once/.test(txtJ) && /Allow for this job/.test(txtJ) && /Deny/.test(txtJ) && /you are trusting those changes too/.test(txtJ) && fitsJ && scopeJ === 'job', JSON.stringify({ txtJ: txtJ.slice(0, 240), fitsJ, scopeJ }));
     });
     await step('a question arrives as a notification with Allow once / Deny', async () => {       // T-0210
       // The test browser (headless shell) cannot display notifications at all, so the two display calls of the service worker are

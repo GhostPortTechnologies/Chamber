@@ -1049,6 +1049,7 @@ async function standingClaimCheck(t, sess, body) {                           // 
 // gave it and the result all go on the activity record. On the agent's side Claude Code's permission prompt goes to a small
 // helper of the connector (--permission-prompt-tool), which holds no key and only talks to the connector.
 const ASK_KEEP = 500, ASK_MIN_WAIT = 60, ASK_MAX_WAIT = 1800, ASK_MAX_WAITING = 5, ASK_PER_HOUR = 60;
+const ASK_JOB_MS = 30 * 60e3, ASK_JOB_USES = 100;                             // T-0211: "Allow for this job" covers exactly the same thing again, for one job, 30 minutes at most
 function asksPath() { return path.join(path.dirname(F().data), 'asks.json'); }
 function loadAsks() {
   try { const d = JSON.parse(fs.readFileSync(asksPath(), 'utf8')); if (d && Array.isArray(d.items)) return { next: Number.isInteger(d.next) ? d.next : d.items.length + 1, items: d.items }; } catch {}
@@ -2455,7 +2456,7 @@ echo "${MARK}$__rc|$PWD"`;
         change: cur ? { current_version: cur, versions } : null, comments: (rj(path.join(diffDir(), t.id + '.comments.json')) || []).filter(c => single || c.version === cur),
         history: t.updates || [], run_log: t.log || [], worker_usage: t.usage || null, agent_runs: mine,
         request_files: requestFiles(t.id).map(f => ({ name: f.name, bytes: f.size, sha256: f.sha256 || null, by: f.by, at: new Date(f.ts).toISOString() })),   // T-0206
-        questions: asksAll.filter(a => a.ticket === t.id).map(a => ({ id: a.id, agent: a.agent, tool: a.tool, what: a.summary, asked_at: a.at, status: a.status, answered_by: a.answeredBy || null, answered_at: a.answeredAt || null, via: a.via || null, result: a.result || null })), record: record.filter(e => e.ticket === t.id).slice(-500) };
+        questions: asksAll.filter(a => a.ticket === t.id).map(a => ({ id: a.id, agent: a.agent, tool: a.tool, what: a.summary, asked_at: a.at, status: a.status, answered_by: a.answeredBy || null, answered_at: a.answeredAt || null, via: a.via || null, result: a.result || null, scope: a.scope || null, runs: a.scope === 'job' ? 1 + (a.uses || []).length : undefined, more_runs: a.scope === 'job' ? (a.uses || []).map(u => ({ at: u.at, result: u.result || null })) : undefined })), record: record.filter(e => e.ticket === t.id).slice(-500) };
     });
     const chk = verifyAudit(dir), pack = { kind: 'chamber-evidence', version: 1, workspace: accounts.enabled ? accounts.workspaceName(accounts.workspaceOf(sess)) : null, generated_at: new Date().toISOString(), generated_by: sess.username,
       scope: single ? { ticket: evidenceM[1] } : range, record_check: { intact: chk.ok, entries_checked: chk.checked, newest_check_value: chk.head || null, problem: chk.ok ? null : chk.reason },
@@ -2474,7 +2475,7 @@ ${t.applied ? `<tr><th>Applied</th><td>branch ${E(t.applied.branch)} ${E(t.appli
 ${t.change ? `<h3>The change (version ${t.change.current_version})</h3>${t.change.versions.map(v => `<div class="v"><b>Version ${v.version}</b> by ${E(v.by)} ${E(when(v.at))}: ${v.files.map(E).join(', ')} (+${v.added} -${v.removed})${v.plain ? `<div>In plain words: ${E(v.plain.what || '')} ${v.plain.risk ? 'Risk: ' + E(v.plain.risk) : ''}</div>` : ''}<pre>${E(v.diff || '')}</pre></div>`).join('')}` : ''}
 ${t.comments.length ? `<h3>Review comments</h3><ul>${t.comments.map(c => `<li>${E(c.by)} on version ${c.version}, line ${c.line}${c.file ? ' of ' + E(c.file) : ''}: ${E(c.text)}</li>`).join('')}</ul>` : ''}
 ${t.agent_runs.length ? `<h3>What the agents ran (${t.agent_runs.length} answer${t.agent_runs.length === 1 ? '' : 's'} naming ${E(t.id)})</h3>${t.agent_runs.map(r => `<div class="v"><b>${E(r.agent)}</b> ${E(when(r.at))}${r.model ? ', ' + E(r.model) : ''}${r.cost_cents != null ? `, $${(r.cost_cents / 100).toFixed(2)}` : ''}${r.commands.length ? r.commands.map(c => `<pre>$ ${E(c.tool)}: ${E(c.input)}${c.exit != null ? `   (exit ${E(c.exit)})` : ''}\n${E(c.output || '')}</pre>`).join('') : '<div class="dim">no commands recorded</div>'}</div>`).join('')}` : ''}
-${t.questions.length ? `<h3>Questions the agent asked a person</h3>${t.questions.map(q => `<div class="v"><b>${E(q.id)}</b> ${E(when(q.asked_at))}: ${E(q.agent)} asked to ${E(q.what)}<div>${q.status === 'allowed' ? `Allowed once by ${E(q.answered_by)}` : q.status === 'denied' ? `${E(q.answered_by)} said no` : q.status === 'expired' ? 'No answer in time: not allowed' : q.status === 'cancelled' ? 'Withdrawn before anyone answered' : 'Waiting for an answer'}${q.via ? ' (from the notification)' : ''}${q.answered_at ? ', ' + E(when(q.answered_at)) : ''}${q.result ? `. It ${q.result.ok ? 'worked' : 'failed'}.` : ''}</div>${q.result && q.result.output ? `<pre>${E(q.result.output)}</pre>` : ''}</div>`).join('')}` : ''}
+${t.questions.length ? `<h3>Questions the agent asked a person</h3>${t.questions.map(q => `<div class="v"><b>${E(q.id)}</b> ${E(when(q.asked_at))}: ${E(q.agent)} asked to ${E(q.what)}<div>${q.status === 'allowed' ? (q.scope === 'job' ? `Allowed for this job by ${E(q.answered_by)}; it ran ${q.runs} time${q.runs === 1 ? '' : 's'} under this answer` : `Allowed once by ${E(q.answered_by)}`) : q.status === 'denied' ? `${E(q.answered_by)} said no` : q.status === 'expired' ? 'No answer in time: not allowed' : q.status === 'cancelled' ? 'Withdrawn before anyone answered' : 'Waiting for an answer'}${q.via ? ' (from the notification)' : ''}${q.answered_at ? ', ' + E(when(q.answered_at)) : ''}${q.result ? `. It ${q.result.ok ? 'worked' : 'failed'}.` : ''}</div>${q.result && q.result.output ? `<pre>${E(q.result.output)}</pre>` : ''}${(q.more_runs || []).map((u, i) => `<div>Run ${i + 2}, ${E(when(u.at))}${u.result ? `: it ${u.result.ok ? 'worked' : 'failed'}.` : ''}</div>${u.result && u.result.output ? `<pre>${E(u.result.output)}</pre>` : ''}`).join('')}</div>`).join('')}` : ''}
 ${t.run_log.length ? `<h3>Run log</h3><pre>${t.run_log.map(l => `${when(l.at)}  ${l.by}: ${l.line}`).map(E).join('\n')}</pre>` : ''}
 <h3>History</h3><pre>${t.history.map(u => `${when(u.at)}  ${u.by}: ${u.note}`).map(E).join('\n')}</pre>
 <h3>Entries in the activity record</h3><pre>${t.record.map(e => `#${e.n ?? '-'} ${when(e.ts)} ${e.actor || e.agent} ${e.action}${e.h ? '  check ' + e.h.slice(0, 16) : ''}`).map(E).join('\n') || 'none'}</pre></section>`;
@@ -2534,7 +2535,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
       tkT = /^T-\d{4}$/.test(tk) ? (loadTickets().tickets || []).find(x => x.id === tk) : null;
       if (!tkT || tkT.status !== 'in_progress' || String(tkT.assignee || '').toLowerCase() !== String(sess.username).toLowerCase()) { saveAsks(d); return json(res, 409, { error: 'ticket: an agent can only ask for a ticket it is working on right now' }); }
     }
-    const a = { id: 'A-' + d.next, agent: sess.username, room, tool, summary, detail: String(body?.detail || '').slice(0, 4000) || undefined, for: forU || undefined, ticket: tkT ? tk : undefined,
+    const a = { id: 'A-' + d.next, agent: sess.username, room, tool, summary, detail: String(body?.detail || '').slice(0, 4000) || undefined, for: forU || undefined, ticket: tkT ? tk : undefined, canJob: body?.job === true ? true : undefined,   // T-0211: this agent can honour "Allow for this job"
                 status: 'waiting', at: new Date().toISOString(), expiresAt: Date.now() + wait * 1000, waitSec: wait };
     d.next++;
     const mins = wait >= 120 ? `${Math.round(wait / 60)} minutes` : `${wait} seconds`;
@@ -2555,7 +2556,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
     if (askIsAgent(sess)) items = items.filter(a => a.agent === sess.username);             // an agent sees only its own questions
     return json(res, 200, { asks: items.slice(0, 100).map(a => ({ ...a, canAnswer: can && a.status === 'waiting' })), canAnswer: can });
   }
-  const askM = url.pathname.match(/^\/api\/asks\/(A-\d{1,6})(?:\/(answer|result|cancel))?$/);
+  const askM = url.pathname.match(/^\/api\/asks\/(A-\d{1,6})(?:\/(answer|result|cancel|use|end))?$/);
   if (askM && method === 'GET' && !askM[2]) {
     const d = loadAsks(); if (askExpire(d)) saveAsks(d);
     const a = d.items.find(x => x.id === askM[1]); if (!a) return json(res, 404, { error: 'no such question' });
@@ -2571,16 +2572,40 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
       const dec = body?.decision; if (dec !== 'allow' && dec !== 'deny') { saveAsks(d); return json(res, 400, { error: 'decision: allow or deny' }); }
       a.status = dec === 'allow' ? 'allowed' : 'denied'; a.answeredBy = sess.username; a.answeredAt = new Date().toISOString();
       if (body?.via === 'notification') a.via = 'notification';                // T-0210: answered with the buttons on the notification (public/sw.js)
+      if (dec === 'allow' && body?.scope === 'job' && a.canJob) {              // T-0211: exactly this may run again in the same job; Chamber keeps the clock and counts every run
+        a.scope = 'job'; a.uses = []; a.jobUntil = Date.now() + (TEST_HOOKS && Number(body.scopeSec) >= 1 ? Math.min(ASK_JOB_MS, Number(body.scopeSec) * 1000) : ASK_JOB_MS);
+      }
       saveAsks(d);
-      askOutcome(a, (dec === 'allow' ? `Allowed once by ${sess.username}` : `${sess.username} said no`) + (a.via ? ', from the notification.' : '.'));
-      audit(sess, { action: dec === 'allow' ? 'ask-allow' : 'ask-deny', ask: a.id, ticket: a.ticket, via: a.via, agent: a.agent, tool: a.tool, what: a.summary.slice(0, 300) }, true); notify('asks', { room: a.room });
-      return json(res, 200, { ok: true, status: a.status });
+      askOutcome(a, (dec === 'allow' ? (a.scope === 'job' ? `Allowed for this job by ${sess.username} (exactly this may run again until the job ends, 30 minutes at most)` : `Allowed once by ${sess.username}`) : `${sess.username} said no`) + (a.via ? ', from the notification.' : '.'));
+      audit(sess, { action: dec === 'allow' ? (a.scope === 'job' ? 'ask-allow-job' : 'ask-allow') : 'ask-deny', ask: a.id, ticket: a.ticket, via: a.via, agent: a.agent, tool: a.tool, what: a.summary.slice(0, 300) }, true); notify('asks', { room: a.room });
+      return json(res, 200, { ok: true, status: a.status, scope: a.scope });
     }
     if (!askIsAgent(sess) || a.agent !== sess.username) { saveAsks(d); return json(res, 403, { error: 'only the agent that asked' }); }
     if (askM[2] === 'cancel') {
       if (a.status !== 'waiting') { saveAsks(d); return json(res, 409, { error: `${a.id} is ${a.status}` }); }
       a.status = 'cancelled'; a.answeredAt = new Date().toISOString(); saveAsks(d);
       askOutcome(a, 'The agent stopped before anyone answered.'); audit(sess, { action: 'ask-cancel', ask: a.id, ticket: a.ticket }); notify('asks', { room: a.room });
+      return json(res, 200, { ok: true });
+    }
+    if (askM[2] === 'use') {                                                   // T-0211: exactly the same thing again in the same job, under the earlier answer
+      const why = a.status !== 'allowed' || a.scope !== 'job' ? 'this question was not allowed for the whole job' : a.jobEnded ? 'that job has ended' : Date.now() > a.jobUntil ? 'the 30 minutes are over' : a.uses.length >= ASK_JOB_USES ? `it already ran ${ASK_JOB_USES} more times under this answer` : null;
+      if (why) { saveAsks(d); return json(res, 409, { error: `${a.id}: ${why}. Ask again.` }); }
+      a.uses.push({ at: new Date().toISOString() }); saveAsks(d);
+      audit(sess, { action: 'ask-covered', ask: a.id, ticket: a.ticket, run: a.uses.length + 1, by: a.answeredBy, what: a.summary.slice(0, 300) });
+      return json(res, 200, { ok: true, n: a.uses.length });
+    }
+    if (askM[2] === 'end') {                                                   // the agent's job is over: the answer covers nothing more
+      if (a.scope !== 'job' || a.jobEnded) { saveAsks(d); return json(res, 409, { error: `${a.id} has no job to end` }); }
+      a.jobEnded = new Date().toISOString(); saveAsks(d);
+      askOutcome(a, `The job ended. It ran ${a.uses.length + 1} time${a.uses.length ? 's' : ''} under this answer.`);
+      audit(sess, { action: 'ask-job-end', ask: a.id, ticket: a.ticket, runs: a.uses.length + 1 }); notify('asks', { room: a.room });
+      return json(res, 200, { ok: true, runs: a.uses.length + 1 });
+    }
+    if (askM[2] === 'result' && Number.isInteger(body?.use) && body.use >= 1) { // the result of a covered run
+      const u = a.scope === 'job' ? (a.uses || [])[body.use - 1] : null;
+      if (!u || u.result) { saveAsks(d); return json(res, 409, { error: 'a result is recorded once for each run' }); }
+      u.result = { ok: body?.ok !== false, output: String(body?.output || '').slice(0, 2000), at: new Date().toISOString() }; saveAsks(d);
+      audit(sess, { action: 'ask-result', ask: a.id, ticket: a.ticket, run: body.use + 1, ok: u.result.ok, output: u.result.output.slice(0, 500) });
       return json(res, 200, { ok: true });
     }
     if (a.status !== 'allowed' || a.result) { saveAsks(d); return json(res, 409, { error: 'a result is recorded once, and only for a question that was allowed' }); }

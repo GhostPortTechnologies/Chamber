@@ -2410,8 +2410,8 @@ function renderAsks() {
   bar.hidden = !list.length;
   bar.innerHTML = list.map(a => `<div class="ask-item" data-ask="${esc(a.id)}">
     <div><b>${esc(a.agent)}</b>${a.ticket ? ` (working on <a href="#" onclick="openTicketModal('${escJ(a.ticket)}');return false">${esc(a.ticket)}</a>)` : ''} asks to ${a.tool === 'Bash' ? 'run this command:' : esc(a.summary)}</div>${a.tool === 'Bash' ? `<pre>${esc(a.summary.replace(/^run this command: /, ''))}</pre>` : ''}
-    <div class="ask-btns">${a.canAnswer ? `<button class="btn btn-primary btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','allow')">Allow once</button><button class="btn btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','deny')">Deny</button>` : '<span class="dim small">Waiting for someone who may approve.</span>'}
-    <span class="dim small">${esc(a.id)} · no answer in <span data-left="${esc(a.id)}">${askLeft(a)}</span> means no</span></div></div>`).join('');
+    <div class="ask-btns">${a.canAnswer ? `<button class="btn btn-primary btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','allow')">Allow once</button>${a.canJob ? `<button class="btn btn-sm" type="button" title="Exactly this may run again without asking until this job ends, 30 minutes at most" onclick="answerAsk('${escJ(a.id)}','allow','job')">Allow for this job</button>` : ''}<button class="btn btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','deny')">Deny</button>` : '<span class="dim small">Waiting for someone who may approve.</span>'}
+    <span class="dim small">${esc(a.id)} · no answer in <span data-left="${esc(a.id)}">${askLeft(a)}</span> means no</span></div>${a.canJob && a.canAnswer ? '<div class="dim small ask-hint">Allow for this job: exactly this may run again without asking until the job ends, 30 minutes at most. If it runs files the agent can change (tests, scripts), you are trusting those changes too.</div>' : ''}</div>`).join('');
 }
 // ── T-0207: the agent's draft on a request ──
 async function useDraft(id) {
@@ -2423,12 +2423,12 @@ async function useDraft(id) {
   } catch { toast('Network error: nothing was changed.', 'err'); }
 }
 function copyDraftQuestion(q) { (navigator.clipboard ? navigator.clipboard.writeText(q) : Promise.reject()).then(() => toast('Copied')).catch(() => { prompt('Copy this question', q); }); }
-async function answerAsk(id, decision) {
+async function answerAsk(id, decision, scope) {                                 // T-0211: scope 'job' = exactly this again, for this job
   document.querySelectorAll(`#ask-bar [data-ask="${CSS.escape(id)}"] button`).forEach(b => { b.disabled = true; });
   try {
-    const r = await fetch(`${API}/api/asks/${encodeURIComponent(id)}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });
+    const r = await fetch(`${API}/api/asks/${encodeURIComponent(id)}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scope ? { decision, scope } : { decision }) });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) toast(d.error || 'Could not answer', 'err'); else toast(decision === 'allow' ? 'Allowed once' : 'Said no');
+    if (!r.ok) toast(d.error || 'Could not answer', 'err'); else toast(decision !== 'allow' ? 'Said no' : d.scope === 'job' ? 'Allowed for this job' : 'Allowed once');
   } catch { toast('Network error: nothing was answered.', 'err'); }
   loadAsks();
 }

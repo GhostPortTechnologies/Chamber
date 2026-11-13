@@ -295,7 +295,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.23.0")
+check("the connector reports its version", m.AGENT_VERSION == "3.24.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -700,6 +700,36 @@ check("even with asking switched on, a draft run is the locked read-only spawn: 
 src207 = open(HERE / "chamber-agent.py", encoding="utf-8").read()
 check("drafts can be switched off on the machine, and the loop takes one job only when the ping says one waits and the agent is not paused",
       'os.environ.get("CHAMBER_DRAFTS"' in src207 and 'if DRAFTS_ON and pong.get("drafts") and not state.get("paused"):' in src207 and '"/api/drafts/next"' in src207 and 'if not msg.get("attachments") and not msg.get("_draft"):' in src207)
+print("allow for this job (3.24.0, T-0211)")
+jc = []; JOB = {"uses": 0, "refuse": False}
+def job_api(method, path, body=None):
+    jc.append((method, path, body))
+    if method == "POST" and path == "/api/asks": return {"ok": True, "id": "A-%d" % (20 + len([c for c in jc if c[0] == "POST" and c[1] == "/api/asks"]))}
+    if method == "GET" and path.startswith("/api/asks/A-"): return {"id": path.rsplit("/", 1)[1], "status": "allowed", "scope": "job", "answeredBy": "alice"}
+    if path.endswith("/use"):
+        if JOB["refuse"]: raise RuntimeError("HTTP Error 409: Conflict")
+        JOB["uses"] += 1; return {"ok": True, "n": JOB["uses"]}
+    return {"ok": True}
+mk.api = job_api; jd = tempfile.mkdtemp(prefix="ask-job-"); jasks = {}; jmsg = {"id": "m10", "username": "alice"}; jrun = mk.Run("general", jmsg)
+def jreq(name, cmd, tu, **extra): json.dump({"tool_name": "Bash", "input": dict({"command": cmd}, **extra), "tool_use_id": tu}, open(os.path.join(jd, name + ".req.json"), "w"))
+def jans(name): return json.load(open(os.path.join(jd, name + ".ans.json")))["decision"]
+def jasked(): return [c for c in jc if c[0] == "POST" and c[1] == "/api/asks"]
+jreq("a1", "npm test", "j1", description="Run the tests"); mk.ask_pump(jd, "general", jmsg, jrun, jasks); jasks["a1"]["next"] = 0; mk.ask_pump(jd, "general", jmsg, jrun, jasks)
+jreq("a2", "npm test", "j2", description="Run the tests again"); jreq("a3", "npm test", "j3"); mk.ask_pump(jd, "general", jmsg, jrun, jasks)
+check("after Allow for this job, exactly the same command runs again without a new question, and Chamber is asked before each such run",
+      jans("a1") == "allow" and jans("a2") == "allow" and jans("a3") == "allow" and len(jasked()) == 1 and jasked()[0][2].get("job") is True and JOB["uses"] == 2 and jasks["a2"].get("use") == 1 and jasks["a3"].get("use") == 2 and jasks["a2"]["id"] == "A-21", (len(jasked()), JOB))
+jreq("a4", "npm test -- --watch", "j4"); jreq("a5", "npm test", "j5", run_in_background=True); mk.ask_pump(jd, "general", jmsg, jrun, jasks)
+check("the same command with anything added, or run in a different way, is asked about as usual", len(jasked()) == 3 and JOB["uses"] == 2 and not jasks["a4"]["done"] and not jasks["a5"]["done"], (len(jasked()), JOB))
+JOB["refuse"] = True; jreq("a6", "npm test", "j6"); mk.ask_pump(jd, "general", jmsg, jrun, jasks)
+check("when Chamber says the answer no longer covers it (time up, job ended), a person is asked again", len(jasked()) == 4 and not jasks["a6"]["done"] and mk.ask_sig("Bash", {"command": "npm test"}) not in jasks["_job"], (len(jasked()), list(jasks.get("_job", {}))))
+del jc[:]; mk.ask_finish(jd, jasks, {"results": {"j1": {"out": "12 passing", "error": False}, "j2": {"out": "1 failing", "error": True}, "j3": {"out": "12 passing", "error": False}}})
+jres = [(c[1], c[2]) for c in jc if c[1].endswith("/result")]; jend = [c[1] for c in jc if c[1].endswith("/end")]
+check("after the job each run's result goes on the record under the one answer, and the job is ended so it covers nothing more",
+      ("/api/asks/A-21/result", {"ok": True, "output": "12 passing"}) in jres and ("/api/asks/A-21/result", {"ok": False, "output": "1 failing", "use": 1}) in jres and ("/api/asks/A-21/result", {"ok": True, "output": "12 passing", "use": 2}) in jres
+      and jend == ["/api/asks/A-21/end"] and len([c for c in jc if c[1].endswith("/cancel")]) == 3 and not os.path.exists(jd), (jres, jend))
+check("a description the person was never shown does not change what counts as the same command; anything else does",
+      mk.ask_sig("Bash", {"command": "ls", "description": "a"}) == mk.ask_sig("Bash", {"command": "ls", "description": "b"}) and mk.ask_sig("Bash", {"command": "ls"}) != mk.ask_sig("Bash", {"command": "ls "})
+      and mk.ask_sig("Bash", {"command": "ls"}) != mk.ask_sig("Bash", {"command": "ls", "timeout": 5}) and mk.ask_sig("WebFetch", {"url": "a", "description": "x"}) != mk.ask_sig("WebFetch", {"url": "a"}))
 sys.argv = ["chamber-agent.py"]
 srv.shutdown()
 print(f"\n{passed} passed, {failed} failed")
