@@ -1,0 +1,11 @@
+#!/bin/bash
+# chamber-rollback (T-0029): go back to the commit that was live before the last chamber-deploy, restart, smoke test.
+set -uo pipefail
+APP=/opt/chamber/app; D=/var/lib/chamber/deploy
+prev=$(cat "$D/previous" 2>/dev/null) || { echo "no previous deploy recorded in $D/previous"; exit 1; }
+cur=$(sudo -u chamber git -C "$APP" rev-parse HEAD)
+echo "[rollback] $cur -> $prev"
+sudo -u chamber git -C "$APP" reset -q --hard "$prev" && echo "$cur" > "$D/previous"
+systemctl restart chamber; sleep 2
+for i in $(seq 1 20); do curl -s --max-time 2 http://127.0.0.1:4242/api/health | grep -q '"ok":true' && { echo "[rollback] OK, serving $(sudo -u chamber git -C "$APP" rev-parse --short HEAD)"; echo "$(date -u +%FT%TZ) MANUAL ROLLBACK $cur -> $prev" >> "$D/log"; exit 0; }; sleep 0.5; done
+echo "[rollback] Chamber is not healthy after rollback: journalctl -u chamber -n 50"; exit 1

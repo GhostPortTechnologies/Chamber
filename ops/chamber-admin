@@ -1,0 +1,30 @@
+#!/bin/bash
+# Manage Chamber accounts from the server. Passwords are typed, never shown, never stored in clear.
+#   sudo chamber-admin add <email> <username>     create (or promote) an admin account that never needs to pay
+#   sudo chamber-admin password <email>           set a new password for any account
+#   sudo chamber-admin promote <email>            make an existing account an admin (never pays)
+#   sudo chamber-admin list                       show accounts and who has access
+#   sudo chamber-admin transfer <from> <to>      hand a workspace to another member (do this before removing an owner)
+#   sudo chamber-admin remove <email>             delete an account (the Stripe subscription, if any, is not cancelled)
+set -euo pipefail
+[ "$(id -u)" = 0 ] || { echo "Run it with sudo: sudo chamber-admin ..."; exit 1; }
+CMD=${1:-}; shift || true
+PW=""
+run() { sudo -u chamber env CHAMBER_DATA=/var/lib/chamber/chamber.json P="$PW" /usr/bin/node /opt/chamber/app/accounts.js "$@"; }
+ask_pw() {
+  read -rs -p "Password (10+ characters): " P1; echo
+  read -rs -p "Type it again: " P2; echo
+  [ "$P1" = "$P2" ] || { echo "They don't match. Nothing changed."; exit 1; }
+  [ ${#P1} -ge 10 ] || { echo "Too short. Nothing changed."; exit 1; }
+  PW=$P1
+}
+case "$CMD" in
+  add)      [ $# -eq 2 ] || { echo "usage: chamber-admin add <email> <username>"; exit 1; }; ask_pw; run add-admin "$1" "$2" ;;
+  password) [ $# -eq 1 ] || { echo "usage: chamber-admin password <email>"; exit 1; }; ask_pw; run set-password "$1" ;;
+  promote)  [ $# -eq 1 ] || { echo "usage: chamber-admin promote <email>"; exit 1; }; run promote "$1" ;;
+  list)     run list ;;
+  transfer) [ $# -eq 2 ] || { echo "usage: chamber-admin transfer <from-email> <to-email>"; exit 1; }; run transfer "$1" "$2" ;;
+  2fa-off)  [ $# -eq 1 ] || { echo "usage: chamber-admin 2fa-off <email>"; exit 1; }; run 2fa-off "$1" ;;
+  remove)   [ $# -eq 1 ] || { echo "usage: chamber-admin remove <email>"; exit 1; }; run remove "$1" ;;
+  *)        sed -n '2,8p' "$0"; exit 1 ;;
+esac

@@ -1,0 +1,547 @@
+#!/usr/bin/env python3
+"""Tests for the connector's model backends (T-0055). Zero dependencies: a fake HTTP server plays Ollama, an OpenAI-compatible
+server and Gemini; the connector module is loaded with a fake Chamber URL/token and each backend is exercised for request
+shape, response parsing, redaction and failure handling. Run: python3 agent/test_connector.py   (exit 0 = all green)."""
+import http.server, json, os, subprocess, sys, threading, importlib.util, pathlib, tempfile
+
+HERE = pathlib.Path(__file__).resolve().parent
+seen = []
+MEMORY = [{"id": "n1", "scope": "*", "text": "The relay in us-east is called east-1", "by": "alice", "at": 1}]   # T-0059
+THREAD = {"root": {"id": "r1", "username": "alice", "kind": "human"}, "length": 2, "agentHops": 1}                   # T-0060
+STOP = []                                                                                                           # T-0071: a stop request the fake server reports on /api/messages/one
+APPROVED, DIFFS = [], {}                                                                                            # T-0072: approved tickets + their diffs, as the fake server reports them
+class Fake(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        if self.path.endswith("/nope"): self.send_response(404); self.end_headers(); return                     # T-0064: unknown id
+        if self.path.startswith("/api/files/"):                                                        # T-0064: a tiny PNG or a text file
+            body = b"\x89PNG\r\n\x1a\n" + b"\0" * 40 if self.path.endswith("/img1") else b"line one\nSECRET sk_live_ABCDEFGHIJKLMNOPQRSTUVWX\n"
+            self.send_response(200); self.send_header("Content-Type", "image/png" if self.path.endswith("/img1") else "text/plain"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if self.path.startswith("/api/tickets?status=approved"): data = json.dumps({"tickets": APPROVED}).encode()                 # T-0072
+        elif self.path.startswith("/api/tickets/") and self.path.endswith("/diff"):
+            tid = self.path.split("/")[3]
+            if tid not in DIFFS: self.send_response(404); self.end_headers(); return
+            data = json.dumps(DIFFS[tid]).encode()
+        elif self.path.startswith("/api/tickets"): data = json.dumps({"tickets": APPROVED}).encode()
+        elif self.path.startswith("/api/messages?"): data = json.dumps({"messages": [{"id": "x1", "username": "test-bot", "ts": 1, "seq": 1, "text": "ok", "run": {"tools": [1, 2], "cost_cents": 3.5}}], "users": {}, "seq": 1}).encode()   # T-0086: seq cursor
+        elif self.path.startswith("/api/messages/one"): data = json.dumps({"message": {"id": "s1", "run": {"state": "running", "stop": (STOP[0] if STOP else None)}}}).encode()   # T-0071
+        elif self.path.startswith("/api/memory"): data = json.dumps({"agent": "test-bot", "notes": MEMORY}).encode()
+        elif self.path.startswith("/api/messages/thread"): data = json.dumps(THREAD).encode()
+        else: self.send_response(404); self.end_headers(); return
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
+        seen.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
+        if self.path.endswith("/boom"): self.send_response(500); self.end_headers(); self.wfile.write(b'{"error":"kaboom sk_live_ABCDEFGHIJKLMNOPQRSTUVWX"}'); return
+        if self.path in ("/api/messages", "/api/messages/edit", "/api/messages/react", "/api/ping") or self.path.startswith("/api/tickets/"):                                                        # T-0071: status line, its updates, presence
+            out = {"ok": True, "message": dict(body, id=body.get("id") or "s%d" % len([x for x in seen if x[0] == "/api/messages"]))}; data = json.dumps(out).encode()
+            self.send_response(201 if self.path == "/api/messages" else 200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+        if self.path == "/api/memory": out = {"ok": True, "note": body}; data = json.dumps(out).encode(); self.send_response(201); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+        if self.path == "/api/chat": out = {"message": {"role": "assistant", "content": "ollama says hi"}, "prompt_eval_count": 11, "eval_count": 7}
+        elif self.path == "/v1/chat/completions": out = {"choices": [{"message": {"role": "assistant", "content": "openai says hi, token chk_deadbeef_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}}]}
+        elif ":generateContent" in self.path: out = {"candidates": [{"content": {"parts": [{"text": "gemini says "}, {"text": "hi\nPROPOSE: Fix it :: Do the thing :: Because"}]}}]}
+        else: self.send_response(404); self.end_headers(); return
+        data = json.dumps(out).encode(); self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+script = []                                            # T-0056: scripted replies for the tool loop (consumed in order)
+_orig_post = Fake.do_POST
+def _scripted(self):
+    if script and self.path == "/api/chat":
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}"); seen.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
+        data = json.dumps({"message": {"role": "assistant", "content": script.pop(0)}, "prompt_eval_count": 11, "eval_count": 7}).encode(); self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+    _orig_post(self)
+Fake.do_POST = _scripted
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake); port = srv.server_address[1]
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+passed = failed = 0
+def check(name, ok, detail=""):
+    global passed, failed
+    if ok: passed += 1; print(f"  ok   {name}")
+    else: failed += 1; print(f"  FAIL {name} {detail}")
+
+def load(backend, model="m", url=None, key="", ctx="", allow="", extra=None):
+    env = {"CHAMBER_URL": f"http://127.0.0.1:{port}", "CHAMBER_TOKEN": "chk_test_token", "CHAMBER_BACKEND": backend, "CHAMBER_MODEL": model,
+           "CHAMBER_LLM_URL": url or f"http://127.0.0.1:{port}", "CHAMBER_LLM_KEY": key, "CHAMBER_CONTEXT_CMDS": ctx, "CHAMBER_TOOL_ALLOW": allow, "CHAMBER_STATE": "/tmp/chamber-agent-test-state.json"}
+    env.update(extra or {})                                        # T-0129: ask-mode settings for the phone-AI tests
+    for k in list(os.environ):
+        if k.startswith("CHAMBER_"): del os.environ[k]
+    os.environ.update(env)
+    spec = importlib.util.spec_from_file_location("agent_under_test", HERE / "chamber-agent.py"); mod = importlib.util.module_from_spec(spec)
+    sys.argv = ["chamber-agent.py"]; spec.loader.exec_module(mod); mod.ME = "test-bot"; return mod
+
+hist = [{"ts": 1_793_990_000_000, "username": "alice", "text": "earlier chatter"}]
+msg = {"id": "m1", "ts": 1_793_990_001_000, "username": "alice", "text": "@test-bot how is the box?"}
+
+print("ollama")
+m = load("ollama", "llama3.1:8b", ctx="echo CONTEXT-MARKER-42")
+r = m.ask("general", hist, msg)
+check("answers from Ollama /api/chat with system rules + user data", r == "ollama says hi" and seen[-1][0] == "/api/chat" and seen[-1][2]["model"] == "llama3.1:8b" and seen[-1][2]["stream"] is False and seen[-1][2]["messages"][0]["role"] == "system", r)
+check("chat text is in the user turn, rules in the system turn, context commands included", "how is the box" in seen[-1][2]["messages"][1]["content"] and "CONTEXT-MARKER-42" in seen[-1][2]["messages"][1]["content"] and "PROPOSE:" in seen[-1][2]["messages"][0]["content"] and "no tools" in seen[-1][2]["messages"][0]["content"])
+
+print("openai-compatible")
+m = load("openai", "gpt-4o-mini", key="sk-test-key")
+r = m.ask("general", hist, msg)
+check("answers from /v1/chat/completions with bearer key; secrets in the reply are redacted", r.startswith("openai says hi") and "chk_deadbeef" not in r and "[redacted secret]" in r and seen[-1][1].get("authorization") == "Bearer sk-test-key", r)
+m2 = load("openai", "gpt-4o-mini")
+m2.ask("general", hist, msg)
+check("no key -> no Authorization header", "authorization" not in seen[-1][1])
+
+print("gemini")
+m = load("gemini", "gemini-2.0-flash", key="g-key")
+r = m.ask("general", hist, msg)
+check("answers from generateContent (parts joined), key in header, systemInstruction used", r.startswith("gemini says hi") and seen[-1][1].get("x-goog-api-key") == "g-key" and ":generateContent" in seen[-1][0] and "systemInstruction" in seen[-1][2], r)
+import re
+prop = re.search(r"^PROPOSE:\s*(.+?)\s*::\s*(.+?)(?:\s*::\s*(.+))?$", r, re.M)
+check("a PROPOSE line from any backend parses into title / body / reason", prop and prop.group(1) == "Fix it" and prop.group(2) == "Do the thing" and prop.group(3) == "Because")
+
+print("failures")
+m = load("openai", "x", url=f"http://127.0.0.1:{port}/boom".rsplit("/boom", 1)[0])
+m.LLM_URL = f"http://127.0.0.1:{port}"; m.BACKEND = "openai"
+orig = m.llm_http
+m.llm_http = lambda url, body, headers: orig(url.replace("/v1/chat/completions", "/boom"), body, headers)
+r = m.ask("general", hist, msg)
+check("an HTTP error becomes a short, redacted chat reply instead of a crash", r.startswith("(The openai service answered HTTP 500") and "sk_live_" not in r, r)
+m.LLM_URL = "http://127.0.0.1:9"; m.llm_http = orig
+r = m.ask("general", hist, msg)
+check("an unreachable model service becomes a short chat reply", r.startswith("(I could not reach the openai model"), r)
+
+print("config guards")
+bad = False
+try: load("nope")
+except SystemExit as e: bad = "CHAMBER_BACKEND" in str(e)
+check("unknown backend refuses to start", bad)
+try: load("ollama", model="")
+except SystemExit as e: bad = "CHAMBER_MODEL" in str(e)
+check("HTTP backends need a model name", bad)
+
+print("context commands")
+m = load("ollama", "m", ctx="echo hello sk_live_ABCDEFGHIJKLMNOPQRSTUVWX;definitely-not-a-command-xyz")
+c = m.gather_context()
+check("context commands run without a shell, are redacted, and failures are reported inline", "hello [redacted secret]" in c and "definitely-not-a-command-xyz" in c and "failed" in c, c)
+
+print("attachments (T-0064)")
+m = load("ollama", "m")
+amsg = {**msg, "attachments": [{"id": "img1", "name": "shot.png", "mime": "image/png", "size": 48}, {"id": "txt1", "name": "notes.txt", "mime": "text/plain", "size": 50}]}
+r = m.ask("general", hist, amsg)
+ol = [x for x in seen if x[0] == "/api/chat"][-1][2]
+check("Ollama gets the image as base64 and the text file inline, secrets redacted", len(ol["messages"][1].get("images", [])) == 1 and "ATTACHED FILES" in ol["messages"][1]["content"] and "line one" in ol["messages"][1]["content"] and "sk_live_" not in ol["messages"][1]["content"] and "[redacted secret]" in ol["messages"][1]["content"], ol["messages"][1]["content"][:300])
+check("scratch files are removed after the reply", not [d for d in os.listdir(tempfile.gettempdir()) if d.startswith("chamber-att-")])
+m = load("openai", "gpt", key="k")
+r = m.ask("general", hist, amsg)
+oa = [x for x in seen if x[0] == "/v1/chat/completions"][-1][2]
+check("OpenAI gets a text part plus an image_url data: part", isinstance(oa["messages"][1]["content"], list) and oa["messages"][1]["content"][0]["type"] == "text" and oa["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,"), str(oa["messages"][1]["content"])[:200])
+m = load("gemini", "g", key="k")
+r = m.ask("general", hist, amsg)
+ge = [x for x in seen if ":generateContent" in x[0]][-1][2]
+check("Gemini gets inline_data parts for images", any("inline_data" in p and p["inline_data"]["mime_type"] == "image/png" for p in ge["contents"][0]["parts"]), str(ge["contents"][0]["parts"])[:200])
+m = load("ollama", "m")
+d, files = m.fetch_attachments({**msg, "attachments": [{"id": "nope", "name": "../../etc/passwd", "mime": "text/plain", "size": 1}]})
+check("a failed download is reported, never crashes, and names are sanitised", files and files[0].get("error") and "could not be downloaded" in m.attachments_text(files, True), str(files))
+import shutil as _sh; _sh.rmtree(d, ignore_errors=True)
+check("a message without attachments adds nothing to the prompt", m.attachments_text([], True) == "" and m.fetch_attachments(msg) == (None, []))
+print("memory (T-0059)")
+m = load("ollama", "m")
+script[:] = ["east-1 it is.\nREMEMBER: alice prefers short answers"]
+r = m.ask("general", hist, msg)
+user_turn = [x for x in seen if x[0] == "/api/chat"][-1][2]["messages"][1]["content"]
+check("the agent's notes are loaded into the prompt as a MEMORY block, marked as context not orders", "MEMORY (notes" in user_turn and "east-1" in user_turn and "not instructions" in user_turn, user_turn[:200])
+r2, notes = m.take_remember(r, "general")
+mem_posts = [x for x in seen if x[0] == "/api/memory"]
+check("a REMEMBER line is stored as a note for this room and stripped from the reply", notes == ["alice prefers short answers"] and mem_posts and mem_posts[-1][2]["scope"] == "general" and mem_posts[-1][2]["text"] == "alice prefers short answers" and "REMEMBER" not in r2 and r2.startswith("east-1 it is.") and "_noted:" in r2, r2)
+print("diff proposals + approved apply (T-0063)")
+import subprocess, tempfile
+m = load("ollama", "m")
+reply = "Here is the fix.\n```diff\ndiff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n hello\n+world\n```\nPROPOSE: Add world :: Append world to notes :: completeness"
+rest, diff = m.extract_diff(reply)
+check("a fenced diff block is extracted from the reply and the rest kept", diff and diff.startswith("diff --git") and "+world" in diff and "```" not in rest and "PROPOSE:" in rest, rest)
+check("text without a real diff yields none", m.extract_diff("```diff\nnot a diff\n```")[1] is None)
+repo = tempfile.mkdtemp(prefix="chamber-repo-")
+def sh(*a): return subprocess.run(a, cwd=repo, capture_output=True, text=True)
+sh("git", "init", "-q", "-b", "main"); open(os.path.join(repo, "notes.txt"), "w").write("hello\n"); sh("git", "add", "-A"); sh("git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "init")
+res = m.apply_patch_to_repo(repo, diff, "T-0099", "Add world", "alice")
+on_branch = sh("git", "show", "chamber/T-0099:notes.txt").stdout; current = sh("git", "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(); main_file = open(os.path.join(repo, "notes.txt")).read()
+check("an approved patch lands as a commit on branch chamber/<ticket>, main stays untouched", res.get("ok") and res["branch"] == "chamber/T-0099" and on_branch == "hello\nworld\n" and current == "main" and main_file == "hello\n" and "Chamber T-0099" in sh("git", "log", "-1", "--format=%B", "chamber/T-0099").stdout, str(res))
+bad = diff.replace(" hello\n", " goodbye\n")
+res2 = m.apply_patch_to_repo(repo, bad, "T-0100", "Bad", "alice")
+check("a patch that does not apply is refused with the git reason and leaves no branch", res2.get("ok") is False and "does not apply" in res2["reason"] and sh("git", "rev-parse", "--verify", "--quiet", "chamber/T-0100").returncode != 0, str(res2))
+open(os.path.join(repo, "dirty.txt"), "w").write("x")
+check("a dirty working tree is never touched", m.apply_patch_to_repo(repo, diff, "T-0101", "x", "alice").get("reason", "").startswith("working tree is not clean"))
+check("a non-repo path is refused", m.apply_patch_to_repo("/nonexistent/path", diff, "T-0102", "x", "alice").get("ok") is False)
+import shutil; shutil.rmtree(repo, ignore_errors=True)
+print("hand-offs (T-0060)")
+m = load("ollama", "m"); m.COMMANDERS = {"alice"}; m.PEERS = ["pi-claude"]
+peer_msg = {"id": "m9", "ts": 1, "username": "pi-claude", "text": "@test-bot check the relay", "reply_to": "r1"}
+ok, who = m.handoff_ok(peer_msg, "general")
+check("a peer's mention inside a commander-started thread under the hop cap is accepted", ok is True and who == "alice")
+check("a peer's mention outside any thread is ignored", m.handoff_ok({**peer_msg, "reply_to": None}, "general")[0] is False)
+THREAD.update({"root": {"id": "r2", "username": "pi-claude", "kind": "agent"}})
+check("a thread started by an agent never counts", m.handoff_ok(peer_msg, "general")[0] is False)
+THREAD.update({"root": {"id": "r1", "username": "alice", "kind": "human"}, "agentHops": 3})
+ok, why = m.handoff_ok(peer_msg, "general")
+check("the hop cap stops the exchange", ok is False and why.startswith("hop cap"), why)
+THREAD.update({"agentHops": 1})
+script[:] = ["fine"]; m.ask("general", hist, msg)
+check("the rules name the peers and how to hand off", "@pi-claude" in seen[-1][2]["messages"][0]["content"] and "hand a sub-task" in seen[-1][2]["messages"][0]["content"])
+print("on-demand tool runner (T-0056)")
+m = load("ollama", "m", allow="echo *;uptime")
+script[:] = ["RUN: echo TOOL-OUTPUT-7", "The box says TOOL-OUTPUT-7."]
+r = m.ask("general", hist, msg)
+check("the model asks for an allowed command, gets its output, then answers; the reply names what ran", r.startswith("The box says TOOL-OUTPUT-7.") and "_ran: `echo TOOL-OUTPUT-7`_" in r and "TOOL RESULT (round 1)" in seen[-1][2]["messages"][1]["content"] and "TOOL-OUTPUT-7" in seen[-1][2]["messages"][1]["content"], r)
+check("the rules advertise the allowlist to tool-less models", "RUN: <command>" in seen[-1][2]["messages"][0]["content"] and "echo *" in seen[-1][2]["messages"][0]["content"])
+script[:] = ["RUN: rm -rf /", "Understood, I cannot do that."]
+r = m.ask("general", hist, msg)
+check("a command outside the allowlist is refused, reported to the model, never run", "(refused: not in CHAMBER_TOOL_ALLOW)" in seen[-1][2]["messages"][1]["content"] and r.startswith("Understood"), r)
+script[:] = ["RUN: echo hi | cat /etc/passwd", "ok"]
+m.ask("general", hist, msg)
+check("shell metacharacters are refused even when the prefix matches", "(refused: shell characters are not allowed)" in seen[-1][2]["messages"][1]["content"])
+m2 = load("ollama", "m", allow="cat *")
+script[:] = ["RUN: cat ~/.ssh/id_ed25519", "ok"]
+m2.ask("general", hist, msg)
+check("protected paths are refused even when the pattern allows the command", "touches a protected path" in seen[-1][2]["messages"][1]["content"])
+script[:] = ["RUN: echo a", "RUN: echo b", "RUN: echo c", "RUN: echo d", "never reached"]
+r = m.ask("general", hist, msg)
+check("the loop stops after the round cap and says so instead of looping forever", r.startswith("(I asked for a command instead of answering") and "echo c" in r and "echo d" not in r, r)
+m3 = load("ollama", "m")
+script[:] = ["RUN: echo nope"]
+r = m3.ask("general", hist, msg)
+check("with an empty allowlist nothing runs and the rules do not mention RUN", "RUN: <command>" not in seen[-1][2]["messages"][0]["content"] and len(script) == 0 and "echo nope" not in "".join(x[2]["messages"][1]["content"] for x in seen[-1:]), r)
+print("agent runs (T-0071)")
+m = load("ollama", "llama3.1:8b", allow="df *")
+m.RUN_FLUSH_SEC = 0; m.RATES["llama3.1:8b"] = (1.0, 2.0)
+run = m.Run("general", msg); run.open()
+opened = [x for x in seen if x[0] == "/api/messages"][-1]
+check("opening a run posts one status line in the thread with a running record that names the asker", run.id and run.id.startswith("s") and opened[2]["type"] == "status" and opened[2]["reply_to"] == "m1" and opened[2]["run"]["state"] == "running" and opened[2]["run"]["for"] == "alice", str(opened))
+script[:] = ["RUN: df -h", "disk is fine"]
+n_edits = len([x for x in seen if x[0] == "/api/messages/edit"])
+r = m.ask("general", hist, msg, run)
+edits = [x for x in seen if x[0] == "/api/messages/edit"][n_edits:]
+check("the tool loop shows up as steps and a transcript entry with exit code; tokens are counted and priced", r.startswith("disk is fine") and run.state == "done" and len(run.tools) == 1 and run.tools[0]["tool"] == "RUN" and run.tools[0]["input"] == "df -h" and run.tools[0]["exit"] == 0 and run.usage.get("tokens_in") == 22 and run.usage.get("tokens_out") == 14 and abs(run.usage.get("cost_cents", 0) - 0.005) < 1e-9 and all(s["ok"] is True for s in run.steps) and len(edits) >= 2 and edits[-1][2]["run"]["steps"], f"state={run.state} steps={run.steps} tools={run.tools} usage={run.usage} edits={len(edits)}")
+run.close("@alice " + r)
+check("closing turns the status line into the answer with the finished record", seen[-1][0] == "/api/messages/edit" and seen[-1][2]["id"] == run.id and seen[-1][2]["type"] == "message" and seen[-1][2]["text"].startswith("@alice disk is fine") and seen[-1][2]["run"]["state"] == "done" and "ms" in seen[-1][2]["run"] and seen[-1][2]["run"]["model"] == "llama3.1:8b", str(seen[-1][2]))
+STOP.append({"by": "alice", "at": 1})
+run2 = m.Run("general", msg); run2.open(); run2.last_check = 0
+check("a Stop pressed in the app is seen by the connector", run2.stopped() is True and run2.stop["by"] == "alice")
+script[:] = ["RUN: df -h", "never asked"]
+r2 = m.ask("general", hist, msg, run2)
+check("a stopped run reports who stopped it and does not call the model", run2.state == "stopped" and r2.startswith("Stopped by alice after") and len(script) == 2, f"{run2.state} {r2!r} {len(script)}")
+script[:] = []; STOP[:] = []
+run3 = m.Run("general", msg); run3.open()
+events = [{"type": "system", "subtype": "init", "model": "claude-x"},
+          {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "df -h /"}}]}},
+          {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "Filesystem 42% sk_live_ABCDEFGHIJKLMNOPQRSTUVWX", "is_error": False}]}},
+          {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t2", "name": "Read", "input": {"file_path": "/etc/hostname"}}]}},
+          {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t2", "content": [{"type": "text", "text": "denied"}], "is_error": True}]}},
+          {"type": "assistant", "message": {"content": [{"type": "text", "text": "42% used"}]}},
+          {"type": "result", "subtype": "success", "result": "42% used", "duration_ms": 1234, "total_cost_usd": 0.0123, "usage": {"input_tokens": 5, "cache_creation_input_tokens": 100, "cache_read_input_tokens": 200, "output_tokens": 9}}]
+st = {"pending": {}, "text": None, "result": None, "raw": []}
+for e in events: m.stream_event(run3, e, st)
+check("Claude Code's stream becomes steps, a redacted transcript with failures marked, and token/cost numbers",
+      st["result"] == "42% used" and st["text"] == "42% used" and run3.usage["model"] == "claude-x" and run3.usage["tokens_in"] == 305 and run3.usage["tokens_out"] == 9 and run3.usage["cost_cents"] == 1.23
+      and len(run3.tools) == 2 and run3.tools[0]["tool"] == "Bash" and run3.tools[0]["input"] == "df -h /" and "[redacted secret]" in run3.tools[0]["out"] and "sk_live" not in run3.tools[0]["out"]
+      and run3.tools[1]["error"] is True and run3.tools[1]["input"] == '{"file_path": "/etc/hostname"}' and run3.steps[0]["t"] == "$ df -h /" and run3.steps[0]["ok"] is True and run3.steps[1]["t"] == "Read /etc/hostname" and run3.steps[1]["ok"] is False,
+      f"{run3.steps} {run3.tools} {run3.usage} {st}")
+run3.stop = {"by": "bob"}; run3.steps.append({"t": "$ sleep 100", "ok": None, "tool": True})
+txt = m.stop_text(run3, st["text"])
+check("the stop summary names who stopped it, what was done and what was not, and keeps the partial text", txt.startswith("Stopped by bob after") and "Done so far: $ df -h /" in txt and "Not finished: $ sleep 100" in txt and "42% used" in txt, txt)
+m.set_state("working", "general", "check the disk"); m.LAST_ERROR.update({"text": "boom", "at": m.time.time()})
+b = m.ping_body([])
+check("the presence ping carries state, room, task and the last error", b["state"] == "working" and b["room"] == "general" and b["task"] == "check the disk" and b["error"] == "boom" and b["version"] == m.AGENT_VERSION, str(b))
+m.set_state("idle"); b2 = m.ping_body(["dm:a:b"])
+check("idle pings carry no task but still the error for an hour and the DM rooms", b2["state"] == "idle" and "task" not in b2 and b2["error"] == "boom" and "dm:a:b" in b2["rooms"], str(b2))
+big = m.Run("general", msg)
+for i in range(70): big.step(f"step {i}"); big.tool("Bash", "x" * 1000, "y" * 5000)
+rec = big.record("done")
+check("the record the connector sends is already capped: 40 steps, 60 tools, trimmed fields", len(rec["steps"]) == 40 and len(rec["tools"]) == 60 and len(rec["tools"][0]["input"]) == 400 and len(rec["tools"][0]["out"]) == 2000 and "tool" not in rec["steps"][0] and rec["ms"] >= 0)
+
+print("vibe-coder mode (T-0072)")
+m = load("ollama", "m")
+r1 = m.rules_text("general", False, {"text": "@test-bot BUILD REQUEST\nWhat: a dark mode", "_plain": True})
+check("build requests and the plain-language preference add their paragraphs; every diff is asked for a PLAIN line", "BUILD REQUEST" in r1 and "Done when" in r1 and "prefers plain language" in r1 and "PLAIN: <what changes" in r1)
+r0 = m.rules_text("general", False, {"text": "@test-bot hi"})
+check("ordinary requests carry neither paragraph", "BUILD REQUEST" not in r0 and "prefers plain language" not in r0 and "DIGEST" not in r0)
+rest, plain = m.take_plain("Fixed it.\n```diff\n...```\nPLAIN: Adds a toggle :: Reload the page :: Nothing :: Revert the ticket :: Low\nPROPOSE: a :: b :: c")
+check("a PLAIN line parses into its five fields and is removed from the reply", plain == {"what": "Adds a toggle", "try": "Reload the page", "risk": "Nothing", "undo": "Revert the ticket", "level": "low"} and "PLAIN:" not in rest and "PROPOSE:" in rest, f"{plain} {rest!r}")
+check("an unknown risk level is dropped, the rest kept", m.take_plain("x\nPLAIN: a :: b :: c :: d :: huge")[1] == {"what": "a", "try": "b", "risk": "c", "undo": "d"} and m.take_plain("no line here")[1] is None)
+APPROVED[:] = [{"id": "T-0120", "status": "proposed", "title": "Waiting one", "proposed_at": "2099-01-01T00:00:00.000Z"}]
+dg = m.digest_text({"text": "@test-bot DIGEST: what happened?"})
+check("a DIGEST request gathers ticket movements, waiting proposals and agent activity into a data block", dg.startswith("DIGEST DATA") and "T-0120" in dg and "Waiting for a person" in dg and "test-bot answered 1 request(s), ran 2 command(s), about 0.04 USD" in dg, dg)
+check("ordinary requests get no digest block", m.digest_text({"text": "@test-bot hi"}) == "")
+repo = tempfile.mkdtemp(prefix="chamber-repo2-")                                             # a fresh repo: main has hello+world (T-0099 merged), so a revert has something to undo
+def sh(*a): return subprocess.run(a, cwd=repo, capture_output=True, text=True)
+sh("git", "init", "-q", "-b", "main"); open(os.path.join(repo, "notes.txt"), "w").write("hello\n"); sh("git", "add", "-A"); sh("git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "init")
+sh("git", "switch", "-q", "-c", "chamber/T-0099"); open(os.path.join(repo, "notes.txt"), "w").write("hello\nworld\n"); sh("git", "add", "-A"); sh("git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "world"); sh("git", "switch", "-q", "main"); sh("git", "merge", "-q", "chamber/T-0099")
+APPROVED[:] = [{"id": "T-0105", "status": "approved", "title": "[agent] Revert T-0099: Add world", "apply_by": "test-bot", "hasDiff": True, "reverts": "T-0099", "approved_by": "alice"}]
+DIFFS["T-0105"] = {"id": "T-0105", "diff": "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1 @@\n hello\n-world\n", "meta": {"reverts": "T-0099"}}
+m.GIT_REPO = repo; m.GIT_APPLY = True; m.LAST_APPROVED_CHECK = 0
+st = {"since": {}, "proposals": {}}
+m.apply_approved(st)
+applied = [x for x in seen if x[0] == "/api/tickets/T-0105/applied"]
+check("an approved revert the server filed for this agent is applied on its own branch and reported back", st["proposals"].get("T-0105", {}).get("done") == "applied" and len(applied) == 1 and applied[-1][2]["branch"] == "chamber/T-0105" and applied[-1][2]["sha"] and sh("git", "show", "chamber/T-0105:notes.txt").stdout == "hello\n" and sh("git", "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main", f"{st} {applied}")
+notes = [x for x in seen if x[0] == "/api/tickets/T-0105/update"]
+check("the ticket note says it reverted the original", notes and notes[-1][2]["note"].startswith("Reverted T-0099 with the approved patch on branch chamber/T-0105"), str(notes[-1:]))
+sh("git", "switch", "-q", "-c", "chamber/T-0107"); open(os.path.join(repo, "notes.txt"), "a").write("moon\n"); sh("git", "add", "-A"); sh("git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "moon"); sh("git", "switch", "-q", "main")
+APPROVED[:] = [{"id": "T-0108", "status": "approved", "title": "[agent] Revert T-0107: moon", "apply_by": "test-bot", "hasDiff": True, "reverts": "T-0107", "approved_by": "alice"}]
+DIFFS["T-0108"] = {"id": "T-0108", "diff": "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1 @@\n hello\n-moon\n", "meta": {"reverts": "T-0107"}}
+m.LAST_APPROVED_CHECK = 0; m.apply_approved(st)
+note2 = [x for x in seen if x[0] == "/api/tickets/T-0108/update"]
+check("reverting a change that was never merged explains itself instead of failing", st["proposals"].get("T-0108", {}).get("done") == "reported" and note2 and "never merged" in note2[-1][2]["note"] and "git branch -D chamber/T-0107" in note2[-1][2]["note"] and sh("git", "rev-parse", "--verify", "--quiet", "chamber/T-0108").returncode != 0, str(note2[-1:]))
+check("the approved list is not re-read on every loop when nothing is pending", (m.apply_approved(st), m.LAST_APPROVED_CHECK > 0)[1])
+print("reactions (T-0070)")
+n0 = len(seen); rr = m.Run("general", msg); rr.open()
+check("opening a run puts eyes on the request", any(x[0] == "/api/messages/react" and x[2] == {"id": "m1", "emoji": "👀"} for x in seen[n0:]))
+n1 = len(seen); rr.close("done here", "done")
+reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
+check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
+n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
+check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
+check("the connector reports its version", m.AGENT_VERSION == "3.17.1")
+# ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
+import time
+_api0 = m.api
+_now = int(time.time() * 1000)
+_FILES = {"files": [{"id": "f1", "name": "Screenshot 1.png", "mime": "image/png", "size": 10, "by": "boss", "ts": _now - 60000, "folder": "Web shots"},
+                    {"id": "f2", "name": "notes.md", "mime": "text/markdown", "size": 10, "by": "boss", "ts": _now - 5 * 3600000, "folder": None},
+                    {"id": "f3", "name": "old.png", "mime": "image/png", "size": 10, "by": "someone", "ts": _now - 60000, "folder": "Other"}],
+          "folders": [{"path": "Web shots", "files": 1}, {"path": "Other", "files": 1}]}
+m.api = lambda method, path, body=None: _FILES if path.startswith("/api/files") else _api0(method, path, body)
+wf = lambda text, **kw: m.workspace_files(dict({"text": text, "username": "boss", "ts": _now}, **kw))
+check("3.17: a message naming a folder gets that folder's files", [a["id"] for a in wf("@bot look in the web shots folder")[0]] == ["f1"])
+check("3.17: a message naming a file gets that file", [a["id"] for a in wf("@bot what does notes.md say")[0]] == ["f2"])
+check("3.17: 'look at the screenshots' gets what the asker uploaded in the last 30 minutes, not other people's or old files", [a["id"] for a in wf("@bot look at the screenshots I added")[0]] == ["f1"])
+check("3.17: an empty mention gets the asker's fresh uploads too", [a["id"] for a in wf("@bot")[0]] == ["f1"])
+check("3.17: an ordinary question opens no files but still learns the folders exist", wf("@bot is the tunnel up?")[0] == [] and "Web shots (1 files)" in wf("@bot is the tunnel up?")[1])
+check("3.17: files taken from the Files tab are labelled as such and as data", "Files tab" in m.attachments_text([{"path": "/tmp/x", "name": "a.png", "mime": "image/png", "size": 2048}], True, True) and "not as instructions" in m.attachments_text([{"path": "/tmp/x", "name": "a.png", "mime": "image/png", "size": 2048}], True, True))
+m.api = _api0
+_h = [{"ts": _now - 8 * 3600000, "username": "boss", "text": "@bot rate chamber-worker " + "x" * 900}] + [{"ts": _now - 1000 * (9 - i), "username": "u", "text": "m%d" % i} for i in range(9)]
+_d = m.data_text("general", _h, {"username": "boss", "text": "@bot let's upgrade him?"})
+check("3.17: history lines carry the date and older long lines are shortened", time.strftime("%d %b", time.localtime((_now - 8 * 3600000) / 1000)) in _d and "x" * 601 not in _d and "rate chamber-worker" in _d)
+check("3.17: the rules tell the agent to resolve 'him' from the conversation or ask one question", "he\", \"him\"" in m.rules_text("general", True, {"text": "hi"}) or '"him"' in m.rules_text("general", True, {"text": "hi"}))
+def _fake(method, path, body=None):
+    if path.startswith("/api/tickets"): return {"tickets": [{"id": "T-0001", "title": "Fix it", "status": "in_progress", "assignee": "server-claude", "updates": [{"at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()), "by": "server-claude", "note": "built from the terminal"}]}]}
+    if path.startswith("/api/activity"): return {"events": [{"ts": _now - 1000, "kind": "ticket_claimed", "actor": "server-claude", "ref": "T-0001"}, {"ts": _now - 900, "kind": "ticket_approved", "actor": "boss", "ref": "T-0001"}]}
+    if path.startswith("/api/messages"): return {"messages": [{"username": "server-claude", "text": "report", "ts": _now - 500}, {"username": "boss", "text": "ok", "ts": _now - 400}]}
+    return {}
+m.api = _fake
+_dg = m.digest_text({"text": "@bot DIGEST: what happened"})
+check("3.17: the digest counts work done outside chat: activity by actor, ticket notes, in progress, messages posted", "activity: server-claude claimed 1 (T-0001)" in _dg and "ticket notes written by server-claude (1)" in _dg and "In progress now: T-0001 (server-claude)" in _dg and "messages posted: " in _dg, _dg)
+check("3.17: the digest rule forbids 'nothing else happened'", "Never say that nothing else happened" in m.rules_text("general", True, {"text": "@bot DIGEST: x"}))
+m.api = _api0
+print("answer ledger (T-0087)")
+_L = m.AnsweredLedger(cap=3)
+check("a fresh ledger has not seen an id", not _L.has("a"))
+check("add() records once and reports duplicates", _L.add("a") is True and _L.add("a") is False and _L.has("a"))
+_L.add("b"); _L.add("c"); _L.add("d")
+check("the ledger is bounded (cap=3) and evicts the oldest", not _L.has("a") and all(_L.has(x) for x in ("b", "c", "d")))
+check("a ledger restores from a saved id list", m.AnsweredLedger(["x", "y"]).has("x"))
+check("the ledger round-trips its ids for persistence", m.AnsweredLedger(["p", "q"]).ids() == ["p", "q"])
+print("circuit breaker (T-0088)")
+_b = m.Breaker(3, 60)
+check("a fresh breaker is closed", not _b.tripped(1000))
+_b.record(1000); _b.record(1100)
+check("under the limit the breaker stays closed", not _b.tripped(1200))
+_b.record(1200)
+check("at the limit the breaker trips", _b.tripped(1300))
+check("old hits age out of the window", not _b.tripped(1000 + 60 * 1000 + 1))
+print("pause / resume commands (T-0090)")
+check("'pause' is a pause command", m.pause_resume("pause") == "pause")
+check("'@server-claude pause all' is a pause command", m.pause_resume("@server-claude pause all") == "pause")
+check("'stop looping' is a pause command", m.pause_resume("stop looping") == "pause")
+check("'resume' is a resume command", m.pause_resume("resume") == "resume")
+check("'@server-claude continue' is a resume command", m.pause_resume("@server-claude continue") == "resume")
+check("a normal question is neither", m.pause_resume("@server-claude can we fix this?") is None)
+check("'stop the cron job' is not a bare pause", m.pause_resume("stop the cron job") is None)
+print("loop decision: answer-once + guards (T-0091)")
+_led = m.AnsweredLedger(); _brk = m.Breaker(1000, 60); _st = {}
+check("a fresh commander message is answered", m.loop_decision("@server-claude status?", "m1", True, _st, _led, _brk) == "answer")
+_led.add("m1")
+check("the same message id is never answered twice (ledger)", m.loop_decision("@server-claude status?", "m1", True, _st, _led, _brk) == "already-answered")
+# regression: today's scenario — a message answered once, then re-served with the same id, must not answer again
+led2 = m.AnsweredLedger(); st2 = {}; brk2 = m.Breaker(1000, 60)
+first = m.loop_decision("@server-claude hello silver claude", "voice-1", True, st2, led2, brk2); led2.add("voice-1")
+replay = [m.loop_decision("@server-claude hello silver claude", "voice-1", True, st2, led2, brk2) for _ in range(5)]
+check("regression: an edited/re-served message answers exactly once", first == "answer" and all(r == "already-answered" for r in replay))
+# property: over a poll sequence that re-serves ids, each id answers at most once
+led3 = m.AnsweredLedger(); st3 = {}; brk3 = m.Breaker(1000, 60); answered = {}
+for mid in ['a', 'b', 'a', 'c', 'b', 'a', 'c', 'd', 'a']:
+    if m.loop_decision('hi', mid, True, st3, led3, brk3) == 'answer': answered[mid] = answered.get(mid, 0) + 1; led3.add(mid)
+check("property: every id is answered at most once over a poll sequence", set(answered) == {'a', 'b', 'c', 'd'} and all(v == 1 for v in answered.values()), str(answered))
+check("a commander 'pause' decides pause", m.loop_decision('pause', 'p1', True, {}, m.AnsweredLedger(), m.Breaker(9, 60)) == 'pause')
+check("a commander 'resume' decides resume even while paused", m.loop_decision('resume', 'p2', True, {'paused': {'by': 'x'}}, m.AnsweredLedger(), m.Breaker(9, 60)) == 'resume')
+check("a non-commander pause word is not a control command", m.loop_decision('pause', 'p3', False, {}, m.AnsweredLedger(), m.Breaker(9, 60)) == 'answer')
+check("while paused, a new message is skipped", m.loop_decision('hi', 'x1', True, {'paused': {'by': 'x'}}, m.AnsweredLedger(), m.Breaker(9, 60)) == 'paused')
+_bk = m.Breaker(3, 60); [_bk.record() for _ in range(3)]
+check("a flood of replies trips the breaker in the decision", m.loop_decision('hi', 'f1', True, {}, m.AnsweredLedger(), _bk) == 'breaker')
+shutil.rmtree(repo, ignore_errors=True)
+
+# ── T-0129..T-0133: the phone AI ("ask mode") ─────────────────────────────────────────────────
+# The customer path is: type plain English in Chamber's Terminal tab -> "#ask ..." -> this connector
+# answers with the AI on this machine. These tests cover what the five gap tickets demanded: a
+# generated briefing with no placeholders, an install the customer never performs, a plain sentence
+# when the AI is not signed in, and the nested-briefing leak being named out loud instead of blended.
+print("phone AI / ask mode (T-0129..T-0133)")
+askroot = tempfile.mkdtemp(prefix="chamber-ask-")
+m = load("claude", extra={"CHAMBER_ASK": "on", "CHAMBER_ASK_HOME": os.path.join(askroot, "nested", "phone-ai"),
+                          "CHAMBER_ASK_DEVICE": "demo-box", "CHAMBER_ASK_OWNER": "dana",
+                          "CHAMBER_SHELL": "on", "CHAMBER_SHELL_DIR": askroot})
+brief = m.ask_briefing()
+check("the briefing is generated from settings, with no unfilled placeholder (T-0132)",
+      "demo-box" in brief and "dana" in brief and not m.PLACEHOLDER_RE.search(brief), brief[:120])
+check("the default permission is look-only", "not create, change or delete" in brief or "Do not create" in brief, brief[:200])
+check("no ticket section when the Chamber helpers are not installed (T-0138)", "Chamber tickets" not in brief)
+tdir = os.path.join(askroot, "tools"); os.makedirs(tdir)
+for f in ("ticket.py", "share-file.py"): open(os.path.join(tdir, f), "w").write("#")
+m.TOOLS_DIR = tdir
+b_ro = m.ask_briefing()
+check("look-only phone AI is told it can list and show tickets, not change them (T-0138)",
+      tdir + "/ticket.py list" in b_ro and "do not propose, update or close" in b_ro and "share-file" not in b_ro, b_ro[-300:])
+m.ASK_CAN = "folder"
+b_rw = m.ask_briefing()
+check("a phone AI allowed to change things is told how to work tickets and share files (T-0138)",
+      "You CAN work" in b_rw and "close T-0123" in b_rw and tdir + "/share-file.py" in b_rw, b_rw[-400:])
+check("the ticket section never leaves a placeholder in the briefing (T-0138)", not m.PLACEHOLDER_RE.search(b_rw))
+m.ASK_CAN = "readonly"; m.TOOLS_DIR = os.path.join(askroot, "no-tools")
+m.provision_ask()
+check("the connector installs the briefing and the ask wrapper itself (T-0131)",
+      os.path.exists(os.path.join(m.ASK_HOME, "CLAUDE.md")) and os.access(os.path.join(askroot, "ask"), os.X_OK))
+wrap = subprocess.run([os.path.join(askroot, "ask"), "new"], capture_output=True, text=True, timeout=60)
+check("the installed ask wrapper actually runs (it is invoked, not just written)",
+      wrap.returncode == 0 and "fresh conversation" in wrap.stdout, (wrap.stdout + wrap.stderr)[:200])
+check("a clean install reports ready with no nested-briefing warning", m.ASK_STATUS.get("state") == "ready" and not m.ASK_STATUS.get("warn"), str(m.ASK_STATUS))
+check("the ping tells Chamber the phone AI is ready (T-0131b)", m.ping_body([]).get("ask") == "ready")
+fake = os.path.join(askroot, "fakeclaude")
+open(fake, "w").write("#!/bin/sh\necho 'Invalid API key - please run /login' >&2\nexit 1\n"); os.chmod(fake, 0o755)
+ok = os.path.join(askroot, "okclaude")
+open(ok, "w").write("#!/bin/sh\necho hi\n"); os.chmod(ok, 0o755)
+m.CLAUDE_BIN = fake
+o, e, c = m.ask_run("hello")
+check("not signed in gives one plain sentence, not a CLI error (T-0130c)", c == 126 and "not signed in" in e and "Invalid API key" not in e, e[:160])
+check("not signed in tells a subscription user they can sign in right here (T-0134)", "signin" in e, e[:200])
+m.CLAUDE_BIN = ok
+o, e, c = m.ask_run("hello")
+check("a working AI answers the question", c == 0 and "hi" in o, repr(o))
+check("no nested-briefing note when there is nothing above it", "another briefing" not in o, repr(o))
+open(os.path.join(askroot, "nested", "CLAUDE.md"), "w").write("you are a different assistant\n")
+check("a briefing in a parent folder is found (T-0133)", m.ask_parent_briefings(m.ASK_HOME)[0].endswith("nested"))
+m.provision_ask()
+o, e, c = m.ask_run("hello again")
+check("the nested-briefing leak is said in plain words instead of silently blended (T-0133b)", "another briefing" in o, repr(o)[:200])
+o, e, c = m.ask_run("new")
+check("'new' starts a fresh conversation", c == 0 and "fresh conversation" in o)
+o, e, c = m.ask_run("")
+check("an empty question explains what to type instead of erroring", c == 0 and "Type a question" in o)
+sent = {}
+rel = m.ShellRelay(); rel.send = lambda jid, **kw: sent.update(kw)
+rel.handle({"id": "j1", "cmd": "#ask hello", "by": "dana"})
+check("a '#ask' line is answered by the AI, not run as a shell command (T-0129)", "hi" in (sent.get("out") or ""), str(sent)[:160])
+sent.clear(); rel.handle({"id": "j2", "cmd": "echo shellpath", "by": "dana"})
+check("an ordinary line is still run as a shell command", "shellpath" in (sent.get("out") or ""), str(sent)[:160])
+# T-0121 Phase C: streaming, Stop and timeout
+import time
+posts = []
+def fake_send(jid, **kw): posts.append(kw); return {"ok": True, "cancel": False}
+rel.send = fake_send
+rel.handle({"id": "j3", "cmd": "echo first; sleep 2.3; echo second", "by": "dana"})
+parts = [p for p in posts if p.get("partial")]
+final = [p for p in posts if not p.get("partial")]
+check("a long command streams: 'first' arrives in a progress post before it finishes (T-0121 C)",
+      any("first" in (p.get("out") or "") for p in parts) and len(final) == 1, str(posts)[:300])
+check("progress plus the final post add up to the whole output exactly once",
+      "".join(p.get("out") or "" for p in posts) == "first\nsecond\n" and final[0].get("code") == 0, str(posts)[:300])
+posts.clear(); rel.handle({"id": "j4", "cmd": "echo quick", "by": "dana"})
+check("a quick command is still one post, the same as older connectors", len(posts) == 1 and "quick" in posts[0].get("out", "") and not posts[0].get("partial"), str(posts))
+posts.clear(); stops = {"n": 0}
+def stop_send(jid, **kw):
+    posts.append(kw); stops["n"] += 1
+    return {"ok": True, "cancel": stops["n"] >= 1} if kw.get("partial") else {"ok": True}
+rel.send = stop_send; t0 = time.time()
+rel.handle({"id": "j5", "cmd": "echo go; sleep 30 & sleep 30; echo never", "by": "dana"})
+fin = posts[-1]
+check("Stop kills the command (and its children) within seconds, code 130, says why",
+      time.time() - t0 < 8 and fin.get("code") == 130 and "stopped by the owner" in fin.get("err", "") and "never" not in "".join(p.get("out") or "" for p in posts), str(fin)[:200])
+old_to = m.SHELL_TIMEOUT; m.SHELL_TIMEOUT = 2; posts.clear(); rel.send = fake_send; t0 = time.time()
+rel.handle({"id": "j6", "cmd": "sleep 20", "by": "dana"})
+m.SHELL_TIMEOUT = old_to
+check("the timeout still applies to a streamed command (code 124)", time.time() - t0 < 8 and posts[-1].get("code") == 124 and "timed out" in posts[-1].get("err", ""), str(posts[-1])[:200])
+rt = m.rules_text("general", True)
+check("the chat prompt no longer tells the agent it is read-only (T-0124)", "read-only here" not in rt and "granted you" in rt)
+spy = os.path.join(askroot, "spyclaude")
+open(spy, "w").write("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"); os.chmod(spy, 0o755)
+m.CLAUDE_BIN = spy
+o, e, c = m.ask_run("a question")
+check("the phone AI is spawned unattended - nobody can approve a prompt from a phone (T-0130)",
+      "--permission-mode" in o and "dontAsk" in o, repr(o)[:200])
+check("look-only has no Write or Edit tool at all, so it cannot change anything (T-0132)",
+      "Write" not in o and "Edit" not in o, repr(o)[:200])
+check("the phone AI gets no Chamber credential or config in its environment (T-0041)",
+      "--settings" in o and "chk_test_token" not in o, repr(o)[:200])
+m.apply_ask_config({"askConfig": {"device": "the shop till", "owner": "Dana", "can": "full", "notes": "<MY BOX> runs the till software"}})
+b2 = m.ask_briefing()
+check("the owner's settings from Chamber rewrite the briefing, no restart and no file to edit (T-0132)",
+      "the shop till" in b2 and "Dana" in b2 and "runs the till software" in b2, b2[:120])
+check("a note written with angle brackets is kept as typed instead of failing the placeholder check",
+      "<MY BOX>" in b2)
+check("changing what it may do changes the tools it is given", "Write" in m.ask_tools())
+check("the same settings arriving again are not rewritten", m.apply_ask_config({"askConfig": dict(m.ASK_CFG)}) is None)
+m.ASK_CFG = {}; m.provision_ask()
+check("clearing the settings falls back to this machine's own defaults", "demo-box" in m.ask_briefing())
+m2 = load("claude", extra={"CHAMBER_COMMANDERS": "Dana", "CHAMBER_ASK": "on",
+                           "CHAMBER_ASK_HOME": os.path.join(askroot, "owner-ai")})
+check("the briefing greets the owner by the name they typed, not a lowercased one (T-0132)",
+      "Dana" in m2.ask_briefing(), m2.ASK_OWNER)
+print("phone sign-in for subscription accounts (T-0134)")
+saved = {k: os.environ.pop(k) for k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN") if k in os.environ}
+m.SIGNIN_FILE = os.path.join(askroot, "claude-signin.key")          # never the shared /tmp next to the test state file
+fakesu = os.path.join(askroot, "subclaude")                         # behaves like `claude setup-token`, and reports its env for -p
+open(fakesu, "w").write("""#!/usr/bin/env python3
+import os, sys
+if sys.argv[1:2] == ["setup-token"]:
+    print("Browser didn't open? Use the url below to sign in")
+    print("https://claude.com/cai/oauth/authorize?code=true&state=abc123")
+    sys.stdout.write("Paste code here if prompted > "); sys.stdout.flush()
+    code = sys.stdin.readline().strip()
+    if code == "GOODCODE":
+        print("Your OAuth token (valid for 1 year):"); print(); print("sk-ant-oat01-" + "T" * 60); print(); print("Store this token securely.")
+    else:
+        print("OAuth error: Invalid code. Please make sure the full code was copied"); print("Press Enter to retry."); sys.stdin.readline()
+    sys.exit(0)
+t = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+print("TOKEN=" + ("signed-in" if t.startswith("sk-ant-oat") else (t or "none")) + " KEY=" + ("yes" if os.environ.get("ANTHROPIC_API_KEY") else "no"))
+"""); os.chmod(fakesu, 0o755)
+m.CLAUDE_BIN = fakesu
+o, e, c = m.ask_run("signin")
+check("'signin' sends back a sign-in link that opens on the phone", c == 0 and "https://claude.com/cai/oauth/authorize" in o and "signin YOUR-CODE" in o, (o + e)[:200])
+import time
+t0 = time.time(); o, e, c = m.ask_run("signin WRONGCODE")
+check("a wrong code fails at once with the CLI's reason, in plain words", c == 1 and "did not work (Invalid code" in e and time.time() - t0 < 15, e[:200])
+check("a wrong code saves nothing and leaves no process behind", not os.path.exists(m.SIGNIN_FILE) and m.SIGNIN["proc"] is None)
+o, e, c = m.ask_run("signin GOODCODE")
+check("a code with no sign-in waiting says to start one", c == 1 and "No sign-in is waiting" in e, e)
+m.ask_run("sign in")
+o, e, c = m.ask_run("signin GOODCODE")
+check("the right code signs this machine in", c == 0 and o.startswith("Signed in"), (o + e)[:200])
+check("the token is never shown or sent back to Chamber", "sk-ant-oat" not in o + e)
+check("the token is saved owner-only (0600) on this machine", os.path.exists(m.SIGNIN_FILE) and (os.stat(m.SIGNIN_FILE).st_mode & 0o777) == 0o600)
+check("the saved token's file is on the AI's never-read list", m.SIGNIN_FILE.endswith(".key") and "**/*.key" in m.DENY_PATHS)
+o, e, c = m.ask_run("what is my disk doing")
+check("after signing in, the phone AI uses the subscription", "TOKEN=signed-in" in o, o)
+check("an API key the operator set still wins over the phone sign-in", "CLAUDE_CODE_OAUTH_TOKEN" not in m.add_signin({"ANTHROPIC_API_KEY": "k"}))
+check("a token the operator set still wins over the phone sign-in", m.add_signin({"CLAUDE_CODE_OAUTH_TOKEN": "operator"})["CLAUDE_CODE_OAUTH_TOKEN"] == "operator")
+logged = []; real_log = m.log; m.log = lambda *a: logged.append(" ".join(map(str, a)))
+rel.handle({"id": "j9", "cmd": "#ask signin SECRETCODE9", "by": "dana"})
+m.log = real_log
+check("the code typed on the phone is not written to the connector log", logged and not any("SECRETCODE9" in l for l in logged), str(logged)[:200])
+w = subprocess.run([os.path.join(askroot, "ask"), "signin"], capture_output=True, text=True, timeout=60)
+check("'ask signin' from a real shell points at claude setup-token instead of leaving a sign-in hanging",
+      w.returncode == 0 and "claude setup-token" in w.stdout and "oauth" not in w.stdout, (w.stdout + w.stderr)[:200])
+o, e, c = m.ask_run("signout")
+check("'signout' removes the saved sign-in", c == 0 and not os.path.exists(m.SIGNIN_FILE), o)
+os.environ.update(saved)
+shutil.rmtree(askroot, ignore_errors=True)
+
+h = m.signin_help("Not logged in · Please run /login")
+check("a connector with no Claude sign-in answers with the two commands to run, not 'Please run /login' (T-0174)",
+      bool(h) and "setup-token" in h and "--oauth-token" in h and "/login" not in h and m.signin_help("Invalid API key · Fix external API key") and m.signin_help("Hello! You are not logged in to the wiki, " + "x" * 300) is None and m.signin_help("All good.") is None, str(h)[:200])
+srv.shutdown()
+print(f"\n{passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

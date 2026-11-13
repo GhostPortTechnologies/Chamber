@@ -1,0 +1,100 @@
+#!/bin/bash
+# chamber-deploy (T-0029): release a Chamber commit safely. Replaces the old chamber-update (git pull + restart).
+#
+#   sudo chamber-deploy                 deploy origin/<branch> if GitHub is ahead and fast-forwardable, else re-deploy HEAD
+#   sudo chamber-deploy <ref>           deploy a specific commit/branch/tag (must exist in /opt/chamber/app's repo)
+#   sudo chamber-deploy --staged <dir>  deploy a prepared working tree (what the patch workflow uses): copies its tracked files in
+#                                       (DEPLOY_MSG='...' sets the commit message)
+#
+# Every path: 1) stage a copy in /tmp, 2) node --check every .js, 3) run test_isolation.js there (0 failed or stop),
+# 4) record the current commit in /var/lib/chamber/deploy/previous, 5) switch /opt/chamber/app, 6) restart,
+# 7) smoke test (/api/health ok + version, GET /login 200, GET /app 302/200) within 15s, 8) on any failure roll back to the
+# recorded commit, restart, smoke again, and exit 1. Log: /var/lib/chamber/deploy/log (one line per attempt).
+set -uo pipefail
+APP=/opt/chamber/app; D=/var/lib/chamber/deploy; LOG=$D/log; BRANCH=accounts-paywall
+mkdir -p "$D"; chown chamber:chamber "$D" 2>/dev/null || true
+as_chamber() { sudo -u chamber "$@"; }
+say() { echo "[deploy] $*"; }
+note() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
+
+smoke() {   # 15s budget; prints the served version on success
+  for i in $(seq 1 30); do
+    H=$(curl -s --max-time 2 http://127.0.0.1:4242/api/health || true)
+    if grep -q '"ok":true' <<<"$H"; then
+      L=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Host: chamber.ghostporttechnologies.com' http://127.0.0.1:4242/login)
+      A=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:4242/app)
+      if [ "$L" = 200 ] && { [ "$A" = 200 ] || [ "$A" = 302 ]; }; then python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("version","?"))' "$H"; return 0; fi
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+rollback() {
+  local prev; prev=$(cat "$D/previous" 2>/dev/null || true)
+  say "ROLLING BACK to ${prev:-<unknown>}"
+  if [ -n "$prev" ]; then as_chamber git -C "$APP" reset -q --hard "$prev"; fi
+  systemctl restart chamber
+  if V=$(smoke); then say "rollback OK, serving $V"; note "ROLLBACK ok -> $prev"; else say "rollback FAILED: Chamber is not healthy. journalctl -u chamber -n 50"; note "ROLLBACK FAILED"; fi
+  exit 1
+}
+
+cur=$(as_chamber git -C "$APP" rev-parse HEAD)
+STAGE=$(mktemp -d /tmp/chamber-deploy.XXXXXX); chown chamber "$STAGE"; trap 'rm -rf "$STAGE"' EXIT
+mode=${1:-auto}
+if [ "$mode" = --staged ]; then
+  SRC=${2:?usage: chamber-deploy --staged <dir>}
+  say "staging prepared tree $SRC"
+  as_chamber cp -r "$SRC/." "$STAGE/"
+  target="staged:$SRC"
+  if [ -d "$STAGE/.git" ] && [ -z "$(as_chamber git -C "$STAGE" status --short 2>/dev/null)" ] && [ "${DEPLOY_FORCE:-0}" != 1 ]; then   # T-0066 lesson: a failed patch once produced an empty commit
+    say "nothing to deploy: the staged tree is identical to HEAD (set DEPLOY_FORCE=1 to redeploy anyway)"; note "NOOP $target"; exit 0
+  fi
+else
+  if [ "$mode" = auto ]; then
+    as_chamber git -C "$APP" fetch -q origin "$BRANCH" 2>/dev/null || say "note: could not fetch origin (offline or no access); re-deploying local HEAD"
+    if as_chamber git -C "$APP" merge-base --is-ancestor "$cur" "origin/$BRANCH" 2>/dev/null && [ "$(as_chamber git -C "$APP" rev-parse "origin/$BRANCH" 2>/dev/null)" != "$cur" ]; then
+      ref="origin/$BRANCH"; say "GitHub is ahead; deploying $ref"
+    else ref=HEAD; say "deploying local HEAD (origin is not ahead, or has diverged: local commits are the source of truth)"; fi
+  else ref=$1; fi
+  target=$(as_chamber git -C "$APP" rev-parse --verify "$ref^{commit}" 2>/dev/null) || { say "unknown ref: $ref"; exit 2; }
+  say "staging $target"
+  as_chamber git -C "$APP" archive --format=tar "$target" | as_chamber tar -C "$STAGE" -xf -
+  as_chamber cp -r "$APP/.git" "$STAGE/.git"   # so VERSION in /api/health and /source keep working in the staged run
+fi
+
+say "syntax check"
+while IFS= read -r f; do as_chamber node --check "$f" || { say "syntax error in $f"; note "ABORT syntax $target"; exit 1; }; done < <(find "$STAGE" -name '*.js' -not -path '*/.git/*' -not -path '*/node_modules/*')
+say "tests (test_isolation.js, must be 0 failed)"
+OUT=$(cd "$STAGE" && as_chamber timeout 600 node --disable-warning=ExperimentalWarning test_isolation.js 2>&1) || true
+RES=$(tail -1 <<<"$OUT" | grep -E '^[0-9]+ passed, [0-9]+ failed$' || true)
+if [ -z "$RES" ] || ! grep -q ' 0 failed' <<<"$RES"; then say "tests did not pass: ${RES:-no summary}"; grep -E 'FAIL' <<<"$OUT" | head -10; note "ABORT tests $target ${RES:-crash}"; exit 1; fi
+say "tests: $RES"
+if [ -f "$STAGE/agent/test_connector.py" ]; then                                   # T-0055: connector backend tests (python, stdlib)
+  PYOUT=$(cd "$STAGE" && as_chamber python3 agent/test_connector.py 2>&1) || { say "connector tests failed:"; grep -E 'FAIL|Error' <<<"$PYOUT" | head -8; note "ABORT connector-tests $target"; exit 1; }
+  say "connector tests: $(tail -1 <<<"$PYOUT")"
+fi
+
+# T-0173: open the real pages in a headless browser (phone + desktop size) against a private copy of the staged tree.
+# Added after 2026-11-12, when a page script error blanked the front page and log in while every server test passed.
+# Screenshots and the copy's log of the last run are kept in $D/browser-last. DEPLOY_SKIP_BROWSER=1 skips it (emergencies only; logged).
+if [ -x /opt/chamber-browsercheck/run.sh ] && [ -f "$STAGE/tools/browser-check.js" ]; then
+  if [ "${DEPLOY_SKIP_BROWSER:-0}" = 1 ]; then say "browser check SKIPPED on request"; note "BROWSER-SKIPPED $target"
+  else
+    say "browser check (real pages, phone + desktop size)"
+    BOUT=$(/opt/chamber-browsercheck/run.sh "$STAGE" "$D/browser-last" 2>&1); BRC=$?
+    BRES=$(tail -1 <<<"$BOUT" | grep -E '^[0-9]+ passed, [0-9]+ failed$' || true)
+    if [ $BRC != 0 ] || [ -z "$BRES" ] || ! grep -q ' 0 failed' <<<"$BRES"; then say "browser check did not pass: ${BRES:-no summary}"; grep -E 'FAIL|did not start' <<<"$BOUT" | head -10; say "screenshots: $D/browser-last"; note "ABORT browser $target ${BRES:-crash}"; exit 1; fi
+    say "browser check: $BRES"
+  fi
+fi
+
+echo "$cur" > "$D/previous"
+say "switching $cur -> $target"
+if [ "$mode" = --staged ]; then
+  as_chamber rsync -a --delete --exclude .git --exclude node_modules "$STAGE/" "$APP/" 2>/dev/null || { (cd "$STAGE" && as_chamber tar --exclude .git -cf - .) | (cd "$APP" && as_chamber tar -xf -); }
+  as_chamber git -C "$APP" add -A && as_chamber git -C "$APP" -c user.name=chamber-deploy -c user.email=deploy@chamber.ghostporttechnologies.com commit -q -m "${DEPLOY_MSG:-Deploy staged tree ($(date -u +%FT%TZ))}" || true
+else
+  as_chamber git -C "$APP" reset -q --hard "$target"
+fi
+systemctl restart chamber
+if V=$(smoke); then say "OK: serving $V ($RES)"; note "OK $cur -> $(as_chamber git -C "$APP" rev-parse --short HEAD) $RES"; else say "smoke test FAILED after restart"; note "SMOKE FAILED $target"; rollback; fi

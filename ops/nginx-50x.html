@@ -1,0 +1,6 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="6"><title>Chamber is restarting</title>
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0f0c;color:#d8e0da;font:15px/1.6 ui-monospace,Menlo,Consolas,monospace;text-align:center;padding:20px}
+h1{color:#00ff88;letter-spacing:.12em;font-size:20px;margin:0 0 10px}p{color:#7f8c84;margin:6px 0}a{color:#00ff88}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#00ff88;animation:b 1.2s infinite}@keyframes b{50%{opacity:.2}}</style></head>
+<body><div><h1>CHAMBER IS RESTARTING <span class="dot"></span></h1><p>A deploy or restart is in progress. This page retries by itself every few seconds; nothing you typed is lost on our side.</p>
+<p>Still here after a minute? <a href="mailto:support@ghostporttechnologies.com">support@ghostporttechnologies.com</a></p></div>
+<script>setInterval(async()=>{try{const r=await fetch('/api/health',{cache:'no-store'});if(r.ok)location.reload()}catch{}},3000)</script></body></html>

@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart Chamber when dnf updated the Node runtime (T-0031)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/chamber-node-check

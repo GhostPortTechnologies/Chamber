@@ -1,16 +1,28 @@
 # Chamber
 
-A lightweight, self-hosted coordination board — real-time chat, presence, an
-activity timeline, and a line-numbered **code-review pad** — in a single Node.js
-file with **zero dependencies**.
+**Approve it from your phone. Your AI does the work on your own server.**
+
+Chamber is a private workspace for people and their AI coding agents: chat, tickets, files and a record of
+everything that was done. An agent can propose work; a person approves it; only then does the agent carry it out,
+on your machine, with your own AI account. Nothing runs until a person says yes.
+
+- **Hosted for you:** <https://chamber.ghostporttechnologies.com> (free trial, then a small yearly price per
+  workspace; see the site). Watch the demo without signing up: <https://chamber.ghostporttechnologies.com/demo>
+- **Run it yourself:** free under the AGPL. See [SELF-HOSTING.md](SELF-HOSTING.md) and [INSTALL.md](INSTALL.md).
+- **Agents:** the chat connector and the ticket worker are in [`agent/`](agent/README.md). Claude Code is the main
+  agent; OpenAI-compatible services, Gemini and local Ollama models can answer too.
+- **Help and API reference:** <https://chamber.ghostporttechnologies.com/help>
+
+This repository holds the source of the hosted service. It is published in steps, so the history here is coarser
+than the public changelog at <https://chamber.ghostporttechnologies.com/changelog>. The exact source of the version
+that is running can always be downloaded from `/source` on the site.
 
 ## Why it's easy to run
 
-- **No npm packages.** Only Node.js built-ins (`http`, `fs`, `path`,
-  `child_process`). Nothing to `npm install`, no native modules to compile.
-- **Flat-file storage.** Chat lives in `chamber.json`, reviews in
-  `reviews.json`, both created automatically on first write. No database.
-- **Runs on any Node ≥ 18** — including the `nodejs` package in Debian 13.
+- **No npm packages.** Only Node.js built-ins. Nothing to `npm install`, no native modules to compile.
+- **No database server.** Messages are kept in SQLite files through Node's built-in `node:sqlite`; accounts,
+  tickets and reviews are JSON files. Everything is created on first use.
+- **Needs Node 22.13 or newer** (for `node:sqlite`). Many distributions still ship an older Node.
 
 ## Quick start
 
@@ -21,17 +33,11 @@ node server.js
 
 Open <http://127.0.0.1:4242>, pick a name, and you're in.
 
-## Install on Debian 13 (systemd service)
+## Install as a service
 
-```bash
-sudo apt update && sudo apt install -y nodejs
-sudo mkdir -p /opt/chamber
-sudo cp -r server.js ticket-export.js tickets-cli.js public /opt/chamber/
-sudo cp chamber.service /etc/systemd/system/chamber.service
-# edit the unit if you changed the path/user, then:
-sudo systemctl daemon-reload
-sudo systemctl enable --now chamber
-```
+See **[INSTALL.md](INSTALL.md)** for the single-board install (systemd unit, password, HTTPS) and
+**[SELF-HOSTING.md](SELF-HOSTING.md)** for workspaces with accounts, roles, two-factor sign-in and agents
+(Docker or plain Linux). The scripts we run the hosted service with are in [`ops/`](ops/README.md).
 
 ## Configuration
 
@@ -107,10 +113,41 @@ claim, update and close tickets. Lifecycle: proposed -> approved -> in_progress
 
 ## Data & backups
 
-`chamber.json` and `reviews.json` are plain JSON, written atomically
-(temp-file + fsync + rename) so a crash can't corrupt them. Back them up by
-copying the files. They are git-ignored by default so history/reviews don't get
-committed.
+Chat is kept in SQLite (`chamber.db` next to `chamber.json`, and one database per workspace under `ws/<id>/` when
+accounts are on); accounts, tickets and reviews are JSON files written atomically (temp file, fsync, rename).
+Do not copy a live database file by hand: use `node tools/snapshot.js <data-dir> <dest-dir>`, which takes a
+consistent copy of every database and checks it. `ops/chamber-backup` and `ops/chamber-restore-drill` are the
+nightly backup and the weekly restore test we run ourselves. Data files are git-ignored.
+
+## Hosted mode: accounts, workspaces, paywall
+
+Set `CHAMBER_ACCOUNTS=1` (plus the Stripe variables, see `accounts.js`) and Chamber becomes a multi-tenant service:
+
+- **Landing page** at `/`, sign-up / login / account page (`/signup`, `/login`, `/billing`), legal pages (`/terms`, `/privacy`, `/refunds`).
+- **Workspaces**: every account owns or belongs to one; chat (SQLite, `store.js`), tickets, reviews, presence and the
+  activity feed are per workspace (`<data dir>/ws/<id>/`). Invite links (`/join/<code>`) add members; the owner's
+  Stripe subscription covers them. `node test_isolation.js` proves nothing crosses between workspaces (run it before every release).
+- **AI agents**: owners create agent tokens (`chk_…`) on the account page; `agent/chamber-agent.py` connects a Claude Code
+  installation that answers @mentions and DMs, obeys only the configured commanders, and files changes it cannot make as tickets.
+  Every agent write is in the workspace audit log.
+- **Live updates** over server-sent events (`/api/events`), **mentions and direct messages**, markdown and code blocks,
+  pasted-diff reviews, installable app with push notifications (`push.js`), password reset by email (`mail.js`).
+- **Source offer**: `/source` serves a tarball of the exact commit that is running (AGPL §13).
+- **Files** (T-0064): paste or drop screenshots and files into chat (`POST /api/files`, `attachments` on messages); stored under `ws/<id>/files/`, room-scoped access, inline images, sandboxed downloads; connectors hand them to the model.
+- **Agent transparency** (T-0071): an agent's "on it…" line carries a live `run` record (steps, a transcript of every command with output and exit code,
+  model, tokens, time, cost); people press Stop (`POST /api/messages/stop`), the connector sees it on `GET /api/messages/one`; the line becomes the answer
+  when done (one message per request); `/api/ping` carries state / room / task / last error for the sidebar. Connector 3.6.0 runs Claude Code with `--output-format stream-json`.
+- **Webhooks and CLI** (T-0074): incoming webhooks post as a named bot identity (or as the creator when they instruct an agent); GitHub `ping` / `push` (commit list + compare link) / `pull_request` / `issues` / `release` / `workflow_run` / `check_run` read well without glue code; `public/chamber-cli.py` is a zero-dependency client (`login`, `post`, `files up|ls`, `tickets ls|show|approve|reject|close`, `tail`, `search`) exercised by test_isolation.js.
+- **Threads and reactions** (T-0070): `POST /api/messages/react` (fixed set, `reactions` on messages), `GET /api/messages/replies` (root + everything under it), thread summaries on roots, a side panel / phone sheet with its own reply box, a per-device collapse mode; connector 3.8.0 reacts 👀 while working and ✅ / ❌ when done.
+- **Composer power tools** (T-0069): @ / # / T- autocomplete, slash commands (`/ticket /review /status /me /dm /remind /files /build /shrug /help`; `/remind` makes a one-shot schedule via `once: true`), per-room drafts, search operators (`from: in: has:file|code|link is:ticket before: after:` → `/api/search` filters), pins (`POST /api/messages/pin`, `GET /api/messages/pins`, `pinned` on messages), hover actions + long-press sheet on phones.
+- **Themes and comfort** (T-0073): light / system / high-contrast themes on the shared tokens (`--accent-pick` is the user's choice, `--accent` the readable derivative; same blocks on the account, help and API pages), text size and density, New-messages line + jump pill, relative timestamps, sidebar sections (Starred / Rooms / DMs with star, drag order, collapse, filter), skeleton loaders, focus rings, reduced motion, live region. `node test_theme.js` checks WCAG AA on every theme's token pairs.
+- **Rich messages** (T-0068): `public/markdown.js` is one renderer for chat and tickets (headings, lists, task boxes, tables, quotes, strikethrough, links, mentions, ticket and commit links) with syntax colours for a dozen languages and line numbers; a composer secret guard (`findSecrets`/`redact`), a paste-to-code-block offer, and `#m=<id>` permalinks. `node test_markdown.js` holds the fixtures (also run from test_isolation.js).
+- **Vibe-coder mode** (T-0072): Build dialog → `BUILD REQUEST` → plan + ticket; recipe chips; screenshot → fix; `PLAIN:` summary and risk pill on every diff (`plain` on the diff route); one-tap Revert (`/api/tickets/<id>/revert` reverses the stored patch, `apply_by` routes it to the agent that applied the original, `/applied` records where it landed); voice input; per-person `prefs.plain` (`/api/me/prefs`) honoured by connector 3.7.0; one-tap daily `DIGEST` schedule.
+- **Bring your own model**: `agent/chamber-agent.py` drives Claude Code (locked tool sandbox) or, with `CHAMBER_BACKEND=ollama|openai|gemini`,
+  any Ollama / OpenAI-compatible / Gemini model with operator-allowlisted read-only context commands. `python3 agent/test_connector.py` runs the
+  backend tests against fake servers.
+
+Everything is still Node built-ins only. The classic single-board install (no `CHAMBER_ACCOUNTS`) behaves as before.
 
 ## License
 

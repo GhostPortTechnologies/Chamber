@@ -1,0 +1,7 @@
+[Unit]
+Description=Chamber restore drill: restore the newest backup to a scratch dir and boot it (T-0026)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/chamber-restore-drill

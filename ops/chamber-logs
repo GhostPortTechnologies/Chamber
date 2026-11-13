@@ -1,0 +1,20 @@
+#!/bin/bash
+# chamber-logs (T-0030): the Chamber log, filtered. All output comes from journalctl -u chamber.
+#   chamber-logs                 last 100 lines          chamber-logs -f            follow live
+#   chamber-logs errors [N]      5xx, [fatal], [request] failures, warnings (last N lines, default 200)
+#   chamber-logs rid <id>        everything about one request id (from a user's error message / X-Request-Id)
+#   chamber-logs user <name>     requests by one user          chamber-logs slow [ms]   requests slower than ms (default 1000)
+#   chamber-logs deploys         deploy log                    chamber-logs backups     backup + restore-drill runs
+set -uo pipefail
+J="journalctl -u chamber --no-pager -o cat"
+case "${1:-}" in
+  "")       $J -n 100 ;;
+  -f)       journalctl -u chamber -f -o cat ;;
+  errors)   $J -n "${2:-200}" | grep -E 'req \S+ \S+ 5[0-9]{2} |\[fatal\]|\[request\]|\[warn\]|\[shutdown\]|error' ;;
+  rid)      [ -n "${2:-}" ] || { echo "usage: chamber-logs rid <id>"; exit 1; }; $J | grep -- "rid=$2" ;;
+  user)     [ -n "${2:-}" ] || { echo "usage: chamber-logs user <name>"; exit 1; }; $J -n 5000 | grep -- "user=$2 " ;;
+  slow)     $J -n 5000 | awk -v m="${2:-1000}" '$1=="req" { ms=$5; sub(/ms$/,"",ms); if (ms+0 >= m+0) print }' ;;
+  deploys)  cat /var/lib/chamber/deploy/log 2>/dev/null || echo "no deploys yet" ;;
+  backups)  journalctl -u chamber-backup -u chamber-restore-drill --no-pager -o cat -n 50 ;;
+  *)        sed -n '2,8p' "$0" ;;
+esac

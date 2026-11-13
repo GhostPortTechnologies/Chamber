@@ -1,0 +1,26 @@
+# chamber-worker: acts on human-approved [agent] tickets (branch, test, deploy, roll back). Installed by /install.sh --role worker.
+[Unit]
+Description=Chamber worker (acts on approved [agent] tickets)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chamber-worker
+Group=__REPO_GROUP__
+EnvironmentFile=/etc/chamber-worker.env
+Environment=PATH=/var/lib/chamber-worker/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/chamber-worker
+WorkingDirectory=/var/lib/chamber-worker
+ExecStart=/usr/bin/python3 /opt/chamber-worker/chamber-worker.py
+Restart=always
+RestartSec=30
+MemoryMax=600M
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/chamber-worker __REPO__
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target

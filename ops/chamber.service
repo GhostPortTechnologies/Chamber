@@ -1,0 +1,49 @@
+# Chamber coordination board (GhostPort), set up by server Claude 2026-11-06.
+# App: /opt/chamber/app (git checkout, read-only to the service). Data: /var/lib/chamber.
+# Password hash: /etc/chamber/chamber.env -> set or change it with: sudo chamber-set-password
+# Update code from GitHub: sudo chamber-update
+[Unit]
+Description=Chamber coordination board (chat + code review)
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=chamber
+Group=chamber
+WorkingDirectory=/opt/chamber/app
+EnvironmentFile=/etc/chamber/chamber.env
+Environment=NODE_ENV=production
+Environment=CHAMBER_HOST=127.0.0.1
+Environment=CHAMBER_PORT=4242
+Environment=CHAMBER_SECURE_COOKIE=1
+Environment=CHAMBER_DATA=/var/lib/chamber/chamber.json
+Environment=CHAMBER_REVIEWS=/var/lib/chamber/reviews.json
+Environment=CHAMBER_TICKETS_FILE=/var/lib/chamber/tickets.json
+Environment=CHAMBER_TICKETS_CLI=/opt/chamber/app/tickets-cli.js
+# Behind nginx Chamber binds loopback, so its own "no password on a public address" guard
+# never fires and it would run OPEN to the internet. Refuse to start without accounts (Stripe) or a password hash.
+ExecStartPre=/usr/bin/test -n "${CHAMBER_STRIPE_SECRET}${CHAMBER_PASSWORD_HASH}"
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/chamber/app/server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+StateDirectory=chamber
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

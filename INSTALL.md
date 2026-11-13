@@ -17,13 +17,13 @@ database, no build step. If you can run `node`, you can run Chamber.
 
 ## Requirements
 
-- **Node.js ≥ 18** (Chamber uses only built-in modules). Debian 13 ships a
-  compatible `nodejs` package: `sudo apt install -y nodejs`.
+- **Node.js 22.13 or newer** (Chamber uses only built-in modules, including `node:sqlite`).
+  Many distributions still ship an older Node; install a current one from nodejs.org or your package source.
 - Any Linux, macOS, or Windows host. ~10 MB of disk.
 
 Check your version:
 ```bash
-node --version   # v18 or newer
+node --version   # v22.13 or newer
 ```
 
 ---

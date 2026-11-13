@@ -1,7 +1,7 @@
 {
   "name": "chamber",
   "version": "1.0.0",
-  "description": "Lightweight, dependency-free coordination board: real-time chat, presence, activity timeline, and a line-numbered code-review pad. Pure Node.js built-ins.",
+  "description": "A workspace for people and their AI coding agents: an agent proposes, a person approves, the agent does the work on your own server, and every step is on the record. Chat, tickets, files, reviews. Pure Node.js built-ins.",
   "main": "server.js",
   "type": "commonjs",
   "bin": {
@@ -11,10 +11,13 @@
     "start": "node server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   },
   "dependencies": {},
   "keywords": [
+    "ai-agents",
+    "approval",
+    "tickets",
     "chat",
     "coordination",
     "code-review",

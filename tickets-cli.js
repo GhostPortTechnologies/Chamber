@@ -11,6 +11,7 @@
 //   update  <id> --by <n> --note <note>
 //   close   <id> --by <n> --note <note>   (note: min 20 chars, each item + result)
 //   edit    <id> --by <n> [--title][--body][--type][--priority]   (proposed-only)
+//   meta    <id> --by <n> --set <applied|apply_by|reverts|reverted_by> --json <value>   (T-0072: server-managed fields)
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 GhostPort Technologies
@@ -108,6 +109,7 @@ switch (verb) {                                                               //
     data.tickets.push({                                                       // [new] append the new ticket
       id, title: flags.title, body: flags.body || '',                         // [new] id, title, optional body
       type: flags.type || 'task', priority: flags.priority || 'normal',      // [changed] default 'normal' to match the UI's priority list
+      for: ['human', 'agent'].includes(flags.for) ? flags.for : null,         // T-0155: who does it, a person or an AI worker
       status: 'proposed', proposed_by: flags.by, proposed_at: nowISO(),       // [new] waits for a human to approve
       approved_by: null, approved_at: null,                                   // [new] filled by approve
       rejected_by: null, rejected_at: null, reject_reason: null,              // [new] filled by reject
@@ -179,8 +181,55 @@ switch (verb) {                                                               //
     for (const f of ['title', 'body', 'type', 'priority']) {                  // [new] the editable fields
       if (typeof flags[f] === 'string' && flags[f].length) { t[f] = flags[f]; changed = true; } // [new] only non-empty values overwrite
     }
-    if (!changed) fail('edit requires at least one of --title/--body/--type/--priority'); // [new] nothing to do: say so
+    if (typeof flags.for === 'string') { if (!['human', 'agent'].includes(flags.for)) fail('--for must be human or agent'); t.for = flags.for; changed = true; }   // T-0155
+    if (!changed) fail('edit requires at least one of --title/--body/--type/--priority/--for'); // [new] nothing to do: say so
     save(data); console.log(`Edited ${t.id}`); break;                         // [new] persist and report
+  }
+  case 'for': {                                                              // T-0155: a person decides who does the ticket; allowed until work starts
+    const t = findTicket(pos[1] || fail('for requires a ticket id'));
+    if (!flags.by) fail('for requires --by');
+    if (!['human', 'agent'].includes(flags.for)) fail('--for must be human or agent');
+    if (!['proposed', 'approved'].includes(t.status)) fail(`who does ${t.id} can only change while it is proposed or approved (it is ${t.status})`);
+    const was = t.for || null; t.for = flags.for;
+    t.updates.push({ at: nowISO(), by: flags.by, note: `FOR: ${flags.for === 'human' ? 'a person' : 'an agent'}${was ? ` (was ${was === 'human' ? 'a person' : 'an agent'})` : ''}` });
+    save(data); console.log(`${t.id} is now for ${flags.for === 'human' ? 'a person' : 'an agent'}`); break;
+  }
+  case 'meta': {                                                              // T-0072: one server-managed field; the server decides who may call this
+    const t = findTicket(pos[1] || fail('meta requires a ticket id'));
+    if (!flags.by) fail('meta requires --by');
+    const allowed = ['applied', 'apply_by', 'reverts', 'reverted_by'];
+    if (!allowed.includes(flags.set)) fail(`meta --set must be one of ${allowed.join(', ')}`);
+    let value; try { value = JSON.parse(flags.json); } catch { fail('meta requires --json <value>'); }
+    t[flags.set] = value;
+    save(data); console.log(`Set ${flags.set} on ${t.id}`); break;
+  }
+  case 'release': {                                                           // T-0143: in_progress -> approved. A human un-claims a stuck ticket so the agent retries or someone else takes it.
+    const t = findTicket(pos[1] || fail('release requires a ticket id'));
+    if (!flags.by) fail('release requires --by');
+    if (t.status !== 'in_progress') fail(`only in-progress tickets can be released (${t.id} is ${t.status})`);
+    const was = t.assignee; t.status = 'approved'; t.assignee = null; t.claimed_at = null; t.released_by = flags.by; t.released_at = nowISO();
+    t.updates = t.updates || [];
+    t.updates.push({ at: nowISO(), by: flags.by, note: `RELEASED from ${was || 'nobody'}: ${String(flags.note || 'back to approved so it can be claimed again').trim()}` });
+    save(data); console.log(`Released ${t.id}`); break;
+  }
+  case 'cancel': {                                                            // T-0143: approved | in_progress -> rejected, with a reason. Reject only worked on proposals.
+    const t = findTicket(pos[1] || fail('cancel requires a ticket id'));
+    if (!flags.by) fail('cancel requires --by');
+    if (!flags.reason) fail('cancel requires --reason');
+    if (t.status !== 'approved' && t.status !== 'in_progress') fail(`only approved or in-progress tickets can be cancelled (${t.id} is ${t.status})`);
+    t.status = 'rejected'; t.rejected_by = flags.by; t.rejected_at = nowISO(); t.reject_reason = flags.reason; t.assignee = null;
+    t.updates = t.updates || [];
+    t.updates.push({ at: nowISO(), by: flags.by, note: `CANCELLED: ${String(flags.reason).trim()}` });
+    save(data); console.log(`Cancelled ${t.id}`); break;
+  }
+  case 'log': {                                                               // T-0143: one run-log line (and/or the model name) from whoever works the ticket. Capped at 200 lines.
+    const t = findTicket(pos[1] || fail('log requires a ticket id'));
+    if (!flags.by) fail('log requires --by');
+    if (!flags.line && !flags.model) fail('log requires --line and/or --model');
+    t.log = Array.isArray(t.log) ? t.log : [];
+    if (flags.line) { t.log.push({ at: nowISO(), by: flags.by, line: String(flags.line).slice(0, 300) }); if (t.log.length > 200) t.log = t.log.slice(-200); }
+    if (flags.model) t.model = String(flags.model).slice(0, 60);
+    save(data); console.log(`Logged ${t.id}`); break;
   }
   default:                                                                    // [new] anything else
     fail(`unknown verb: ${verb}`);                                            // [new] clear error for typos

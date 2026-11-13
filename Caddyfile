@@ -1,0 +1,6 @@
+# Example: TLS in front of Chamber (T-0061). Replace the hostname; Caddy fetches certificates by itself.
+chamber.example.com {
+    reverse_proxy chamber:4242 {
+        flush_interval -1          # pass server-sent events through without buffering
+    }
+}

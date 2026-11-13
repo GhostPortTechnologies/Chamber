@@ -1,0 +1,26 @@
+# Chamber self-hosted (T-0061). `cp .env.example .env`, edit, then `docker compose up -d`.
+# Chamber listens on 4242 inside the container. For HTTPS uncomment the caddy service and set CHAMBER_SECURE_COOKIE=1.
+services:
+  chamber:
+    build: .
+    image: chamber:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CHAMBER_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:4242:4242"          # loopback only; put Caddy/nginx in front, or change to "4242:4242" on a trusted LAN
+    volumes:
+      - chamber-data:/var/lib/chamber
+    stop_grace_period: 10s             # Chamber drains event streams and saves sessions on SIGTERM
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   ports: ["80:80", "443:443"]
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy-data:/data
+  #   depends_on: [chamber]
+volumes:
+  chamber-data:
+  # caddy-data:

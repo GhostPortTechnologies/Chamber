@@ -1,0 +1,13 @@
+#!/bin/bash
+# chamber-node-check (T-0031): Node comes from the AL2023 package nodejs22, which dnf-automatic patches for security.
+# A patched binary does nothing until the running process is restarted, so once a day compare the installed version
+# with the one Chamber is running (/api/health reports process.version) and restart gracefully if they differ.
+set -uo pipefail
+INST=$(rpm -q --qf '%{VERSION}' nodejs22 2>/dev/null || echo unknown)
+RUN=$(curl -s --max-time 5 http://127.0.0.1:4242/api/health | python3 -c 'import json,sys;print((json.load(sys.stdin).get("node") or "vunknown").lstrip("v"))' 2>/dev/null || echo unknown)
+if [ "$INST" = unknown ] || [ "$RUN" = unknown ]; then echo "node-check: could not compare (installed=$INST running=$RUN)"; exit 0; fi
+if [ "$INST" = "$RUN" ]; then echo "node-check: Chamber runs node $RUN, matches installed package"; exit 0; fi
+echo "node-check: Chamber runs node $RUN but nodejs22 $INST is installed; restarting Chamber to pick it up"
+systemctl restart chamber; sleep 3
+NEW=$(curl -s --max-time 5 http://127.0.0.1:4242/api/health | python3 -c 'import json,sys;print((json.load(sys.stdin).get("node") or "vunknown").lstrip("v"))' 2>/dev/null || echo unknown)
+[ "$NEW" = "$INST" ] && echo "node-check: now running node $NEW" || { echo "node-check: restart did not help (running $NEW)"; exit 1; }

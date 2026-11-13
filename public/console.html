@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chamber Console</title>
+<style>
+  :root { --bg:#0b0f0c; --fg:#c8f7d8; --dim:#5c7c66; --accent:#39d98a; --err:#ff6b6b; --line:#16261c; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace; }
+  #app { display:flex; flex-direction:column; height:100dvh; }
+  header { padding:10px 14px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; flex:none; }
+  header .dot { width:9px; height:9px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--accent); flex:none; }
+  header b { color:var(--accent); font-weight:600; letter-spacing:.3px; }
+  header .host { color:var(--dim); margin-left:auto; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #out { flex:1; overflow-y:auto; padding:12px 14px; white-space:pre-wrap; word-break:break-word; }
+  #out div { margin:0; }
+  #out .cmd { color:var(--accent); margin-top:6px; }
+  #out .cmd::before { content:"$ "; color:var(--dim); }
+  #out .err { color:var(--err); }
+  #out .sys { color:var(--dim); }
+  form { display:flex; align-items:center; gap:8px; padding:10px 14px; border-top:1px solid var(--line); flex:none; }
+  #ps { color:var(--dim); flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #cmd { flex:1; background:transparent; border:none; color:var(--fg); font:inherit; outline:none; min-width:0; }
+  #gate { padding:48px 20px; text-align:center; color:var(--dim); line-height:1.7; }
+  #gate a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div id="app" hidden>
+  <header><span class="dot"></span><b>Chamber Console</b><span class="host" id="host"></span></header>
+  <div id="out"></div>
+  <form id="f" autocomplete="off"><span id="ps">~ $</span><input id="cmd" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="type a command, Enter to run"></form>
+</div>
+<div id="gate" hidden></div>
+<script>
+var out = document.getElementById('out'), psEl = document.getElementById('ps'), input = document.getElementById('cmd');
+var cwd = '~', hist = [], hi = 0, busy = false;
+function esc(t){ var d=document.createElement('div'); d.textContent=t; return d; }
+function line(text, cls){ var d=esc(text); if(cls) d.className=cls; out.appendChild(d); out.scrollTop=out.scrollHeight; }
+function setPrompt(c){ if(c) cwd=c; psEl.textContent = cwd + ' $'; }
+function gate(html){ document.getElementById('app').hidden=true; var g=document.getElementById('gate'); g.hidden=false; g.innerHTML=html; }
+async function run(cmd){
+  if(busy) return; busy=true; input.disabled=true; line(cmd,'cmd');
+  try {
+    var r = await fetch('/api/console',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cmd:cmd}) });
+    if(r.status===401){ gate('Your session expired. <a href="/login">Log in</a>, then reopen the console.'); return; }
+    if(r.status===403){ line('(the console is owner-only)','err'); return; }
+    var d = await r.json();
+    if(d.out) line(d.out.replace(/\n$/,''));
+    if(d.err) line(d.err.replace(/\n$/,''),'err');
+    if(d.timedOut) line('(timed out after 30s)','sys');
+    if(typeof d.cwd==='string') setPrompt(d.cwd);
+    if(d.code) line('[exit '+d.code+']','sys');
+  } catch(e){ line('(network error: '+(e && e.message || e)+')','err'); }
+  finally { busy=false; input.disabled=false; input.focus(); }
+}
+document.getElementById('f').addEventListener('submit', function(e){
+  e.preventDefault(); var cmd=input.value; if(!cmd.trim()) return;
+  hist.push(cmd); hi=hist.length; input.value=''; run(cmd);
+});
+input.addEventListener('keydown', function(e){
+  if(e.key==='ArrowUp'){ if(hi>0){ hi--; input.value=hist[hi]; e.preventDefault(); } }
+  else if(e.key==='ArrowDown'){ if(hi<hist.length){ hi++; input.value=hist[hi]||''; e.preventDefault(); } }
+});
+(async function(){
+  try {
+    var r = await fetch('/api/me');
+    if(!r.ok){ gate('Please <a href="/login">log in</a> to use the console.'); return; }
+    var me = await r.json();
+    if((me.wsRole||'') !== 'owner'){ gate('The console is for the workspace owner only.'); return; }
+    document.getElementById('app').hidden=false;
+    document.getElementById('host').textContent = me.username + ' @ ' + location.host;
+    line('Chamber console — runs on the Chamber server as the chamber user (not root). Owner only; every command is logged.','sys');
+    line('For root-level work, use Claude Code Remote Control.','sys');
+    input.focus();
+  } catch(e){ gate('Could not load the console.'); }
+})();
+</script>
+</body>
+</html>

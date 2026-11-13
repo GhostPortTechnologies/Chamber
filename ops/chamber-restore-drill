@@ -1,0 +1,83 @@
+#!/bin/bash
+# chamber-restore-drill (T-0026): prove the newest backup actually restores. Weekly (Sunday 04:30 UTC) or by hand.
+#  1. Download the newest chamber-*.tgz, compare its sha256 with the metadata written at upload time.
+#  2. Extract to a scratch dir and run tools/snapshot.js --verify (integrity_check on every db, JSON parses).
+#  3. Boot a throwaway Chamber on 127.0.0.1:<random> against the restored copy and require /api/health = 200.
+#  3b. (T-0183) Uploaded files are backed up one copy each under files/ in the bucket, not in the archive. Check that every
+#      file on disk (older than the backup) has a copy of the same size, and download up to 5 and compare them byte for byte.
+#  4. Status to /var/lib/chamber/restore-drill-status.json; failure emails CHAMBER_ALERT_EMAIL. Nothing touches live data.
+set -uo pipefail
+BUCKET=""; PFX=""   # filled in below from CHAMBER_BACKUP_S3 (s3://<bucket>/<folder>) in /etc/chamber/chamber.env; the bucket name is deliberately not in this file
+APP=/opt/chamber/app; STATUS=/var/lib/chamber/restore-drill-status.json
+set -a; [ -r /etc/chamber/chamber.env ] && . /etc/chamber/chamber.env; set +a
+S3=${CHAMBER_BACKUP_S3:-}; S3=${S3%/}; BUCKET=${S3#s3://}; BUCKET=${BUCKET%%/*}; PFX=${S3#s3://"$BUCKET"}; PFX=${PFX#/}
+ALERT=${CHAMBER_ALERT_EMAIL:-support@ghostporttechnologies.com}
+W=$(mktemp -d /tmp/chamber-drill.XXXXXX); chown chamber "$W"; chmod 700 "$W"
+PIDF=""; trap '[ -n "$PIDF" ] && kill "$PIDF" 2>/dev/null; rm -rf "$W"' EXIT
+KEY=""
+status() { local tmp=$STATUS.tmp; printf '{"ok":%s,"at":"%s","key":"%s","message":%s%s}\n' "$([ "$1" = ok ] && echo true || echo false)" "$(date -u +%FT%TZ)" "$KEY" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$2")" "${3:-}" > "$tmp"; chown chamber:chamber "$tmp"; chmod 640 "$tmp"; mv "$tmp" "$STATUS"; }
+fail() {
+  echo "restore drill FAILED: $1" >&2; status fail "$1"
+  [ -n "${CHAMBER_SMTP_HOST:-}" ] && node -e "require('$APP/mail').send({to:process.argv[1],subject:'[Chamber] restore drill FAILED on '+require('os').hostname(),text:'The weekly restore test of the newest Chamber backup failed at '+new Date().toISOString()+'\n\nBackup: '+process.argv[3]+'\nReason: '+process.argv[2]+'\n\nStatus file: $STATUS\nRetry: sudo chamber-restore-drill'}).catch(e=>console.error('alert mail failed:', e.message))" "$ALERT" "$1" "$KEY"
+  exit 1
+}
+[ -n "$BUCKET" ] && [ -n "$PFX" ] || fail "CHAMBER_BACKUP_S3 is not set in /etc/chamber/chamber.env (expected s3://<bucket>/<folder>)"
+KEY=$(aws s3api list-objects-v2 --bucket $BUCKET --prefix "$PFX/chamber-" --query 'sort_by(Contents,&LastModified)[-1].Key' --output text 2>/dev/null) || fail "cannot list backups"
+[ -n "$KEY" ] && [ "$KEY" != None ] || fail "no backups found under s3://$BUCKET/$PFX/"
+AGE_H=$(( ( $(date -u +%s) - $(date -u -d "$(aws s3api head-object --bucket $BUCKET --key "$KEY" --query LastModified --output text)" +%s) ) / 3600 ))
+[ "$AGE_H" -le 48 ] || fail "newest backup is ${AGE_H}h old (timer broken?)"
+aws s3 cp "s3://$BUCKET/$KEY" "$W/b.tgz" --only-show-errors || fail "download failed"
+WANT=$(aws s3api head-object --bucket $BUCKET --key "$KEY" --query 'Metadata.sha256' --output text 2>/dev/null)
+GOT=$(sha256sum "$W/b.tgz" | cut -d' ' -f1)
+if [ -n "$WANT" ] && [ "$WANT" != None ]; then [ "$WANT" = "$GOT" ] || fail "sha256 mismatch (upload $WANT, download $GOT)"; else echo "note: $KEY has no sha256 metadata (pre-v2 backup), skipping checksum"; fi
+tar -C "$W" -xzf "$W/b.tgz" || fail "extract failed"
+chown -R chamber "$W/chamber"
+VER=$(sudo -u chamber node --disable-warning=ExperimentalWarning $APP/tools/snapshot.js --verify "$W/chamber" 2>&1 | tail -1) || fail "verification: $VER"
+PORT=$((30000 + RANDOM % 20000))
+sudo -u chamber env -i PATH=/usr/bin:/bin HOME=/tmp CHAMBER_ACCOUNTS=1 CHAMBER_STRIPE_SECRET=sk_test_drill CHAMBER_STRIPE_WEBHOOK_SECRET=whsec_drill CHAMBER_STRIPE_PRICE=price_drill \
+  CHAMBER_PUBLIC_URL=http://127.0.0.1:$PORT CHAMBER_HOST=127.0.0.1 CHAMBER_PORT=$PORT CHAMBER_DATA="$W/chamber/chamber.json" CHAMBER_REVIEWS="$W/chamber/reviews.json" \
+  CHAMBER_TICKETS_FILE="$W/chamber/tickets.json" CHAMBER_TICKETS_CLI=$APP/tickets-cli.js node --disable-warning=ExperimentalWarning $APP/server.js >"$W/server.log" 2>&1 &
+PIDF=$!
+for i in $(seq 1 50); do curl -sf -o /dev/null "http://127.0.0.1:$PORT/api/health" && break; sleep 0.2; done
+curl -sf -o /dev/null "http://127.0.0.1:$PORT/api/health" || fail "restored copy did not serve /api/health: $(tail -c 300 "$W/server.log")"
+LOGIN=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/login")
+[ "$LOGIN" = 200 ] || fail "restored copy /login returned $LOGIN"
+kill $PIDF 2>/dev/null; PIDF=""
+cat > "$W/files.py" <<'PY'
+import hashlib, json, os, random, subprocess, sys
+data, listing, bucket_files, cutoff, work = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4]), sys.argv[5]
+remote = {}
+for line in open(listing):
+    p = line.split(None, 3)
+    if len(p) == 4 and '/files/' in p[3]: remote[p[3].strip().split('/files/', 1)[1]] = int(p[2])
+local = {}
+wsroot = os.path.join(data, 'ws')
+for ws in (sorted(os.listdir(wsroot)) if os.path.isdir(wsroot) else []):
+    d = os.path.join(wsroot, ws, 'files')
+    if not os.path.isdir(d): continue
+    for n in os.listdir(d):
+        f = os.path.join(d, n)
+        if n.endswith('.part') or n.startswith('.') or not os.path.isfile(f) or os.path.getmtime(f) > cutoff: continue   # newer than the backup: next night's job
+        local[ws + '/' + n] = f
+missing = [k for k, f in local.items() if remote.get(k) != os.path.getsize(f)]
+sample = random.sample([k for k, f in local.items() if os.path.getsize(f) <= 20 * 1048576 and k not in missing], min(5, len([k for k, f in local.items() if os.path.getsize(f) <= 20 * 1048576 and k not in missing])))
+bad = []
+def sha(p):
+    h = hashlib.sha256()
+    with open(p, 'rb') as fh:
+        for c in iter(lambda: fh.read(1 << 20), b''): h.update(c)
+    return h.hexdigest()
+for i, k in enumerate(sample):
+    out = os.path.join(work, 'sample-%d' % i)
+    r = subprocess.run(['aws', 's3', 'cp', bucket_files + '/' + k, out, '--only-show-errors'])
+    if r.returncode != 0 or sha(out) != sha(local[k]): bad.append(k)
+    try: os.unlink(out)
+    except OSError: pass
+print(json.dumps({'files_checked': len(local), 'missing': missing[:5], 'missing_n': len(missing), 'downloaded_and_compared': len(sample), 'different': bad}))
+sys.exit(1 if missing or bad else 0)
+PY
+CUTOFF=$(date -u -d "$(aws s3api head-object --bucket $BUCKET --key "$KEY" --query LastModified --output text)" +%s)
+aws s3 ls "s3://$BUCKET/$PFX/files/" --recursive > "$W/remote.txt" || fail "cannot list the uploaded-file backup"
+FCHK=$(python3 "$W/files.py" /var/lib/chamber "$W/remote.txt" "s3://$BUCKET/$PFX/files" "$CUTOFF" "$W" | tail -1) || fail "uploaded files: $FCHK"
+status ok "restore drill ok" ",\"age_hours\":$AGE_H,\"verify\":$VER,\"uploaded_files\":$FCHK"
+echo "restore drill ok: $KEY (${AGE_H}h old) -> $VER; uploaded files: $FCHK"

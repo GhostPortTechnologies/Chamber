@@ -1,0 +1,98 @@
+#!/bin/bash
+# chamber-backup (v3, T-0026 + T-0183): consistent nightly snapshot of /var/lib/chamber to S3, verified, with alerts.
+#  v3 (2026-11-13): the bytes of uploaded files are NOT in the nightly archive any more. Each file is copied ONCE to
+#  $B/files/<workspace>/<file id> (files never change after upload), so storage costs one copy instead of 14 and nothing
+#  large crosses regions every night. A file deleted in Chamber stays in the backup for 12 to 13 more days, then is removed
+#  (the privacy page promises backups are gone within 14 days of a deletion; a deleted file leaves this copy 12 to 13 days after). Restore = newest archive + `aws s3 sync $B/files/<ws>/ <data>/ws/<ws>/files/`.
+#  1. tools/snapshot.js copies the JSON stores and takes a VACUUM INTO copy of every SQLite chat db, then
+#     integrity-checks every copy (the live -wal is never copied raw).
+#  2. tar.gz + sha256; the archive is listed back to prove it is readable.
+#  3. Upload (SSE-AES256) with the sha256 as object metadata; head-object confirms size; prune > 14 days.
+#  4. Status goes to /var/lib/chamber/backup-status.json (exposed read-only by /api/health, read by an
+#     outside monitor). Any failure also emails CHAMBER_ALERT_EMAIL through the app's own SMTP settings.
+# Run by chamber-backup.timer (03:40 UTC) as root; safe to run by hand: sudo chamber-backup
+set -uo pipefail
+APP=/opt/chamber/app; DATA=/var/lib/chamber; STATUS=$DATA/backup-status.json
+set -a; [ -r /etc/chamber/chamber.env ] && . /etc/chamber/chamber.env; set +a
+B=${CHAMBER_BACKUP_S3:-}; B=${B%/}   # where backups go: s3://<bucket>/<folder>. Set CHAMBER_BACKUP_S3 in /etc/chamber/chamber.env; the bucket name is deliberately not in this file (it is published with the source)
+BKT=${B#s3://}; BKT=${BKT%%/*}; PFX=${B#s3://"$BKT"}; PFX=${PFX#/}
+ALERT=${CHAMBER_ALERT_EMAIL:-support@ghostporttechnologies.com}
+TS=$(date -u +%Y%m%dT%H%M%SZ); KEY=chamber-$TS.tgz
+W=$(mktemp -d /tmp/chamber-backup.XXXXXX); chown chamber "$W"; chmod 700 "$W"
+trap 'rm -rf "$W"' EXIT
+
+status() {  # ok|fail, message, extra-json
+  local tmp=$STATUS.tmp
+  printf '{"ok":%s,"at":"%s","key":"%s","message":%s%s}\n' "$([ "$1" = ok ] && echo true || echo false)" "$(date -u +%FT%TZ)" "$KEY" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$2")" "${3:-}" > "$tmp"
+  chown chamber:chamber "$tmp"; chmod 640 "$tmp"; mv "$tmp" "$STATUS"
+}
+fail() {
+  echo "backup FAILED: $1" >&2; status fail "$1"
+  if [ -n "${CHAMBER_SMTP_HOST:-}" ]; then
+    node -e "require('$APP/mail').send({to:process.argv[1],subject:'[Chamber] backup FAILED on '+require('os').hostname(),text:'The nightly Chamber backup failed at '+new Date().toISOString()+'\n\nReason: '+process.argv[2]+'\n\nStatus file: $STATUS\nRun by hand to retry: sudo chamber-backup\nSee your operations notes for the backup procedure.'}).then(ok=>console.log('alert mail', ok?'sent':'skipped')).catch(e=>console.error('alert mail failed:', e.message))" "$ALERT" "$1"
+  fi
+  exit 1
+}
+
+[ -n "$BKT" ] && [ -n "$PFX" ] || fail "CHAMBER_BACKUP_S3 is not set in /etc/chamber/chamber.env (expected s3://<bucket>/<folder>)"
+SUM=$(sudo -u chamber node --disable-warning=ExperimentalWarning $APP/tools/snapshot.js "$DATA" "$W/chamber" --no-files 2>"$W/snap.err" | tail -1) || fail "snapshot: $(tail -c 300 "$W/snap.err") $SUM"
+echo "snapshot: $SUM"
+tar -C "$W" -czf "$W/$KEY" chamber || fail "tar failed"
+tar -tzf "$W/$KEY" >/dev/null || fail "archive does not list back"
+SHA=$(sha256sum "$W/$KEY" | cut -d' ' -f1); SIZE=$(stat -c %s "$W/$KEY")
+aws s3 cp "$W/$KEY" "$B/$KEY" --only-show-errors --sse AES256 --metadata "sha256=$SHA" || fail "upload failed (check the bucket policy and the server's permission to write there)"
+REMOTE=$(aws s3api head-object --bucket "$BKT" --key "$PFX/$KEY" --query ContentLength --output text 2>/dev/null) || fail "head-object failed after upload"
+[ "$REMOTE" = "$SIZE" ] || fail "uploaded size $REMOTE != local $SIZE"
+CUT=$(date -u -d '13 days ago' +%Y%m%dT)   # 2026-11-13: was '14 days ago', which kept an archive 15 days; the privacy page says backups are gone 14 days after a deletion. Now 14 archives are kept (today's and the 13 before).
+aws s3 ls "$B/" | awk '{print $4}' | grep '^chamber-.*\.tgz$' | while read -r k; do [[ "${k#chamber-}" < "$CUT" ]] && aws s3 rm "$B/$k" --only-show-errors; done || true
+KEPT=$(aws s3 ls "$B/" | awk '{print $4}' | grep -c '^chamber-.*\.tgz$')
+
+# v3: uploaded files, one copy each. List what is on disk, copy what the backup does not have yet, then check that every file
+# that was there before the copy is in the backup with the same size.
+STATE=/var/lib/chamber-backup-state; mkdir -p "$STATE"; chmod 700 "$STATE"
+cat > "$W/files.py" <<'PY'
+import json, os, sys, time
+data, listing, state_path, before_path, mode = sys.argv[1:6]
+local = {}
+dirs = [(d, os.path.join(data, 'ws', d, 'files')) for d in sorted(os.listdir(os.path.join(data, 'ws')))] if os.path.isdir(os.path.join(data, 'ws')) else []
+dirs.append(('_root', os.path.join(data, 'files')))
+for ws, d in dirs:
+    if not os.path.isdir(d): continue
+    for n in os.listdir(d):
+        f = os.path.join(d, n)
+        if n.endswith('.part') or n.startswith('.') or not os.path.isfile(f): continue
+        local[ws + '/' + n] = os.path.getsize(f)
+if mode == 'before':
+    json.dump(local, open(before_path, 'w')); sys.exit(0)
+before = json.load(open(before_path))
+remote = {}
+for line in open(listing):
+    p = line.split(None, 3)
+    if len(p) == 4 and '/files/' in p[3]: remote[p[3].strip().split('/files/', 1)[1]] = int(p[2])
+missing = [k for k, size in before.items() if k in local and remote.get(k) != size]   # was there before the copy, still there now, must be in the backup with the same size
+try: gone = json.load(open(state_path))
+except Exception: gone = {}
+now = int(time.time()); delete = []
+for k in remote:
+    if k in local: gone.pop(k, None)
+    else:
+        gone.setdefault(k, now)
+        if now - gone[k] > 11.5 * 86400: delete.append(k)   # noticed gone on the first nightly run after the deletion (up to a day later); removed on the 12th run after that = at most 13 days and a bit after the deletion, inside the 14 days the privacy page promises
+gone = {k: v for k, v in gone.items() if k in remote and k not in delete}
+json.dump(gone, open(state_path, 'w'))
+json.dump(delete, open(before_path + '.delete', 'w'))
+print(json.dumps({'files': len(local), 'file_bytes': sum(local.values()), 'in_backup': len(remote), 'missing_n': len(missing), 'missing_example': [k.split('/')[0] for k in missing[:3]], 'waiting_removal': len(gone), 'removed_now': len(delete)}))
+PY
+python3 "$W/files.py" "$DATA" /dev/null "$STATE/gone.json" "$W/before.json" before || fail "could not list uploaded files"
+for d in "$DATA"/ws/*/files "$DATA"/files; do
+  [ -d "$d" ] || continue
+  if [ "$d" = "$DATA/files" ]; then WSN=_root; else WSN=$(basename "$(dirname "$d")"); fi
+  aws s3 sync "$d" "$B/files/$WSN/" --only-show-errors --sse AES256 --exclude "*.part" --exclude ".*" || fail "copying uploaded files of $WSN failed"
+done
+aws s3 ls "$B/files/" --recursive > "$W/remote.txt" || fail "cannot list the uploaded-file backup"
+FSUM=$(python3 "$W/files.py" "$DATA" "$W/remote.txt" "$STATE/gone.json" "$W/before.json" check) || fail "checking the uploaded-file backup failed"
+[ "$(echo "$FSUM" | python3 -c 'import json,sys;print(json.load(sys.stdin)["missing_n"])')" = 0 ] || fail "uploaded files missing from the backup: $FSUM"
+python3 -c 'import json,sys
+for k in json.load(open(sys.argv[1])): print(k)' "$W/before.json.delete" | while read -r k; do [ -n "$k" ] && aws s3 rm "$B/files/$k" --only-show-errors; done || true
+status ok "backup ok" ",\"bytes\":$SIZE,\"sha256\":\"$SHA\",\"kept\":$KEPT,\"snapshot\":$SUM,\"uploaded_files\":$FSUM"
+echo "backup ok: $KEY ($SIZE bytes, sha256 $SHA, $KEPT kept); uploaded files: $FSUM"

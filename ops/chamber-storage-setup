@@ -1,0 +1,31 @@
+#!/bin/bash
+# chamber-storage-setup <price in cents per pack per year> [--enable]      (T-0183, 2026-11-13)
+# Stripe side of the storage add-on: finds or creates the product "Chamber extra storage (N GB)" and a YEARLY price of the
+# given amount, and prints the price id. Safe to re-run (it reuses what exists). Prints no secrets.
+#   without --enable : only finds/creates the price and prints its id. Nothing changes for customers.
+#   with    --enable : also writes CHAMBER_STRIPE_STORAGE_PRICE and CHAMBER_STORAGE_PRICE_LABEL to /etc/chamber/chamber.env.
+#                      The add-on is offered after the next restart:  sudo systemctl restart chamber
+# To switch the add-on OFF again: remove those two lines from /etc/chamber/chamber.env and restart. Existing packs then stop
+# counting toward the file limit (nothing is deleted) but stay on the customers' subscriptions in Stripe, so remove them there.
+# To change the price: run again with the new amount (a new Stripe price is made; existing buyers keep the old price until moved).
+set -euo pipefail
+CENTS=${1:?usage: chamber-storage-setup <cents per pack per year> [--enable]}; MODE=${2:-}
+[[ "$CENTS" =~ ^[0-9]+$ ]] && [ "$CENTS" -ge 100 ] || { echo "the price must be a whole number of cents, 100 or more"; exit 2; }
+ENV=/etc/chamber/chamber.env; . "$ENV"
+GB=${CHAMBER_STORAGE_PACK_GB:-10}; NAME="Chamber extra storage ($GB GB)"
+LABEL=$(python3 -c 'import sys;c=int(sys.argv[1]);print("$%d%s / year" % (c//100, "" if c%100==0 else ".%02d" % (c%100)))' "$CENTS")
+S() { curl -sS -u "$CHAMBER_STRIPE_SECRET:" "https://api.stripe.com/v1/$@"; }
+set_var() { grep -v "^$1=" $ENV > $ENV.new || true; echo "$1=$2" >> $ENV.new; chown root:chamber $ENV.new; chmod 640 $ENV.new; mv $ENV.new $ENV; }
+PROD=$(S "products?active=true&limit=100" -G | python3 -c 'import json,sys
+for p in json.load(sys.stdin)["data"]:
+    if p["name"]==sys.argv[1]: print(p["id"]); break' "$NAME")
+[ -n "$PROD" ] || PROD=$(S products -d "name=$NAME" -d "description=$GB GB more file storage for one Chamber workspace, billed yearly with the subscription." | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id") or sys.exit("Stripe: "+str(d.get("error",{}).get("message"))))')
+PRICE=$(S "prices?product=$PROD&active=true&limit=100" -G | python3 -c 'import json,sys
+for p in json.load(sys.stdin)["data"]:
+    if p["unit_amount"]==int(sys.argv[1]) and p["currency"]=="usd" and (p.get("recurring") or {}).get("interval")=="year" and (p.get("recurring") or {}).get("interval_count")==1: print(p["id"]); break' "$CENTS")
+[ -n "$PRICE" ] || PRICE=$(S prices -d product=$PROD -d unit_amount=$CENTS -d currency=usd -d "recurring[interval]=year" -d "nickname=Chamber storage pack $GB GB yearly" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id") or sys.exit("Stripe: "+str(d.get("error",{}).get("message"))))')
+echo "product $PROD, price $PRICE ($LABEL per $GB GB pack)"
+if [ "$MODE" = --enable ]; then
+  set_var CHAMBER_STRIPE_STORAGE_PRICE "$PRICE"; set_var CHAMBER_STORAGE_PRICE_LABEL "'$LABEL'"   # single quotes: the file is read by systemd AND sourced by bash scripts (the backup runs with set -u, and a bare $49 would be read as a variable)
+  echo "written to $ENV. Offer it with: sudo systemctl restart chamber"
+fi

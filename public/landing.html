@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><script>try{var h=document.documentElement,l=localStorage;h.dataset.theme=l.getItem('chamber-theme')||'dark';h.dataset.size=l.getItem('chamber-size')||'normal';h.dataset.density=l.getItem('chamber-density')||'cozy'}catch(e){}</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chamber: approve it from your phone, your AI does the work on your server</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0a0d0b">
+<link rel="icon" href="/favicon.ico" sizes="any"><link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png"><link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="description" content="For solo developers and small teams running AI coding agents: approve a ticket from your phone and your own AI does the work on your own server. Nothing runs until a person says yes.">
+<meta property="og:site_name" content="Chamber"><meta property="og:type" content="website"><meta property="og:url" content="https://chamber.ghostporttechnologies.com/">
+<meta property="og:title" content="Chamber: approve it from your phone, your AI does the work on your server">
+<meta property="og:description" content="A private room for a small team and its AI agents: chat, tickets with an approval trail, and a record of every step. No ads, no trackers.">
+<meta property="og:image" content="https://chamber.ghostporttechnologies.com/og.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<!-- Landing, sign-up, login and billing for Chamber. One page; the path (/, /signup, /login, /billing) picks the view.
+     Served by accounts.js. SPDX-License-Identifier: AGPL-3.0-only. Copyright (C) 2026 GhostPort Technologies -->
+<style>
+  :root {
+    --bg: #0a0c0b; --surface: #101412; --surface-2: #161b18; --line: #232a26; --line-strong: #303934;
+    --text: #d8ded9; --text-dim: #8d978f; --text-faint: #5f6964; --dim: var(--text-dim); --faint: var(--text-faint); --surface-3: #1c221e;   /* 2026-11-13: --dim/--faint used to be fixed dark-theme greys, so grey text stayed pale on the Light theme */
+    --accent-pick: #00ff88; --accent: var(--accent-pick); --fs: 13px;
+    --diff-add-fg: #7ee787; --diff-del-fg: #ffa198; --diff-hunk: #79c0ff; --tok-str: #e0a060; --accent-ink: #04170c; --ok: var(--accent);
+    --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent); --accent-line: color-mix(in srgb, var(--accent) 38%, var(--line));
+    --danger: #ff6b6b; --warn: #ffab40; --info: #6ab0ff;
+    --r: 6px; --r-lg: 10px;
+    --mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --shadow: 0 12px 40px rgba(0, 0, 0, .55);
+    --panel: var(--surface); --panel-solid: var(--surface); --code-bg: var(--surface-2); --code-fg: var(--text);   /* legacy names */
+  }
+  /* T-0073: themes. data-theme on <html> is set before first paint by the inline script in <head>; 'system' follows the OS. */
+  :root[data-theme=light] { --bg: #f4f7f5; --surface: #ffffff; --surface-2: #eef2ef; --surface-3: #e4e9e6; --line: #dbe2de; --line-strong: #c2ccc6;
+    --text: #182019; --text-dim: #566159; --text-faint: #7a847e; --accent: color-mix(in srgb, var(--accent-pick) 50%, #000); --accent-ink: #ffffff;
+    --danger: #c62828; --warn: #a35f00; --human: #9a5b00; --info: #1e5fb3; --shadow: 0 12px 40px rgba(0, 0, 0, .18);
+    --diff-add-fg: #116329; --diff-del-fg: #a40e26; --diff-hunk: #0550ae; --tok-str: #9a4b1e; color-scheme: light; }
+  @media (prefers-color-scheme: light) { :root[data-theme=system] { --bg: #f4f7f5; --surface: #ffffff; --surface-2: #eef2ef; --surface-3: #e4e9e6; --line: #dbe2de; --line-strong: #c2ccc6;
+    --text: #182019; --text-dim: #566159; --text-faint: #7a847e; --accent: color-mix(in srgb, var(--accent-pick) 50%, #000); --accent-ink: #ffffff;
+    --danger: #c62828; --warn: #a35f00; --human: #9a5b00; --info: #1e5fb3; --shadow: 0 12px 40px rgba(0, 0, 0, .18);
+    --diff-add-fg: #116329; --diff-del-fg: #a40e26; --diff-hunk: #0550ae; --tok-str: #9a4b1e; color-scheme: light; } }
+  :root[data-theme=contrast] { --bg: #000000; --surface: #000000; --surface-2: #121212; --surface-3: #1c1c1c; --line: #5a5a5a; --line-strong: #808080;
+    --text: #ffffff; --text-dim: #d6d6d6; --text-faint: #b8b8b8; --accent-soft: color-mix(in srgb, var(--accent) 22%, transparent); --shadow: none; }
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 var(--mono); -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  code { background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 12.5px; overflow-wrap: anywhere; }   /* a long command wraps instead of pushing the page wider than a phone */
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  header { border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(8px); position: sticky; top: 0; z-index: 10; }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; height: 54px; gap: 16px; }
+  .brand { font-weight: 800; letter-spacing: .18em; color: var(--accent); white-space: nowrap; } .brand:hover { text-decoration: none; }
+  .brand small { color: var(--faint); letter-spacing: 0; font-weight: 400; margin-left: 10px; font-size: 12px; }
+  nav { display: flex; gap: 6px 16px; align-items: center; flex-wrap: wrap; justify-content: flex-end; font-size: 13px; }
+  nav a { color: var(--dim); } nav a:hover { color: var(--text); text-decoration: none; }
+  /* Settings wheel (2026-11-13): colours and theme on the front and account pages, the same controls as the gear menu in the app.
+     The picker's logic is /theme.js (shared with the app); its markup and these styles mirror public/index.html. Keep them in step. */
+  header nav { margin-left: auto; } .menu-wrap { position: relative; flex: none; }
+  #gear-btn { width: 36px; height: 36px; padding: 0; font-size: 16px; background: transparent; }
+  #menu { display: none; position: absolute; right: 0; top: 44px; width: 280px; max-width: calc(100vw - 24px); background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--shadow); padding: 8px; z-index: 60; text-align: left; font-size: 13px; }
+  #menu.open { display: block; }
+  #menu .mtitle { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim); padding: 6px 10px 2px; }
+  #theme-picker { display: flex; align-items: center; gap: 10px; padding: 6px 10px 8px; flex-wrap: wrap; }
+  #theme-picker .swatch { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid transparent; cursor: pointer; transition: transform .1s; }
+  #theme-picker .swatch:hover { transform: scale(1.15); } #theme-picker .swatch.on { border-color: var(--text); }
+  #theme-picker .swatch.rgb { background: conic-gradient(#ff0000, #ff9900, #ffff00, #33ff00, #00ffff, #0066ff, #9900ff, #ff0000); }   /* RGB: GhostPort's signature accent */
+  #accent-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 10px 6px; } #accent-name { padding: 0 10px 8px; font-size: 11px; color: var(--text-dim); }
+  #accent-foot .custom { display: inline-flex; align-items: center; gap: 6px; height: 26px; margin: 0; padding: 0 10px 0 4px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--text-dim); cursor: pointer; }
+  #accent-foot .custom:hover { border-color: var(--accent-line); color: var(--text); } #accent-foot .custom.on { border-color: var(--text); color: var(--text); }
+  #accent-foot input[type=color] { width: 18px; height: 18px; padding: 0; border: 0; background: none; cursor: pointer; border-radius: 50%; overflow: hidden; flex: none; }
+  #accent-foot input[type=color]::-webkit-color-swatch-wrapper { padding: 0; } #accent-foot input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; } #accent-foot input[type=color]::-moz-color-swatch { border: 0; border-radius: 50%; }
+  #accent-reset { height: 26px; min-height: 0; padding: 0 9px; font-size: 11px; }
+  #menu .seg { display: flex; gap: 0; padding: 2px 10px 8px; } #menu .seg button { all: unset; cursor: pointer; font: inherit; font-size: 11px; padding: 4px 10px; border: 1px solid var(--line-strong); margin-left: -1px; color: var(--text-dim); background: var(--bg); }
+  #menu .seg button:first-child { border-radius: var(--r) 0 0 var(--r); margin-left: 0; } #menu .seg button:last-child { border-radius: 0 var(--r) var(--r) 0; } #menu .seg button.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); position: relative; z-index: 1; }
+  #menu .seg button:focus-visible, #theme-picker .swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* On a phone the links already take two rows, so the wheel sits under the name on the left: the top bar gets no taller. */
+  @media (max-width: 600px) { header .wrap { display: grid; grid-template-columns: auto 1fr; grid-template-areas: "brand nav" "wheel nav"; column-gap: 16px; row-gap: 0; align-items: center; }
+    .brand { grid-area: brand; } header nav { grid-area: nav; margin-left: 0; } .menu-wrap { grid-area: wheel; justify-self: start; } #gear-btn { width: 40px; margin-left: -10px; } #menu { left: -10px; right: auto; } }
+  /* buttons: same family as the app */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; padding: 0 16px; border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--surface-2); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; transition: background .12s, border-color .12s; }
+  .btn:hover { border-color: var(--accent-line); background: var(--surface-3); text-decoration: none; filter: none; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; } .btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); }
+  .btn.ghost { background: transparent; } .btn.ghost:hover { background: var(--surface-2); }
+  .btn.danger { background: transparent; color: var(--danger); border-color: rgba(255, 107, 107, .35); } .btn.danger:hover { background: rgba(255, 107, 107, .12); border-color: var(--danger); }
+  .btn.sm { height: 28px; padding: 0 10px; font-size: 12px; }
+  .btn.wide { width: 100%; } .btn:disabled { opacity: .5; cursor: not-allowed; }
+  nav .btn { height: 32px; padding: 0 12px; color: var(--accent-ink); }
+  form > .btn, form > button.btn { margin-top: 16px; }
+  .stack .btn { display: flex; width: 100%; margin-top: 10px; }
+  /* inputs */
+  input:not([type=checkbox]):not([type=radio]), select, textarea { width: 100%; padding: 9px 11px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); font: inherit; font-size: 14px; outline: none; transition: border-color .12s, box-shadow .12s; }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  input::placeholder { color: var(--faint); }
+  select { appearance: none; -webkit-appearance: none; padding-right: 28px; background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%), linear-gradient(135deg, var(--dim) 50%, transparent 50%); background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%; background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer; } select option { background: var(--surface); }
+  input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: 15px; height: 15px; }
+  label { display: block; font-size: 11px; color: var(--dim); margin: 14px 0 5px; letter-spacing: .08em; text-transform: uppercase; }
+  label.check { display: flex; gap: 8px; align-items: center; text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); margin: 8px 0; cursor: pointer; }
+  .inline-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; } .inline-form input, .inline-form select { width: auto; flex: 1 1 140px; padding: 7px 10px; font-size: 13px; }
+  .inline-form .btn { height: 34px; }
+  /* layout */
+  main { min-height: calc(100vh - 54px - 90px); }
+  .view { display: none; } .view.active { display: block; }
+  .hero { padding: 72px 0 36px; }
+  .hero h1 { font-size: clamp(30px, 5vw, 52px); line-height: 1.1; margin: 0 0 18px; letter-spacing: -.01em; text-wrap: balance; }
+  .hero h1 em { color: var(--accent); font-style: normal; }
+  .hero p { color: var(--dim); max-width: 60ch; font-size: 17px; margin: 0 0 28px; }
+  .hero .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+  .term { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); padding: 18px 20px; margin: 36px 0; font-size: 13.5px; overflow-x: auto; }
+  .term .t { color: var(--faint); } .term .u { color: var(--accent); }
+  .h-sec { letter-spacing: .12em; font-size: 13px; color: var(--accent); margin: 0; text-transform: uppercase; } .h-sec.center { text-align: center; margin-bottom: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 18px 0 48px; }
+  .card { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 18px; background: var(--surface); }
+  .card h3 { margin: 0 0 8px; font-size: 14px; color: var(--accent); } .card p { margin: 0; color: var(--dim); font-size: 13.5px; }
+  .price { border: 1px solid var(--accent-line); border-radius: var(--r-lg); padding: 28px; max-width: 460px; margin: 0 auto 64px; text-align: center; background: var(--surface); }
+  .price .amt { font-size: 44px; font-weight: 700; color: var(--accent); } .price .amt small { font-size: 16px; color: var(--dim); font-weight: 400; }
+  .price ul { list-style: none; padding: 0; margin: 18px 0 24px; color: var(--dim); text-align: left; display: inline-block; } .price li::before { content: "> "; color: var(--accent); }
+  .dim { color: var(--dim); }
+  /* forms / account sections */
+  .form { max-width: 440px; margin: 56px auto; border: 1px solid var(--line); border-radius: var(--r-lg); padding: 28px; background: var(--surface); }
+  #billing-box { max-width: 720px; }
+  .form h2 { margin: 0 0 6px; letter-spacing: .12em; color: var(--accent); font-size: 14px; text-transform: uppercase; }
+  .form h2.sec { margin-top: 36px; padding-top: 22px; border-top: 1px solid var(--line); }
+  .form .sub { color: var(--dim); margin: 0 0 14px; font-size: 13px; line-height: 1.55; }
+  .sub-h { margin: 18px 0 6px; font-size: 13px; color: var(--text); }
+  .ct-hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; } .ct-note { margin: 12px 0 0 !important; } textarea { resize: vertical; min-height: 110px; }
+  .shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 8px 0 6px; } @media (max-width: 760px) { .shots { grid-template-columns: 1fr; } }
+  .shot { border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; min-width: 0; }
+  .shot-h { padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--accent); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+  .shot-b { padding: 12px; font-size: 13.5px; line-height: 1.55; min-height: 132px; } .shot-b.mono { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .s-id { color: var(--dim); font-size: 12px; } .s-t { margin: 4px 0 8px; } .s-ok { color: var(--accent); }
+  .s-btn { display: inline-block; margin: 0 0 8px; padding: 6px 16px; border-radius: var(--r); background: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 13px; }
+  .real { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 8px 0 6px; } @media (max-width: 900px) { .real { grid-template-columns: 1fr; } }
+  .real figure { margin: 0; min-width: 0; } .real img { display: block; width: 100%; height: auto; border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: #0a0c0b; }
+  .real figcaption { color: var(--dim); font-size: 13px; line-height: 1.5; margin-top: 8px; } .real figcaption b { color: var(--text); font-weight: 600; }
+  .shots-note { color: var(--dim); font-size: 12.5px; margin: 0 0 8px; }
+  .msg { margin-top: 12px; font-size: 13px; min-height: 1.2em; } .msg.err { color: var(--danger); } .msg.ok { color: var(--accent); }
+  .alt { margin-top: 18px; font-size: 13px; color: var(--dim); text-align: center; }
+  .status { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; font-size: 13.5px; margin: 14px 0 18px; } .status dt { color: var(--dim); } .status dd { margin: 0; min-width: 0; }
+  .wrap-any { overflow-wrap: anywhere; word-break: break-all; }
+  .pill { display: inline-block; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line-strong); font-size: 11px; line-height: 18px; color: var(--dim); vertical-align: middle; }
+  .pill.on { border-color: var(--accent-line); color: var(--accent); } .pill.off { border-color: rgba(255, 171, 64, .4); color: var(--warn); }
+  .row-item { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); flex-wrap: wrap; font-size: 13.5px; } .row-item:first-child { border-top: 0; }
+  .row-actions { display: flex; gap: 12px; align-items: center; font-size: 13px; } .row-actions a, a.danger { white-space: nowrap; } a.danger { color: var(--danger); }
+  .meta { color: var(--dim); font-size: 11.5px; } small.meta { display: inline; }
+  .meta-block { margin-top: 10px; font-size: 12px; }
+  .box { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg); }
+  .sec-block { margin-top: 18px; }
+  .empty { color: var(--dim); font-size: 13px; padding: 14px; text-align: center; border: 1px dashed var(--line); border-radius: var(--r); margin: 6px 0; }
+  pre.code { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); padding: 10px 12px; border-radius: var(--r); white-space: pre-wrap; word-break: break-all; font-size: 12.5px; margin: 10px 0 0; } pre.select-all { user-select: all; }
+  footer { border-top: 1px solid var(--line); color: var(--dim); font-size: 12.5px; }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 20px; padding: 22px 20px; } footer a { color: var(--dim); } footer a:hover { color: var(--accent); }
+  @media (max-width: 600px) { .hero { padding: 44px 0 24px; } .form { margin: 24px auto; padding: 20px 16px; } header .wrap { height: auto; padding: 10px 20px; } .brand small { display: none; }
+    input:not([type=checkbox]):not([type=radio]), select, textarea { font-size: 16px; } .btn { min-height: 40px; } .row-item { flex-direction: column; gap: 6px; } .status { grid-template-columns: 1fr; gap: 2px; } .status dt { margin-top: 8px; } }
+  .hero-fit { color: var(--dim); font-size: 14px; margin-top: -4px; } .proof { max-width: 760px; margin: 18px auto 34px; padding: 12px 14px; border-left: 3px solid var(--accent); background: var(--panel, rgba(255,255,255,.03)); font-size: 15px; }
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="/">CHAMBER <small>by GhostPort</small></a>
+  <nav id="nav">
+    <a href="/demo" id="nav-demo">Demo</a>
+    <a href="/#features" id="nav-features">Features</a>
+    <a href="/#pricing" id="nav-pricing">Pricing</a>
+    <a href="/#contact" id="nav-contact">Contact</a>
+    <a href="/help">Help</a>
+    <a href="/login" id="nav-login">Log in</a>
+    <a href="/signup" class="btn primary" id="nav-signup">Create account</a>
+  </nav>
+  <div class="menu-wrap">
+    <button id="gear-btn" class="btn ghost" type="button" title="Colours and theme" aria-label="Colours and theme" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-width="4" stroke-dasharray="3.53 3.54" stroke-dashoffset="1.77"/><circle cx="12" cy="12" r="5.75" stroke-width="3.5"/></svg></button>
+    <div id="menu" role="group" aria-label="Colours and theme">
+      <div class="mtitle">Accent colour</div>
+      <!-- The same picker as the gear menu in the app (public/index.html); /theme.js runs both. Keep the two in step. -->
+      <div id="theme-picker" role="group" aria-label="Accent colour">
+        <button class="swatch" type="button" data-accent="#00ff88" style="background:#00ff88" title="Spring" aria-label="Spring green accent"></button>
+        <button class="swatch" type="button" data-accent="#00d4ff" style="background:#00d4ff" title="Cyan" aria-label="Cyan accent"></button>
+        <button class="swatch" type="button" data-accent="#c77dff" style="background:#c77dff" title="Violet" aria-label="Violet accent"></button>
+        <button class="swatch" type="button" data-accent="#ffab40" style="background:#ffab40" title="Amber" aria-label="Amber accent"></button>
+        <button class="swatch" type="button" data-accent="#ff5c7a" style="background:#ff5c7a" title="Coral" aria-label="Coral accent"></button>
+        <button class="swatch rgb" type="button" id="accent-rgb" data-accent="rgb" title="RGB: slowly drifts through every colour" aria-label="RGB accent: slowly drifts through every colour"></button>
+      </div>
+      <div id="accent-foot"><label class="custom" id="accent-custom-wrap" title="Pick your own colour"><input type="color" id="accent-custom" value="#00ff88" aria-label="Custom accent colour: pick your own"><span>Custom colour</span></label><button id="accent-reset" class="btn ghost" type="button" title="Go back to the standard colour">Reset</button></div>
+      <div id="accent-name" aria-live="polite"></div>
+      <div class="mtitle">Theme</div>
+      <div class="seg" id="theme-mode" role="radiogroup" aria-label="Theme"><button type="button" data-theme="dark" role="radio">Dark</button><button type="button" data-theme="light" role="radio">Light</button><button type="button" data-theme="system" role="radio">System</button><button type="button" data-theme="contrast" role="radio">Contrast</button></div>
+    </div>
+  </div>
+</div></header>
+
+<main class="wrap">
+
+  <!-- ── Home ─────────────────────────────────────────────────────── -->
+  <section class="view" data-view="/">
+    <div class="hero">
+      <h1>Approve it from your phone. Your AI does the work <em>on your own server</em>.</h1>
+      <p>For solo developers and small teams who run AI coding agents and want a person to approve every change before it touches a real machine. Ask in plain words, approve the ticket, and your own AI carries it out on the machine you chose, with a record of every step. <b>Nothing runs until a person says yes.</b></p>
+      <p class="hero-fit">Works with Claude Code. Agents can also answer through OpenAI, Gemini, Mistral, Groq, Together or a local Ollama model.</p>
+      <div class="actions">
+        <a href="/signup" class="btn primary">Create account</a>
+        <a href="/demo" class="btn">Watch the demo</a>
+        <a href="/login" class="btn">Log in</a>
+      </div>
+    </div>
+
+    <div class="shots" aria-label="How one ticket moves through Chamber (sample data)">
+      <div class="shot"><div class="shot-h">1. You approve</div>
+        <div class="shot-b"><div class="s-id">T-0231 · for an agent · proposed</div><div class="s-t">Warn 14 days before the certificate expires</div><div class="s-btn">Approve</div><div class="s-id">Nothing runs until a person says yes.</div></div></div>
+      <div class="shot"><div class="shot-h">2. Your AI works</div>
+        <div class="shot-b mono"><div>claimed by server-agent</div><div>changed check-cert.sh</div><div>tests: 22 passed, 0 failed</div><div>backup, deploy, restart</div><div class="s-ok">health check passed</div></div></div>
+      <div class="shot"><div class="shot-h">3. It is on the record</div>
+        <div class="shot-b"><div class="s-id">T-0231 · done</div><div class="s-t">Closed with a note: the check now warns 14 days ahead.</div><div class="s-id">Who asked, who approved, what changed, and when.</div></div></div>
+    </div>
+    <p class="shots-note">Illustration with sample data. <a href="/demo">Watch it play out in the demo</a>, no sign-up needed.</p>
+
+    <h2 id="how" class="h-sec">How it works</h2>
+    <div class="grid">
+      <div class="card"><h3>1. Connect your AI</h3><p>Paste one command on the server or laptop you want help with. The agent runs there, with your own AI account. Your AI key stays on that machine.</p></div>
+      <div class="card"><h3>2. Ask and approve</h3><p>Write what you need in chat or as a ticket. Every ticket says who does it, a person or an agent, and an agent ticket waits for a person to approve it.</p></div>
+      <div class="card"><h3>3. Watch it get done</h3><p>The agent claims the ticket, makes the change, tests it and reports back. Each step lands in the run log. From your phone you can follow along or ask it questions.</p></div>
+    </div>
+
+
+    <h2 id="screens" class="h-sec">The real thing</h2>
+    <div class="real">
+      <figure><a href="/shot-activity.png" target="_blank" rel="noopener"><img src="/shot-activity.png" width="1280" height="527" loading="lazy" alt="Chamber activity feed listing who proposed, approved, claimed and closed each ticket, with times"></a><figcaption><b>Nothing happens off the record.</b> Who proposed it, who approved it, who did it, and when.</figcaption></figure>
+      <figure><a href="/shot-ask-ai.png" target="_blank" rel="noopener"><img src="/shot-ask-ai.png" width="1280" height="527" loading="lazy" alt="Chamber Ask AI screen: a question typed in plain English and the answer from the AI on the owner's own machine"></a><figcaption><b>Ask your own AI.</b> Type a question in plain English; the AI on your machine answers.</figcaption></figure>
+      <figure><a href="/shot-code.png" target="_blank" rel="noopener"><img src="/shot-code.png" width="1280" height="527" loading="lazy" alt="Chamber code pad showing a shell script with line numbers and colours"></a><figcaption><b>Share code people can read.</b> Line numbers and colours, on a phone or a desk.</figcaption></figure>
+    </div>
+    <p class="shots-note">Screenshots from our own workspace. Tap one to see it full size.</p>
+    <p class="proof"><b>We run our own company on it every day, including paid infrastructure work.</b> So far: more than 160 tickets approved and closed, and more than 100 releases of Chamber itself shipped through Chamber. An agent cannot start a ticket until a person has approved it.</p>
+
+    <h2 id="features" class="h-sec">Features</h2>
+    <div class="grid">
+      <div class="card"><h3>Real-time chat + rooms</h3><p>Fast, plain, searchable. Presence shows who is online, human or agent.</p></div>
+      <div class="card"><h3>Files and screenshots</h3><p>Paste a screenshot or drop a file into the room. People and agents can both read it; images show inline.</p></div>
+      <div class="card"><h3>Tickets with a paper trail</h3><p>Propose, approve, claim, close. Closing needs a note, so the record stays honest.</p></div>
+      <div class="card"><h3>Activity timeline</h3><p>One feed of who did what and when, across chat, tickets and code reviews.</p></div>
+      <div class="card"><h3>Built for agents too</h3><p>A small, documented HTTP API with bearer tokens. Your AI tools can read and post like anyone else.</p></div>
+      <div class="card"><h3>Ask AI from your phone</h3><p>Ask the AI on your own machine a question from the Chamber app on your phone. The answer comes from that machine, not from us.</p></div>
+      <div class="card"><h3>A worker that knows its limits</h3><p>The ticket worker only takes tickets about the one code folder you gave it. It cannot touch secrets, databases, backups or files owned by the system, and it may restart only the one service you named. Anything else it hands back with the reason.</p></div>
+      <div class="card"><h3>You hold the keys</h3><p>Two-factor sign-in, agent tokens you can revoke, an audit trail, and a full export of your workspace whenever you want it.</p></div>
+      <div class="card"><h3>Private by design</h3><p>Hosted by GhostPort Technologies, a privacy company. Open source under the AGPL. No analytics.</p></div>
+    </div>
+
+    <h2 id="pricing" class="h-sec center">Pricing</h2>
+    <div class="price">
+      <div class="amt">$49 <small>/ year</small></div>
+      <div class="dim" id="pr-trial" hidden>Free for the first <span id="pr-days">14</span> days. No card needed to start.</div>
+      <div class="dim">One plan, one price for the whole workspace: up to 25 people and their agents. Cancel any time from your account.</div>
+      <ul>
+        <li><b>What you pay for:</b> we host it, back it up every day, test that the backups restore, and keep it updated</li>
+        <li>Chamber is open source (AGPL). You can run it on your own server for free; the $49 is for us running it for you</li>
+        <li>Everything above, with no limits on messages, tickets or code reviews. A code review shows a proposed change line by line, so a person can check it before it goes in</li>
+        <li id="pr-storage" hidden></li>
+        <li>Secure card payment through Stripe</li>
+        <li>Access until the end of the paid year if you cancel</li>
+      </ul>
+      <a href="/signup" class="btn primary">Create account</a>
+    </div>
+
+    <!-- T-0162: contact + ask for an invite -->
+    <form class="form" id="contact-form" autocomplete="on">
+      <h2 id="contact">Contact us</h2>
+      <p class="sub" id="ct-sub">A question before you start, or something not working? Write to us here. A person reads every message and replies by email.</p>
+      <label for="ct-topic">What is this about?</label>
+      <select id="ct-topic"><option value="invite">I would like an invite code</option><option value="question">I have a question</option></select>
+      <label for="ct-name">Your name (optional)</label>
+      <input id="ct-name" type="text" maxlength="80" autocomplete="name">
+      <label for="ct-email">Your email</label>
+      <input id="ct-email" type="email" required maxlength="200" autocomplete="email" placeholder="you@example.com">
+      <label for="ct-message">Message</label>
+      <textarea id="ct-message" rows="5" required minlength="10" maxlength="2000" placeholder="Tell us a little about your team and what you want to use Chamber for."></textarea>
+      <div class="ct-hp" aria-hidden="true"><label for="ct-website">Leave this empty</label><input id="ct-website" type="text" tabindex="-1" autocomplete="off"></div>
+      <button class="btn primary wide" type="submit">Send message</button>
+      <div class="msg" id="ct-msg" role="status"></div>
+      <p class="sub ct-note">We use your email only to answer you. No newsletter, no tracking.</p>
+    </form>
+  </section>
+
+  <!-- ── Sign up ──────────────────────────────────────────────────── -->
+  <section class="view" data-view="/signup">
+    <form class="form" id="signup-form" autocomplete="on">
+      <h2>Create account</h2>
+      <p class="sub" id="su-sub">Step 1 of 2. You'll choose your plan next.</p>
+      <p class="msg ok" id="su-join-note" hidden></p>
+      <label for="su-email">Email</label>
+      <input id="su-email" type="email" required autocomplete="email" placeholder="you@example.com">
+      <label for="su-user">Username (shown in chat)</label>
+      <input id="su-user" type="text" required minlength="2" maxlength="24" pattern="[A-Za-z0-9_\-]+" autocomplete="username" placeholder="letters, numbers, - or _">
+      <label for="su-pass">Password (10+ characters)</label>
+      <input id="su-pass" type="password" required minlength="10" autocomplete="new-password">
+      <div id="su-invite-wrap" hidden><label for="su-invite">Invite code</label>
+      <input id="su-invite" type="text" autocomplete="off" placeholder="from the person who invited you">
+      <p class="sub ct-note">No invite code? <a href="/?topic=invite#contact">Ask us for one</a>. We reply by email.</p></div>
+      <button class="btn primary wide" type="submit">Continue</button>
+      <div class="msg" id="su-msg"></div>
+      <div class="alt">Already have an account? <a href="/login">Log in</a></div>
+    </form>
+  </section>
+
+  <!-- ── Log in ───────────────────────────────────────────────────── -->
+  <section class="view" data-view="/login">
+    <form class="form" id="login-form" autocomplete="on">
+      <h2>Log in</h2>
+      <p class="sub">Welcome back.</p>
+      <label for="li-email">Email or username</label>
+      <input id="li-email" type="text" required autocomplete="username">
+      <label for="li-pass">Password</label>
+      <input id="li-pass" type="password" required autocomplete="current-password">
+      <div id="li-mfa" hidden><label for="li-code">Two-factor code</label><input id="li-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 or a recovery code">
+        <label class="check"><input type="checkbox" id="li-remember"> Remember this device for 30 days</label></div>
+      <button class="btn primary wide" type="submit">Log in</button>
+      <div class="msg" id="li-msg"></div>
+      <div class="alt">New here? <a href="/signup">Create an account</a> · <a href="/forgot">Forgot password?</a></div>
+    </form>
+  </section>
+
+  <!-- ── Forgot / reset password (T-0008) ───────────────────────── -->
+  <section class="view" data-view="/forgot">
+    <form class="form" id="forgot-form"><h2>Forgot password</h2><p class="sub">We'll email you a link that works for 30 minutes.</p>
+      <label for="fg-email">Email or username</label><input id="fg-email" type="text" required autocomplete="username">
+      <button class="btn primary wide" type="submit">Send reset link</button><div class="msg" id="fg-msg"></div>
+      <div class="alt"><a href="/login">Back to log in</a></div></form>
+  </section>
+  <section class="view" data-view="/reset">
+    <form class="form" id="reset-form"><h2>New password</h2><p class="sub">Choose a new password for your account.</p><div id="rs-mfa" hidden><label for="rs-code">Two-factor code</label><input id="rs-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 or a recovery code"></div>
+      <label for="rs-pass">New password (10+ characters)</label><input id="rs-pass" type="password" required minlength="10" autocomplete="new-password">
+      <button class="btn primary wide" type="submit">Set password and log in</button><div class="msg" id="rs-msg"></div></form>
+  </section>
+
+  <!-- ── Billing / account ────────────────────────────────────────── -->
+  <section class="view" data-view="/billing">
+    <div class="form" id="billing-box">
+      <h2>Your account</h2>
+      <p class="sub" id="bi-sub">Loading…</p>
+      <dl class="status" id="bi-status"></dl>
+      <div id="bi-actions" class="stack"></div>
+      <div class="msg" id="bi-msg"></div>
+      <h2 class="sec" id="workspace">Workspace</h2>
+      <p class="sub" id="ws-sub"></p>
+      <dl class="status" id="ws-status"></dl>
+      <div id="ws-members"></div>
+      <div id="ws-actions"></div>
+      <div class="msg" id="ws-msg"></div>
+      <h2 class="sec">Notifications</h2>
+      <p class="sub" id="pn-sub">Get a notification on this device when someone mentions you or sends you a direct message. On iPhone, first add Chamber to your home screen (Share → Add to Home Screen), then open it from there.</p>
+      <button class="btn ghost" id="pn-enable" type="button">Enable on this device</button> <button class="btn ghost" id="pn-clear" type="button" hidden>Turn off everywhere</button>
+      <div class="msg" id="pn-msg"></div>
+      <h2 class="sec">Security</h2>
+      <form id="pw-form"><label for="pw-cur">Current password</label><input id="pw-cur" type="password" autocomplete="current-password" required>
+        <label for="pw-new">New password (10+ characters)</label><input id="pw-new" type="password" autocomplete="new-password" minlength="10" required>
+        <button class="btn ghost" type="submit">Change password</button><div class="msg" id="pw-msg"></div></form>
+      <div id="tf-box" class="box"><b>Two-factor authentication</b> <span class="pill" id="tf-state">…</span>
+        <p class="sub" id="tf-sub">A code from an authenticator app (Aegis, Google Authenticator, 1Password, iOS Passwords) is required at sign-in and for password resets.</p>
+        <div id="tf-actions"></div><div class="msg" id="tf-msg"></div></div>
+      <div class="sec-block"><button class="btn ghost" type="button" id="so-all">Sign out everywhere else</button> <span class="meta" id="so-sub">Ends every other session of this account; this device stays signed in.</span><div class="msg" id="so-msg"></div></div>
+      <div id="login-hist" class="meta meta-block"></div>
+      <form id="em-form" class="sec-block"><label for="em-new">New email</label><input id="em-new" type="email" autocomplete="email" required>
+        <label for="em-pw">Your password</label><input id="em-pw" type="password" autocomplete="current-password" required>
+        <button class="btn ghost" type="submit">Change email</button><div class="msg" id="em-msg"></div></form>
+      <div id="danger-box">
+        <h2 class="sec">Your data</h2>
+        <p class="sub" id="exp-sub">Download everything in your workspace as one JSON file, or delete your account.</p>
+        <a class="btn ghost" id="exp-btn" href="/account/export" hidden>Export workspace</a>
+        <div id="imp-wrap" hidden style="margin-top:10px">
+          <input type="file" id="imp-file" accept="application/json,.json" style="display:none">
+          <button class="btn ghost" type="button" id="imp-btn">Import workspace…</button>
+          <div id="imp-out" class="sub" style="margin-top:6px"></div>
+        </div>
+        <form id="del-form" class="sec-block"><label for="del-pw">Password</label><input id="del-pw" type="password" autocomplete="current-password" required>
+          <label for="del-confirm">Type your username to confirm</label><input id="del-confirm" type="text" autocomplete="off" required>
+          <button class="btn danger" type="submit">Delete my account</button>
+          <div class="msg" id="del-msg"></div></form>
+      </div>
+      <div id="pol-box" hidden>
+        <h2 class="sec">Agent rules</h2>
+        <p class="sub">Who may give instructions to the AI agents in this workspace? Agents refuse everyone else. Changes they cannot make themselves are proposed as tickets for a human to approve.</p>
+        <label class="check"><input type="radio" name="pol" value="owner" id="pol-owner"> Only the owner</label>
+        <label class="check"><input type="radio" name="pol" value="members" id="pol-members"> Every human member of the workspace</label>
+        <div class="msg" id="pol-msg"></div>
+        <h2 class="sec" id="audit">Activity &amp; audit</h2>
+        <p class="sub">Who did what in this workspace: agent writes and administrative actions by people, newest first. Each entry carries a request id you can quote to support.</p>
+        <div class="inline-form"><input id="au-q" placeholder="search (action, ticket, room…)" style="flex:1 1 160px"><select id="au-actor" style="flex:0 1 160px"><option value="">everyone</option></select><button class="btn ghost" type="button" id="au-go">Filter</button><span id="au-export" style="display:none"><a class="btn ghost sm" id="au-csv" href="/account/workspace/audit?format=csv">Export CSV</a> <a class="btn ghost sm" id="au-json" href="/account/workspace/audit?format=json">JSON</a></span></div>
+        <div id="audit-list"></div><p class="sub" id="au-count"></p>
+      </div>
+      <div id="tok-box" hidden>
+        <h2 class="sec" id="agents">AI agents</h2>
+        <p class="sub">Each AI agent (Claude Code on a Pi, a server, your laptop) gets its own token. It posts in this workspace as the username you choose. The token is shown once.</p>
+        <div id="tok-list"></div>
+        <div class="inline-form"><input id="tok-name" placeholder="Token name, e.g. Pi Claude" maxlength="48" style="flex:1 1 140px"><input id="tok-user" placeholder="agent username" maxlength="24" style="flex:1 1 120px"><button class="btn ghost" id="tok-create">Create token</button></div>
+        <div class="msg" id="tok-msg"></div>
+        <p class="sub sec-block"><b>Pair a device instead</b> (no copying): on the device run <code>curl -fsSL https://chamber.ghostporttechnologies.com/agent/chamber-agent.py -o chamber-agent.py</code> and then <code>python3 chamber-agent.py --pair https://chamber.ghostporttechnologies.com</code>, then enter the 6-digit code it shows.</p>
+        <div class="inline-form"><input id="pair-code" inputmode="numeric" placeholder="6-digit code" maxlength="7" style="flex:0 1 120px"><input id="pair-name" placeholder="Name, e.g. Pi Claude" maxlength="48" style="flex:1 1 140px"><input id="pair-user" placeholder="agent username" maxlength="24" style="flex:1 1 140px"><button class="btn ghost" type="button" id="pair-go">Pair</button></div>
+        <div class="msg" id="pair-msg"></div>
+        <pre id="tok-show" class="code" hidden></pre>
+        <div id="ai-setup" class="sec-block" hidden>
+          <h3 class="sub-h">Connect your AI</h3>
+          <p class="sub">Pick your model and copy the setup. Your provider API key stays on your machine &mdash; <b>Chamber never sees it</b>.</p>
+          <div class="inline-form">
+            <select id="ai-provider" style="flex:0 1 190px">
+              <option value="openai">OpenAI</option>
+              <option value="claude">Claude Code (local CLI)</option>
+              <option value="groq">Groq</option>
+              <option value="together">Together</option>
+              <option value="mistral">Mistral</option>
+              <option value="gemini">Google Gemini</option>
+              <option value="ollama">Ollama (local, no key)</option>
+            </select>
+            <input id="ai-model" placeholder="model" style="flex:1 1 170px">
+            <input id="ai-url" placeholder="base URL" style="flex:1 1 190px">
+          </div>
+          <div class="inline-form">
+            <input id="ai-rooms" placeholder="rooms to watch" value="general" style="flex:1 1 150px">
+            <input id="ai-commander" placeholder="who may instruct it (username)" style="flex:1 1 200px">
+            <button class="btn ghost" type="button" id="ai-copy">Copy setup</button>
+          </div>
+          <!-- T-0130/T-0131: reaching this machine from a phone is part of the same copy-paste, not a separate kit. -->
+          <div class="inline-form">
+            <label style="display:flex;align-items:center;gap:6px;flex:0 1 auto"><input type="checkbox" id="ai-phone" checked> Reach this machine from my phone</label>
+            <input id="ai-folder" placeholder="folder it may work in (e.g. /home/you/project)" style="flex:1 1 260px">
+            <select id="ai-can" style="flex:0 1 190px" aria-label="What the phone AI may do">
+              <option value="readonly">Phone AI: look only</option>
+              <option value="folder">Phone AI: change that folder</option>
+              <option value="full">Phone AI: no limit</option>
+            </select>
+          </div>
+          <p class="sub"><b>Look only</b> is the default: the phone AI can read and answer, and cannot change anything. <b>Change that folder</b> lets it edit files inside the one folder you name. <b>No limit</b> lets it do anything the agent's own account can do on that machine; choose it only for a machine you would hand over to that AI.</p>
+          <pre id="ai-config" class="code"></pre>
+        </div>
+      </div>
+      <div id="auto-box" hidden>
+        <h2 class="sec" id="automation">Automation</h2>
+        <p class="sub">Schedules post a message as you at the set time; mention an agent and it answers like any request ("@server-claude post the patch posture"). Webhooks let another tool post into a room by itself: your build system, GitHub, an alert system or a script sends a short note to a private web address we give you, and it shows up as a message in the room, with an optional instruction for an agent.</p>
+        <h3 class="sub-h">Schedules</h3><div id="sch-list"></div>
+        <div class="inline-form"><select id="sch-preset" style="flex:0 1 150px"><option value="daily">daily at</option><option value="weekdays">weekdays at</option><option value="hourly">hourly</option><option value="every15">every 15 min</option><option value="cron">custom cron</option></select><input id="sch-time" type="time" value="07:00" style="flex:0 1 110px"><input id="sch-cron" placeholder="30 7 * * 1-5" style="flex:0 1 140px;display:none"><input id="sch-tz" placeholder="time zone" style="flex:0 1 180px"><select id="sch-room" style="flex:0 1 140px"></select></div>
+        <div class="inline-form"><input id="sch-text" placeholder="@agent-name what should it do?" maxlength="2000" style="flex:1 1 260px"><button class="btn ghost" type="button" id="sch-add">Add schedule</button></div>
+        <div class="inline-form"><button class="btn ghost sm" type="button" id="sch-digest">Add a daily digest at 08:00</button><span class="meta">Every morning an agent posts, in plain words, what the agents did yesterday and what waits for you.</span></div>
+        <div class="msg" id="sch-msg"></div>
+        <h3 class="sub-h">Webhooks</h3><div id="hk-list"></div>
+        <div class="inline-form"><input id="hk-name" placeholder="Name, e.g. GitHub CI" maxlength="48" style="flex:0 1 160px"><select id="hk-room" style="flex:0 1 140px"></select><input id="hk-bot" placeholder="post as, e.g. github (optional)" maxlength="24" style="flex:0 1 170px" title="Deliveries appear from this bot name. Leave empty to post as you; a webhook with an instruction for an agent always posts as you."><input id="hk-instr" placeholder="optional: @agent-name summarise this" maxlength="500" style="flex:1 1 220px"><button class="btn ghost" type="button" id="hk-add">Add webhook</button></div>
+        <div class="msg" id="hk-msg"></div>
+        <h3 class="sub-h">Mirrors</h3><p class="sub">Forward everything posted in a room to Slack (incoming webhook URL), Discord (channel webhook URL) or your own https endpoint (JSON). Messages that arrived through a webhook are not forwarded again.</p><div id="mr-list"></div>
+        <div class="inline-form"><select id="mr-room" style="flex:0 1 140px"></select><select id="mr-kind" style="flex:0 1 120px"><option value="slack">Slack</option><option value="discord">Discord</option><option value="generic">JSON endpoint</option></select><input id="mr-url" type="url" placeholder="https://hooks.slack.com/services/…" style="flex:1 1 260px"><button class="btn ghost" type="button" id="mr-add">Add mirror</button></div>
+        <div class="msg" id="mr-msg"></div><pre id="hk-show" class="code" hidden></pre>
+      </div>
+      <div class="alt"><a href="#" id="bi-logout">Log out</a></div>
+    </div>
+  </section>
+
+</main>
+
+<footer role="contentinfo"><div class="wrap">
+  <span>© 2026 GhostPort Technologies</span>
+  <span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refunds">Refunds</a> · <a href="/help">Help</a> · <a href="/?topic=question#contact">Contact</a> · <a href="/changelog">Changelog</a> · <a href="/source">Source code of this version (AGPL-3.0)</a> · <a href="https://github.com/GhostPortTechnologies/Chamber" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.ghostporttechnologies.com" target="_blank" rel="noopener">ghostporttechnologies.com</a></span>
+</div></footer>
+
+<script src="/theme.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  if (window.ChamberTheme) {                                              // 2026-11-13: the same colour (RGB included) and theme as in the app, with a settings wheel to change them here
+    ChamberTheme.init({ server: false }); ChamberTheme.wirePref('theme', 'chamber-theme', 'dark', 'theme-mode');
+    const menu = $('menu'), gear = $('gear-btn'), openMenu = on => { menu.classList.toggle('open', on); gear.setAttribute('aria-expanded', String(on)); if (on) ChamberTheme.mark(); };
+    gear.addEventListener('click', () => openMenu(!menu.classList.contains('open')));
+    document.addEventListener('click', e => { if (!e.target.closest('.menu-wrap')) openMenu(false); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') openMenu(false); });
+  }
+  const path = location.pathname.replace(/\/$/, '') || '/';
+  const joinCode = (path.match(/^\/join\/([A-Za-z0-9_-]{8,})$/) || [])[1] || null;
+  const resetToken = (path.match(/^\/reset\/([A-Za-z0-9_-]{8,})$/) || [])[1] || null;
+  const view = joinCode ? '/signup' : resetToken ? '/reset' : ['/signup', '/login', '/billing', '/account', '/forgot'].includes(path) ? (path === '/account' ? '/billing' : path) : '/';
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.dataset.view === view));
+  if (location.hash && view === '/') setTimeout(() => document.querySelector(location.hash)?.scrollIntoView(), 0);
+
+  const api = async (url, body) => {
+    const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+    let d = {}; try { d = await r.json(); } catch {}
+    if (!r.ok) throw new Error(d.error || `Error ${r.status}`);
+    return d;
+  };
+  const show = (el, text, cls) => { el.textContent = text; el.className = 'msg ' + (cls || ''); };
+  const busy = (form, on) => form.querySelectorAll('button').forEach(b => b.disabled = on);
+
+  // Who is signed in? Adjust the header; redirect paid users on the forms.
+  let me = null;
+  const whoami = async () => { try { me = await api('/account/me'); } catch { me = null; } };
+
+  const renderNav = () => {
+    if (!me) return;
+    $('nav-login').textContent = 'Account'; $('nav-login').href = '/billing';
+    $('nav-features').hidden = true; $('nav-pricing').hidden = true; if ($('nav-contact')) $('nav-contact').hidden = true;   // T-0092: / redirects signed-in users to /app, so #features/#pricing are dead here
+    $('nav-signup').textContent = me.entitled ? 'Open Chamber' : 'Subscribe';
+    $('nav-signup').href = me.entitled ? '/app' : '/billing';
+  };
+
+  const fmtDate = s => s ? new Date(s * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+  const renderBilling = () => {
+    if (!me) { location.replace('/login'); return; }
+    const done = new URLSearchParams(location.search).get('done') === '1';
+    const st = $('bi-status'), act = $('bi-actions');
+    const status = me.selfHosted ? 'Self-hosted: no subscription needed'
+      : me.role === 'admin' ? 'Admin (no subscription needed)'
+      : me.billing?.trialPending ? 'Free trial: confirm your email to start'
+      : me.billing?.trial ? `Free trial, ${Math.max(0, Math.ceil((me.billing.trialEndsAt - Date.now()) / 86400e3))} days left`
+      : me.billing?.trialOver ? 'Free trial ended'
+      : me.entitled ? (me.cancelAtPeriodEnd ? 'Active, cancels ' + fmtDate(me.periodEnd) : 'Active, renews ' + fmtDate(me.periodEnd))
+      : me.subStatus === 'past_due' ? 'Payment failed, update your card'
+      : me.subStatus ? 'Expired' : 'No subscription yet';
+    const tb = me.billing || {}, trialish = (tb.trial || tb.trialOver) && !done;      // T-0159
+    $('bi-sub').textContent = tb.trialPending ? 'Open the link we emailed you to start your free trial.'
+      : tb.trial ? 'You are on the free trial. Subscribe any time to keep working here after it ends.'
+      : tb.trialOver ? 'Your free trial has ended. Your workspace is read-only until you subscribe. Nothing was deleted.'
+      : me.entitled ? 'You have access to Chamber.' : (done ? 'Thanks! Confirming your payment…' : 'Subscribe to enter Chamber.');
+    st.innerHTML = `<dt>Username</dt><dd>${esc(me.username)}</dd><dt>Email</dt><dd>${esc(me.email)}</dd>
+      <dt>Plan</dt><dd>${esc(me.price)}</dd><dt>Status</dt><dd><span class="pill ${me.entitled ? 'on' : 'off'}">${esc(status)}</span></dd>`;
+    act.innerHTML = '';
+    const vq = new URLSearchParams(location.search).get('verified');                      // T-0032
+    if (vq === '1') act.insertAdjacentHTML('beforeend', '<p class="msg ok">Email confirmed. Thanks!</p>');
+    if (vq === '0') act.insertAdjacentHTML('beforeend', '<p class="msg err">That confirmation link is invalid or expired. Use "Resend" below.</p>');
+    if (me.needsTotp) act.insertAdjacentHTML('beforeend', '<p class="msg err">You own agent tokens that can read your servers. Turn on <a href="#tf-box">two-factor authentication</a> below.</p>');   // T-0040
+    if (me.emailVerified === false) act.insertAdjacentHTML('beforeend', `<p class="msg err" id="vf-box">Confirm your email: we sent a link to <b>${esc(me.email)}</b>. If it is not in your inbox, look in spam. ${me.billing?.trialPending ? 'Your free trial starts when you open that link.' : 'Until then you can use the app but cannot subscribe, invite or create agent tokens.'} <a href="#" id="vf-resend">Resend the link</a></p>`);
+    if (me.entitled) act.insertAdjacentHTML('beforeend', '<a class="btn primary" href="/app">Open Chamber</a>');
+    if (me.entitled && trialish && tb.isPayer) act.insertAdjacentHTML('beforeend', ' <button class="btn" id="bi-sub-btn">Subscribe: $49 / year</button>');
+    if (me.entitled || tb.trialPending) {}                                            // nothing more to offer: already in, or waiting on the email link
+    else if (me.workspace && me.workspace.role !== 'owner') act.insertAdjacentHTML('beforeend', `<p class="msg err">Your workspace's owner (${esc(me.workspace.owner)}) needs an active subscription for you to get in.</p>`);
+    else act.insertAdjacentHTML('beforeend', '<button class="btn primary" id="bi-sub-btn">Subscribe: $49 / year</button>');
+    if (me.hasCustomer && !me.selfHosted) act.insertAdjacentHTML('beforeend', '<button class="btn ghost" id="bi-portal">Manage billing / cancel</button>');
+    const sg = me.storage;                                                               // storage add-on (only when the server offers it)
+    if (sg && (sg.canChange || sg.packs)) {
+      const opts = Array.from({ length: sg.maxPacks + 1 }, (_, n) => `<option value="${n}"${n === sg.packs ? ' selected' : ''}>${n === 0 ? 'No extra storage' : '+' + n * sg.packGb + ' GB'}</option>`).join('');
+      act.insertAdjacentHTML('beforeend', `<div id="sg-box"><p class="sub"><b>File storage.</b> Your workspace has ${sg.baseMb} MB for files${sg.packs ? `, plus ${sg.packs * sg.packGb} GB extra` : ''}. Extra storage comes in packs of ${sg.packGb} GB, ${esc(sg.label)} each, shared by everyone in the workspace.</p>`
+        + (sg.canChange ? `<label for="sg-packs">Extra storage</label><select id="sg-packs">${opts}</select><button class="btn" id="sg-save">Change storage</button>
+          <div id="sg-confirm" hidden><p class="sub" id="sg-what"></p><div id="sg-pw-wrap"><label for="sg-pw">Your password, to confirm the charge</label><input id="sg-pw" type="password" autocomplete="current-password"></div>
+          <button class="btn primary" id="sg-yes"></button> <button class="btn ghost" id="sg-no">Cancel</button></div>`
+          : `<p class="sub">${sg.isPayer ? 'Storage can be changed while your subscription is active and not set to cancel.' : 'Only the workspace owner can change storage.'}</p>`) + '</div>');
+    }
+    $('sg-packs')?.addEventListener('change', () => { $('sg-confirm').hidden = true; });
+    $('sg-save')?.addEventListener('click', () => {                                        // nothing is sent yet: first say exactly what will happen
+      const n = parseInt($('sg-packs').value, 10), up = n > sg.packs;
+      if (n === sg.packs) { $('sg-confirm').hidden = true; show($('bi-msg'), 'Pick a different amount first.', 'err'); return; }
+      $('sg-what').textContent = up ? `Add ${(n - sg.packs) * sg.packGb} GB of storage? Your card on file is charged now for the rest of your current year: a part of ${sg.label} for each ${sg.packGb} GB pack. After that it renews with your subscription at ${sg.label} per pack.`
+        : `Reduce extra storage to ${n * sg.packGb} GB? The unused part of what you paid comes off your next bill. No files are deleted, but nobody can add new files while the workspace is over its limit.`;
+      $('sg-pw-wrap').hidden = !up; $('sg-yes').textContent = up ? 'Yes, add it and charge my card' : 'Yes, reduce it'; $('sg-confirm').hidden = false; show($('bi-msg'), ''); if (up) $('sg-pw').focus();
+    });
+    $('sg-no')?.addEventListener('click', () => { $('sg-confirm').hidden = true; $('sg-packs').value = String(sg.packs); });
+    $('sg-yes')?.addEventListener('click', async e => {
+      const n = parseInt($('sg-packs').value, 10), up = n > sg.packs;
+      if (up && !$('sg-pw').value) { show($('bi-msg'), 'Type your password to confirm the charge.', 'err'); $('sg-pw').focus(); return; }
+      e.target.disabled = true; show($('bi-msg'), 'Updating your storage…');
+      try { me = await api('/billing/storage', up ? { packs: n, password: $('sg-pw').value } : { packs: n }); renderBilling(); show($('bi-msg'), 'Storage updated. We sent a confirmation to your email.', 'ok'); }
+      catch (err) { show($('bi-msg'), err.message, 'err'); e.target.disabled = false; }
+    });
+    $('bi-sub-btn')?.addEventListener('click', async e => {
+      e.target.disabled = true; show($('bi-msg'), 'Opening secure checkout…');
+      try { const d = await api('/billing/checkout', {}); location.href = d.url; }
+      catch (err) { show($('bi-msg'), err.message, 'err'); e.target.disabled = false; }
+    });
+    $('vf-resend')?.addEventListener('click', async e => {                                  // T-0032
+      e.preventDefault(); e.target.textContent = 'Sending…';
+      try { await api('/account/verify-resend', {}); e.target.textContent = 'Sent again just now. Check your inbox and your spam folder.'; }   // 2026-11-12: say so right where the person tapped
+      catch (err) { e.target.textContent = 'Resend the link'; $('vf-box').insertAdjacentHTML('beforeend', ' <b>' + esc(err.message) + '</b>'); }
+    });
+    $('bi-portal')?.addEventListener('click', async e => {
+      e.target.disabled = true;
+      try { const d = await api('/billing/portal', {}); location.href = d.url; }
+      catch (err) { show($('bi-msg'), err.message, 'err'); e.target.disabled = false; }
+    });
+  };
+  let importWired = false, pendingImport = null;                              // T-0079: workspace import
+  const wireImport = () => {
+    if (importWired) return; importWired = true;
+    const fileEl = $('imp-file'), out = $('imp-out');
+    $('imp-btn').addEventListener('click', () => fileEl.click());
+    fileEl.addEventListener('change', async () => {
+      const f = fileEl.files[0]; if (!f) return;
+      out.className = 'sub'; out.textContent = 'Reading…';
+      let data; try { data = JSON.parse(await f.text()); } catch { show(out, 'That file is not valid JSON.', 'err'); fileEl.value = ''; return; }
+      pendingImport = data;
+      try {
+        const d = await api('/account/import', { export: data, dryRun: true });
+        const c = d.counts || {};
+        const summary = `${c.messages || 0} messages, ${c.rooms || 0} rooms, ${c.tickets || 0} tickets, ${c.reviews || 0} reviews, ${c.files || 0} files`;
+        if (!d.empty) { show(out, (d.conflict || 'This workspace already has data; import only into an empty workspace.')); out.className = 'sub err'; pendingImport = null; }
+        else { out.className = 'sub'; out.innerHTML = `Ready to import ${esc(summary)}${d.from && d.from.name ? ' from “' + esc(d.from.name) + '”' : ''}. <button class="btn" type="button" id="imp-go">Import now</button>`; $('imp-go').addEventListener('click', doImport); }
+      } catch (err) { show(out, err.message || 'Could not read that export.', 'err'); pendingImport = null; }
+      fileEl.value = '';
+    });
+  };
+  const doImport = async () => {
+    if (!pendingImport) return;
+    const out = $('imp-out'); const go = $('imp-go'); if (go) go.disabled = true; out.className = 'sub'; out.textContent = 'Importing…';
+    try { const d = await api('/account/import', { export: pendingImport }); const c = d.counts || {};
+      show(out, `Imported ${c.messages || 0} messages, ${c.tickets || 0} tickets. ${c.files || 0} file reference(s) — attachment bytes aren’t carried by the export; restore the backup’s files/ folder to serve them. Reload to see your chat.`, 'ok'); pendingImport = null;
+    } catch (err) { show(out, err.message || 'Import failed.', 'err'); }
+  };
+  const renderWorkspace = async () => {
+    let w; try { w = await api('/account/workspace'); } catch { return; }
+    const owner = w.role === 'owner'; const canManage = !!w.canManage;                         // T-0034
+    if (owner) { $('exp-btn').hidden = false; $('exp-sub').textContent = 'Download everything in your workspace as one JSON file. Deleting your account deletes the workspace, cancels the subscription, and gives each member an empty workspace of their own.'; $('imp-wrap').hidden = false; wireImport(); }
+    else $('exp-sub').textContent = 'Deleting your account removes you from this workspace. The workspace and its content belong to its owner.';
+    $('ws-sub').textContent = owner ? 'You own this workspace. Invite teammates with the link below; they share your subscription.' : `Owned by ${w.owner}. Everything here is private to this workspace.`;
+    $('ws-status').innerHTML = `<dt>Name</dt><dd>${esc(w.name)}${canManage ? ' <a href="#" id="ws-rename">rename</a>' : ''}</dd><dt>Members</dt><dd>${w.members.length}</dd>`
+      + (canManage ? `<dt>Invite link</dt><dd class="wrap-any"><code id="ws-invite">${esc(w.inviteUrl)}</code><div class="inline-form"><button class="btn ghost sm" id="ws-copy">Copy</button><button class="btn ghost sm" id="ws-reset">New link</button></div></dd>` : '');
+    const ago = (t) => !t ? 'never active' : (Date.now() - t < 120e3 ? 'active now' : Date.now() - t < 36e5 ? `active ${Math.round((Date.now() - t) / 6e4)} min ago` : Date.now() - t < 864e5 ? `active ${Math.round((Date.now() - t) / 36e5)} h ago` : `active ${Math.round((Date.now() - t) / 864e5)} d ago`);   // T-0034
+    $('ws-members').innerHTML = w.members.map(mm => `<div class="row-item"><span>${esc(mm.username)} <span class="pill ${mm.role === 'owner' ? 'on' : ''}">${mm.role}</span>${mm.chatRole === 'ai' ? ' <span class="pill">ai</span>' : ''} <span class="meta">${ago(mm.lastSeen)}</span></span><span class="row-actions">${owner && mm.role === 'member' && mm.chatRole !== 'ai' ? `<a href="#" data-role="${esc(mm.username)}" data-to="admin">make admin</a>` : ''}${owner && mm.role === 'admin' ? `<a href="#" data-role="${esc(mm.username)}" data-to="member">make member</a>` : ''}${owner && mm.role !== 'owner' && mm.chatRole !== 'ai' ? `<a href="#" data-transfer="${esc(mm.username)}">transfer ownership</a>` : ''}${canManage && mm.role !== 'owner' && (owner || mm.role === 'member') ? `<a href="#" data-remove="${esc(mm.username)}" class="danger">remove</a>` : ''}</span></div>`).join('');
+    $('ws-actions').innerHTML = owner ? `<label for="ws-ret">Keep messages</label><select id="ws-ret" style="max-width:260px">${[[0, 'forever (default)'], [30, '30 days'], [90, '90 days'], [365, '1 year']].map(([v, l]) => `<option value="${v}" ${(w.retentionDays || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}</select><p class="sub meta-block">Older messages and their files are deleted for good once an hour. Export first if you need them.</p>` : '';   // T-0037
+    $('ws-ret')?.addEventListener('change', async e => { try { await api('/account/workspace', { retentionDays: Number(e.target.value) }); show($('ws-msg'), Number(e.target.value) ? `Messages older than ${e.target.value} days will be deleted hourly.` : 'Messages are kept forever.', 'ok'); } catch (err) { show($('ws-msg'), err.message, 'err'); } });
+    document.querySelectorAll('[data-role]').forEach(a => a.addEventListener('click', async e => { e.preventDefault();                    // T-0034
+      try { await api('/account/workspace/role', { username: a.dataset.role, role: a.dataset.to }); show($('ws-msg'), `${a.dataset.role} is now ${a.dataset.to}.`, 'ok'); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }));
+    document.querySelectorAll('[data-transfer]').forEach(a => a.addEventListener('click', async e => { e.preventDefault(); const u = a.dataset.transfer;
+      if (a.textContent !== 'confirm transfer') { a.textContent = 'confirm transfer'; show($('ws-msg'), `Transfer makes ${u} the owner: the subscription and its card move to them (Stripe is told), you stay as an admin. Click again to confirm.`, 'err'); return; }
+      $('ws-msg').innerHTML = `<form id="tr-form" class="inline-form"><input id="tr-pw" type="password" autocomplete="current-password" placeholder="Your password, to confirm" required><button class="btn primary" type="submit">Transfer to ${esc(u)}</button><button class="btn ghost" type="button" id="tr-cancel">Cancel</button></form>`;   // T-0066: no window.prompt
+      $('tr-pw').focus(); $('tr-cancel').onclick = () => renderWorkspace();
+      $('tr-form').onsubmit = async ev => { ev.preventDefault();
+        try { const d = await api('/account/workspace/transfer', { username: u, password: $('tr-pw').value }); show($('ws-msg'), `${d.owner} now owns this workspace${d.subscriptionMoved ? ' and its subscription' : ''}.`, 'ok'); me = await api('/account/me'); renderBilling(); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }; }));
+    $('ws-rename')?.addEventListener('click', async e => { e.preventDefault(); const name = window.prompt ? null : null; const input = document.createElement('input'); input.value = w.name; input.maxLength = 48; e.target.replaceWith(input); input.focus();
+      input.addEventListener('keydown', async ev => { if (ev.key === 'Enter') { try { await api('/account/workspace', { name: input.value }); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } } if (ev.key === 'Escape') renderWorkspace(); }); });
+    $('ws-copy')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(w.inviteUrl); show($('ws-msg'), 'Invite link copied.', 'ok'); } catch { show($('ws-msg'), 'Select the link and copy it.', 'err'); } });
+    $('ws-reset')?.addEventListener('click', async () => { try { await api('/account/workspace/invite-reset', {}); show($('ws-msg'), 'Old invite link no longer works.', 'ok'); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } });
+    document.querySelectorAll('[data-remove]').forEach(a => a.addEventListener('click', async e => { e.preventDefault(); const u = a.dataset.remove;
+      if (a.textContent !== 'confirm remove') { a.textContent = 'confirm remove'; return; }
+      try { await api('/account/workspace/remove', { username: u }); show($('ws-msg'), `${u} removed.`, 'ok'); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }));
+  };
+  $('pw-form')?.addEventListener('submit', async e => { e.preventDefault(); busy(e.target, true);
+    try { await api('/account/password', { current: $('pw-cur').value, password: $('pw-new').value }); show($('pw-msg'), 'Password changed. Other devices were logged out.', 'ok'); e.target.reset(); }
+    catch (err) { show($('pw-msg'), err.message, 'err'); } busy(e.target, false); });
+  $('em-form')?.addEventListener('submit', async e => { e.preventDefault(); busy(e.target, true);
+    try { const d = await api('/account/email', { email: $('em-new').value, password: $('em-pw').value }); show($('em-msg'), `Email changed to ${d.email}.`, 'ok'); e.target.reset(); }
+    catch (err) { show($('em-msg'), err.message, 'err'); } busy(e.target, false); });
+  $('del-form')?.addEventListener('submit', async e => { e.preventDefault(); busy(e.target, true);
+    try { await api('/account/delete', { password: $('del-pw').value, confirm: $('del-confirm').value }); location.href = '/'; }
+    catch (err) { show($('del-msg'), err.message, 'err'); busy(e.target, false); } });
+  const renderTotp = async () => {                                                             // T-0040
+    let st; try { st = await api('/account/totp'); } catch { $('tf-state').textContent = '\u2014'; $('tf-state').className = 'pill'; return; }   // T-0092: never leave the pill on …
+    $('tf-state').textContent = st.enabled ? 'on' : 'off'; $('tf-state').className = 'pill ' + (st.enabled ? 'on' : 'off');
+    const a = $('tf-actions');
+    if (!st.enabled) {
+      a.innerHTML = '<button class="btn ghost" type="button" id="tf-start">Turn on two-factor</button>';
+      $('tf-start').onclick = async () => {
+        try { const d = await api('/account/totp/setup', {});
+          a.innerHTML = `<p class="sub">1. Add Chamber to your authenticator app: <a href="${d.otpauth}">open in app</a> (on a phone) or enter this key by hand:</p><p class="wrap-any"><code>${d.secret.match(/.{1,4}/g).join(' ')}</code></p>`
+            + '<p class="sub">2. Enter the 6-digit code it shows:</p><div class="inline-form"><input id="tf-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" style="max-width:160px"> <button class="btn primary" type="button" id="tf-confirm">Confirm</button></div>';
+          $('tf-confirm').onclick = async () => { try { const r = await api('/account/totp/confirm', { code: $('tf-code').value });
+              a.innerHTML = `<p class="msg ok">${r.message}</p><pre class="code select-all">${r.recoveryCodes.join('\n')}</pre><button class="btn ghost" type="button" id="tf-done">I saved them</button>`;
+              $('tf-state').textContent = 'on'; $('tf-state').className = 'pill on'; $('tf-done').onclick = renderTotp; } catch (err) { show($('tf-msg'), err.message, 'err'); } };
+        } catch (err) { show($('tf-msg'), err.message, 'err'); } };
+    } else {
+      a.innerHTML = `<p class="sub">Recovery codes left: ${st.recoveryLeft} · remembered devices: ${st.devices}</p><form id="tf-off"><label for="tf-pw">Password</label><input id="tf-pw" type="password" autocomplete="current-password" required><label for="tf-off-code">Current code or a recovery code</label><input id="tf-off-code" type="text" inputmode="numeric" autocomplete="one-time-code" required><button class="btn danger" type="submit">Turn off two-factor</button></form>`;
+      $('tf-off').onsubmit = async e => { e.preventDefault(); try { const r = await api('/account/totp/disable', { password: $('tf-pw').value, code: $('tf-off-code').value }); show($('tf-msg'), r.message, 'ok'); renderTotp(); } catch (err) { show($('tf-msg'), err.message, 'err'); } };
+    }
+  };
+  const renderPush = async () => {
+    if (!me) return;
+    let st; try { st = await api('/account/push'); } catch { return; }
+    if (st.subscriptions) { $('pn-clear').hidden = false; show($('pn-msg'), `Enabled on ${st.subscriptions} device(s).`, 'ok'); }
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) { $('pn-enable').disabled = true; show($('pn-msg'), 'This browser does not support push notifications. On iPhone, add Chamber to the home screen first.', 'err'); }
+    $('pn-enable').onclick = async () => {
+      try {
+        const perm = await Notification.requestPermission(); if (perm !== 'granted') { show($('pn-msg'), 'Notifications were not allowed.', 'err'); return; }
+        const reg = await navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready;
+        const raw = atob(st.publicKey.replace(/-/g, '+').replace(/_/g, '/')); const key = new Uint8Array([...raw].map(c => c.charCodeAt(0)));
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+        const d = await api('/account/push', { subscription: sub.toJSON() });
+        $('pn-clear').hidden = false; show($('pn-msg'), `Enabled on ${d.subscriptions} device(s). You'll be notified for mentions and direct messages.`, 'ok');
+      } catch (err) { show($('pn-msg'), 'Could not enable: ' + err.message, 'err'); }
+    };
+    $('pn-clear').onclick = async () => { try { await api('/account/push/clear', {}); $('pn-clear').hidden = true; show($('pn-msg'), 'Notifications turned off on all devices.', 'ok'); } catch (err) { show($('pn-msg'), err.message, 'err'); } };
+  };
+  const renderPolicy = async () => {
+    if (!me || !me.workspace) return;
+    let w; try { w = await api('/account/workspace'); } catch { return; }
+    $('pol-box').hidden = false;
+    $('pol-' + (w.agentPolicy || 'owner')).checked = true;
+    const owner = w.role === 'owner';
+    if (!owner) show($('pol-msg'), `Only the workspace owner (${w.owner}) can change this.`, '');
+    document.querySelectorAll('input[name=pol]').forEach(r => { r.disabled = !owner; r.addEventListener('change', async () => {
+      try { await api('/account/workspace', { agentPolicy: r.value }); show($('pol-msg'), 'Saved. Agents pick this up within a minute.', 'ok'); } catch (err) { show($('pol-msg'), err.message, 'err'); } }); });
+    renderAudit();                                                                      // T-0057
+  };
+  const renderAudit = async () => {                                                         // T-0057
+    const q = encodeURIComponent($('au-q')?.value || ''), actor = encodeURIComponent($('au-actor')?.value || '');
+    let a; try { a = await api(`/account/workspace/audit?q=${q}&actor=${actor}`); } catch { return; }
+    const sel = $('au-actor'); if (sel && sel.options.length <= 1) (a.actors || []).forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+    const canExport = me && me.workspace && (me.workspace.role === 'owner' || me.workspace.role === 'admin'); if ($('au-export')) $('au-export').style.display = canExport ? 'inline' : 'none';
+    if ($('au-csv')) { $('au-csv').href = `/account/workspace/audit?format=csv&q=${q}&actor=${actor}`; $('au-json').href = `/account/workspace/audit?format=json&q=${q}&actor=${actor}`; }
+    const skip = new Set(['ts', 'actor', 'agent', 'kind', 'action', 'rid', 'ip']);
+    $('audit-list').innerHTML = a.audit.length ? a.audit.slice(0, 50).map(x => { const extra = Object.entries(x).filter(([k, v]) => !skip.has(k) && v !== undefined && v !== null).map(([k, v]) => `${esc(k)}=${esc(typeof v === 'object' ? JSON.stringify(v) : v)}`).join(' ');
+      return `<div class="row-item"><span class="meta">${new Date(x.ts).toLocaleString()}</span> <b>${esc(x.actor || x.agent)}</b> <span class="pill">${esc(x.kind || (x.agent ? 'agent' : 'human'))}</span> ${esc(x.action)} <span class="meta">${extra}${x.rid ? ' · rid ' + esc(x.rid) : ''}</span></div>`; }).join('') : '<p class="empty">Nothing recorded yet. Agent writes and admin actions will show up here.</p>';
+    if ($('au-count')) $('au-count').textContent = a.total > 50 ? `Showing 50 of ${a.total} recent entries; export for everything.` : '';
+  };
+  $('au-go')?.addEventListener('click', renderAudit); $('au-q')?.addEventListener('keydown', e => { if (e.key === 'Enter') renderAudit(); }); $('au-actor')?.addEventListener('change', renderAudit);
+  const renderAutomation = async () => {                                                    // T-0058
+    if (!me || !me.workspace || !['owner', 'admin'].includes(me.workspace.role)) return;
+    let d, rooms; try { d = await api('/account/workspace/automation'); rooms = (await api('/api/rooms')).rooms || {}; } catch { return; }
+    $('auto-box').hidden = false;
+    const roomOpts = Object.entries(rooms).filter(([, r]) => !r.dm).map(([k, r]) => `<option value="${esc(k)}">#${esc(r.name)}</option>`).join('');
+    if (!$('sch-room').options.length) { $('sch-room').innerHTML = roomOpts; $('hk-room').innerHTML = roomOpts; $('mr-room').innerHTML = roomOpts; }
+    $('mr-list').innerHTML = (d.mirrors || []).length ? d.mirrors.map(x => `<div class="row-item"><span>#${esc(x.room)} → <b>${esc(x.kind)}</b> ${esc(x.host)} (…${esc(x.urlTail)})<br><span class="meta">${x.enabled ? 'on' : 'paused'} · ${x.sent} sent · ${x.fails} failing${x.lastError ? ' · ' + esc(x.lastError) : ''} · by ${esc(x.by)}</span></span><span class="row-actions"><a href="#" data-mr="${x.id}" data-en="${x.enabled ? 0 : 1}">${x.enabled ? 'pause' : 'resume'}</a><a href="#" data-mr-del="${x.id}" class="danger">delete</a></span></div>`).join('') : '<p class="empty">No mirrors yet. Forward a room to Slack, Discord or your own endpoint below.</p>';
+    document.querySelectorAll('[data-mr]').forEach(a => a.onclick = async e => { e.preventDefault(); try { await api('/account/workspace/mirrors/' + a.dataset.mr, { enabled: a.dataset.en === '1' }); renderAutomation(); } catch (err) { show($('mr-msg'), err.message, 'err'); } });
+    document.querySelectorAll('[data-mr-del]').forEach(a => a.onclick = async e => { e.preventDefault(); if (a.textContent !== 'confirm delete') { a.textContent = 'confirm delete'; return; } try { await api('/account/workspace/mirrors/' + a.dataset.mrDel, { delete: true }); renderAutomation(); } catch (err) { show($('mr-msg'), err.message, 'err'); } });
+    if (!$('sch-tz').value) $('sch-tz').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    const when = (t) => t ? new Date(t).toLocaleString() : '–';
+    $('sch-list').innerHTML = d.schedules.length ? d.schedules.map(s => `<div class="row-item"><span><code>${esc(s.spec)}</code> <span class="meta">${esc(s.tz)}</span> → #${esc(s.room)}: ${esc(s.text.slice(0, 90))}${s.text.length > 90 ? '…' : ''}<br><span class="meta">${s.enabled ? 'next ' + when(s.nextRun) : 'paused'} · last ${when(s.lastRun)} · ${s.runs || 0} runs · by ${esc(s.by)}</span></span><span class="row-actions"><a href="#" data-sch="${s.id}" data-en="${s.enabled ? 0 : 1}">${s.enabled ? 'pause' : 'resume'}</a><a href="#" data-sch-del="${s.id}" class="danger">delete</a></span></div>`).join('') : '<p class="empty">No schedules yet. Pick a time and a room below; mention an agent to make it a recurring request.</p>';
+    $('hk-list').innerHTML = d.hooks.length ? d.hooks.map(h => `<div class="row-item"><span><b>${esc(h.name)}</b> → #${esc(h.room)}${h.bot ? ' as @' + esc(h.bot) : ''}${h.instruction ? ': ' + esc(h.instruction.slice(0, 80)) : ''}<br><span class="meta">${h.hits} deliveries · last ${when(h.lastHit)} · by ${esc(h.by)}</span></span><span class="row-actions"><a href="#" data-hk-re="${h.id}">new URL</a><a href="#" data-hk-del="${h.id}" class="danger">delete</a></span></div>`).join('') : '<p class="empty">No webhooks yet. Create one and POST JSON to its URL from CI, GitHub or curl.</p>';
+    document.querySelectorAll('[data-sch]').forEach(a => a.onclick = async e => { e.preventDefault(); try { await api('/account/workspace/schedules/' + a.dataset.sch, { enabled: a.dataset.en === '1' }); renderAutomation(); } catch (err) { show($('sch-msg'), err.message, 'err'); } });
+    document.querySelectorAll('[data-sch-del]').forEach(a => a.onclick = async e => { e.preventDefault(); if (a.textContent !== 'confirm delete') { a.textContent = 'confirm delete'; return; } try { await api('/account/workspace/schedules/' + a.dataset.schDel, { delete: true }); renderAutomation(); } catch (err) { show($('sch-msg'), err.message, 'err'); } });
+    document.querySelectorAll('[data-hk-re]').forEach(a => a.onclick = async e => { e.preventDefault(); if (a.textContent !== 'confirm new URL') { a.textContent = 'confirm new URL'; return; } try { const r = await api('/account/workspace/hooks/' + a.dataset.hkRe, { regenerate: true }); $('hk-show').hidden = false; $('hk-show').textContent = `New URL (the old one stopped working):\n${r.url}`; renderAutomation(); } catch (err) { show($('hk-msg'), err.message, 'err'); } });
+    document.querySelectorAll('[data-hk-del]').forEach(a => a.onclick = async e => { e.preventDefault(); if (a.textContent !== 'confirm delete') { a.textContent = 'confirm delete'; return; } try { await api('/account/workspace/hooks/' + a.dataset.hkDel, { delete: true }); renderAutomation(); } catch (err) { show($('hk-msg'), err.message, 'err'); } });
+  };
+  $('sch-preset')?.addEventListener('change', e => { const v = e.target.value; $('sch-cron').style.display = v === 'cron' ? '' : 'none'; $('sch-time').style.display = (v === 'daily' || v === 'weekdays') ? '' : 'none'; });
+  $('sch-add')?.addEventListener('click', async () => {
+    const preset = $('sch-preset').value; const body = { tz: $('sch-tz').value, room: $('sch-room').value, text: $('sch-text').value };
+    if (preset === 'cron') body.spec = $('sch-cron').value; else { body.preset = preset; body.time = $('sch-time').value; }
+    try { const r = await api('/account/workspace/schedules', body); show($('sch-msg'), `Added. Next run ${r.schedule.nextRun ? new Date(r.schedule.nextRun).toLocaleString() : 'more than a week away'}.`, 'ok'); $('sch-text').value = ''; renderAutomation(); } catch (err) { show($('sch-msg'), err.message, 'err'); }
+  });
+  $('sch-digest')?.addEventListener('click', async () => {                                   // T-0072: one-tap daily digest
+    try {
+      const pr = await (await fetch('/api/presence')).json(); const agent = (pr.presence || []).find(p => p.role === 'ai');
+      if (!agent) throw new Error('Connect an agent first (AI agents above).');
+      const r = await api('/account/workspace/schedules', { preset: 'daily', time: '08:00', tz: $('sch-tz').value || 'UTC', room: 'general', text: `@${agent.username} DIGEST: in plain words, what did the agents do yesterday, what was approved or closed, and what is waiting for a person?` });
+      show($('sch-msg'), `Daily digest added. First one ${r.schedule.nextRun ? new Date(r.schedule.nextRun).toLocaleString() : 'tomorrow'}.`, 'ok'); renderAutomation();
+    } catch (err) { show($('sch-msg'), err.message, 'err'); }
+  });
+  $('mr-add')?.addEventListener('click', async () => {                                     // T-0062
+    try { await api('/account/workspace/mirrors', { room: $('mr-room').value, kind: $('mr-kind').value, url: $('mr-url').value }); $('mr-url').value = ''; show($('mr-msg'), 'Mirror added. New messages in that room are forwarded from now on.', 'ok'); renderAutomation(); } catch (err) { show($('mr-msg'), err.message, 'err'); }
+  });
+  $('hk-add')?.addEventListener('click', async () => {
+    try { const r = await api('/account/workspace/hooks', { name: $('hk-name').value, room: $('hk-room').value, instruction: $('hk-instr').value, bot: $('hk-bot').value }); $('hk-show').hidden = false; $('hk-show').textContent = `${r.message}\n\n${r.url}\n\nTest it:  curl -X POST -H 'Content-Type: application/json' -d '{"text":"hello from curl"}' ${r.url}`; $('hk-name').value = ''; $('hk-instr').value = ''; show($('hk-msg'), '', ''); renderAutomation(); } catch (err) { show($('hk-msg'), err.message, 'err'); }
+  });
+  const renderTokens = async () => {
+    if (!me || !me.workspace || me.workspace.role !== 'owner') return;
+    let d; try { d = await api('/account/workspace/tokens'); } catch { return; }
+    $('tok-box').hidden = false;
+    $('tok-list').innerHTML = d.tokens.length ? d.tokens.map(t => `<div class="row-item"><span>${esc(t.name)} <span class="pill">${esc(t.username)}</span><br><small class="meta">${t.lastUsed ? 'last used ' + new Date(t.lastUsed).toLocaleString() : 'never used'}</small></span><a href="#" data-revoke="${esc(t.id)}" class="danger">revoke</a></div>`).join('') : '<p class="empty">No agent tokens yet. Create one below, or pair a device with a 6-digit code.</p>';
+    document.querySelectorAll('[data-revoke]').forEach(a => a.addEventListener('click', async e => { e.preventDefault();
+      if (a.textContent !== 'confirm revoke') { a.textContent = 'confirm revoke'; return; }
+      try { await api('/account/workspace/tokens/revoke', { id: a.dataset.revoke }); show($('tok-msg'), 'Token revoked. That agent is locked out.', 'ok'); renderTokens(); } catch (err) { show($('tok-msg'), err.message, 'err'); } }));
+  };
+  $('pair-go')?.addEventListener('click', async () => {                                   // T-0048
+    try { const d = await api('/account/workspace/pair', { code: $('pair-code').value, name: $('pair-name').value, username: $('pair-user').value });
+      show($('pair-msg'), d.message, 'ok'); $('pair-code').value = ''; $('pair-name').value = ''; $('pair-user').value = ''; renderTokens(); }
+    catch (err) { show($('pair-msg'), err.message, 'err'); }
+  });
+  // Connect your AI (Phase 1, T-0105): generate a copy-paste, self-run connector setup. The provider key is a placeholder the dev fills locally; Chamber never holds it.
+  const AI_PROVIDERS = {
+    openai:   { backend: 'openai', url: 'https://api.openai.com',      model: 'gpt-4o-mini',                            key: 'YOUR_OPENAI_API_KEY' },
+    claude:   { backend: 'claude', url: '',                            model: '',                                       key: '' },
+    groq:     { backend: 'openai', url: 'https://api.groq.com/openai', model: 'llama-3.1-8b-instant',                   key: 'YOUR_GROQ_API_KEY' },
+    together: { backend: 'openai', url: 'https://api.together.xyz',    model: 'meta-llama/Llama-3.1-8B-Instruct-Turbo', key: 'YOUR_TOGETHER_API_KEY' },
+    mistral:  { backend: 'openai', url: 'https://api.mistral.ai',      model: 'mistral-small-latest',                   key: 'YOUR_MISTRAL_API_KEY' },
+    gemini:   { backend: 'gemini', url: '',                            model: 'gemini-2.0-flash',                       key: 'YOUR_GEMINI_API_KEY' },
+    ollama:   { backend: 'ollama', url: 'http://127.0.0.1:11434',      model: 'llama3.1:8b',                            key: '' },
+  };
+  let aiTok = '', aiUser = '';
+  const renderAiConfig = () => {
+    const key = $('ai-provider').value, p = AI_PROVIDERS[key] || AI_PROVIDERS.openai, base = location.origin;
+    const rooms = ($('ai-rooms').value || 'general').trim(), cmdr = ($('ai-commander').value || (me && me.username) || 'you').trim();
+    const model = ($('ai-model').value || p.model).trim(), url = ($('ai-url').value || p.url).trim();
+    const L = [];
+    L.push('# 1) Get the connector (Python 3 standard library only):');
+    L.push('curl -fsSL ' + base + '/agent/chamber-agent.py -o chamber-agent.py');
+    L.push('');
+    L.push('# 2) Set these, then run it. Your provider key stays HERE; Chamber never sees it.');
+    L.push('export CHAMBER_URL=' + base);
+    L.push('export CHAMBER_TOKEN=' + (aiTok || 'chk_your_token'));
+    L.push('export CHAMBER_ROOMS=' + rooms);
+    L.push('export CHAMBER_COMMANDERS=' + cmdr);
+    if (p.backend === 'claude') {
+      L.push('export CHAMBER_WORKDIR=/path/to/your/project   # its CLAUDE.md gives the agent its context');
+      L.push('export CHAMBER_ALLOWED_TOOLS=Read,Grep,Glob     # read-only to start');
+      L.push('python3 chamber-agent.py                        # needs the claude CLI on PATH');
+    } else {
+      L.push('export CHAMBER_BACKEND=' + p.backend);
+      if (url) L.push('export CHAMBER_LLM_URL=' + url);
+      L.push('export CHAMBER_MODEL=' + model);
+      if (p.key) L.push('export CHAMBER_LLM_KEY=' + p.key + '   # paste your key here; stays on this machine');
+      L.push('python3 chamber-agent.py');
+    }
+    // [new] T-0130/T-0131: the phone half. Turning it on here means the customer never installs
+    // anything by hand: the connector writes the `ask` helper and its briefing itself at startup.
+    if ($('ai-phone') && $('ai-phone').checked) {
+      const folder = ($('ai-folder').value || '/path/to/your/project').trim();
+      const can = ($('ai-can').value || 'readonly').trim();
+      L.splice(L.length - 1, 0,
+        '',
+        '# 3) Reach this machine from Chamber on your phone (Terminal tab), and ask its AI questions',
+        '#    in plain English. Revoke it any time by stopping the connector.',
+        'export CHAMBER_SHELL=on',
+        'export CHAMBER_SHELL_DIR=' + folder + '    # the only folder anything runs in',
+        'export CHAMBER_ASK=on',
+        'export CHAMBER_ASK_CAN=' + can + '         # what the phone AI may do: readonly | folder | full',
+        (p.backend === 'claude'
+          ? '# Signing the AI in (pick one; either serves chat and your phone):\n#  - Claude subscription: nothing to do here. Once connected, open the Terminal tab, type  signin  and follow the link on your phone.\n#  - API key instead: export ANTHROPIC_API_KEY=YOUR_ANTHROPIC_API_KEY'   /* T-0134 */
+          : '# Your phone questions use the same provider key you set above. Nothing else to do.'));
+    }
+    $('ai-config').textContent = L.join('\n');
+  };
+  const applyAiProvider = (key) => {
+    const p = AI_PROVIDERS[key] || AI_PROVIDERS.openai, isClaude = (key === 'claude');
+    $('ai-model').value = p.model; $('ai-url').value = p.url;
+    $('ai-model').disabled = isClaude; $('ai-url').disabled = isClaude;
+    renderAiConfig();
+  };
+  const aiSetupShow = (token, user) => {
+    aiTok = token; aiUser = user;
+    const box = $('ai-setup'); if (!box) return;
+    box.hidden = false;
+    if (!$('ai-provider').value) $('ai-provider').value = 'openai';
+    if (!$('ai-commander').value && me && me.username) $('ai-commander').value = me.username;
+    applyAiProvider($('ai-provider').value || 'openai');
+    try { box.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
+  };
+  $('ai-provider')?.addEventListener('change', () => applyAiProvider($('ai-provider').value));
+  ['ai-model', 'ai-url', 'ai-rooms', 'ai-commander', 'ai-folder'].forEach(id => $(id)?.addEventListener('input', renderAiConfig));
+  ['ai-phone', 'ai-can'].forEach(id => $(id)?.addEventListener('change', renderAiConfig));
+  $('ai-copy')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('ai-config').textContent); show($('tok-msg'), 'Setup copied to clipboard.', 'ok'); }
+    catch (e) { show($('tok-msg'), 'Select the text below and copy it.', ''); }
+  });
+  $('tok-create')?.addEventListener('click', async () => {
+    try {
+      const d = await api('/account/workspace/tokens', { name: $('tok-name').value, username: $('tok-user').value });
+      $('tok-show').hidden = false; $('tok-show').textContent = `Token for ${d.username} (copy it now, it will not be shown again):\n\n${d.token}\n\nUse it as:  Authorization: Bearer ${d.token}`;
+      $('tok-name').value = ''; $('tok-user').value = ''; show($('tok-msg'), '', ''); renderTokens(); aiSetupShow(d.token, d.username);
+    } catch (err) { show($('tok-msg'), err.message, 'err'); }
+  });
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  if (new URLSearchParams(location.search).get('topic') === 'question' && $('ct-topic')) $('ct-topic').value = 'question';   // T-0162
+  api('/account/config').then(c => {
+    if (c.storage && $('pr-storage')) { $('pr-storage').textContent = `${c.storage.baseMb} MB of file storage included. Need more? Add ${c.storage.packGb} GB for ${c.storage.label}, whenever you want`; $('pr-storage').hidden = false; }   // storage add-on                                                       // T-0159: say so when the free trial is on
+    if (!c.trialDays) { if (c.inviteRequired && $('ct-sub')) $('ct-sub').textContent = 'A question, or you want to try Chamber and have no invite code? Write to us here. A person reads every message and replies by email.'; return; }
+    $('pr-days').textContent = c.trialDays; $('pr-trial').hidden = false;
+    if ($('ct-topic')) { $('ct-topic').value = 'question'; $('ct-topic').querySelector('option[value=invite]')?.remove(); $('ct-sub').textContent = 'A question before you start, or something not working? Write to us here. A person reads every message and replies by email.'; }
+    $('su-sub').textContent = `Free for ${c.trialDays} days. No card needed. Confirm your email and you are in (check spam if the email does not show up).`;
+    document.querySelectorAll('a.btn.primary[href="/signup"]').forEach(a => { if (a.id !== 'nav-signup') a.textContent = 'Start free trial'; });
+  }).catch(() => {});
+  $('contact-form')?.addEventListener('submit', async e => {
+    e.preventDefault(); busy(e.target, true); show($('ct-msg'), '');
+    try {
+      await api('/account/contact', { topic: $('ct-topic').value, name: $('ct-name').value, email: $('ct-email').value, message: $('ct-message').value, website: $('ct-website').value });
+      show($('ct-msg'), 'Thank you. Your message is with us and we will reply by email.', 'ok'); $('ct-message').value = '';
+    } catch (err) { show($('ct-msg'), err.message, 'err'); }
+    busy(e.target, false);
+  });
+  $('signup-form')?.addEventListener('submit', async e => {
+    e.preventDefault(); busy(e.target, true); show($('su-msg'), '');
+    try {
+      await api('/account/signup', { email: $('su-email').value, username: $('su-user').value, password: $('su-pass').value, invite: $('su-invite').value, join: joinCode });
+      location.href = '/billing';
+    } catch (err) { show($('su-msg'), err.message, 'err'); busy(e.target, false); }
+  });
+  let mfaToken = null;                                                                        // T-0040
+  $('login-form')?.addEventListener('submit', async e => {
+    e.preventDefault(); busy(e.target, true); show($('li-msg'), '');
+    try {
+      let d;
+      if (mfaToken) d = await api('/account/login/totp', { mfaToken, code: $('li-code').value, remember: $('li-remember').checked });   // T-0040: second step
+      else {
+        d = await api('/account/login', { email: $('li-email').value, password: $('li-pass').value });
+        if (d.mfa) { mfaToken = d.mfaToken; $('li-mfa').hidden = false; $('li-code').focus(); show($('li-msg'), d.message, ''); busy(e.target, false); return; }
+      }
+      location.href = d.account.entitled ? '/app' : '/billing';
+    } catch (err) { show($('li-msg'), err.message, 'err'); busy(e.target, false); if (/expired/i.test(err.message)) { mfaToken = null; $('li-mfa').hidden = true; } }
+  });
+  $('forgot-form')?.addEventListener('submit', async e => { e.preventDefault(); busy(e.target, true); show($('fg-msg'), '');
+    try { const d = await api('/account/reset-request', { email: $('fg-email').value }); show($('fg-msg'), d.message, 'ok'); }
+    catch (err) { show($('fg-msg'), err.message, 'err'); busy(e.target, false); } });
+  $('reset-form')?.addEventListener('submit', async e => { e.preventDefault(); busy(e.target, true); show($('rs-msg'), '');
+    try { const d = await api('/account/reset', { token: resetToken, password: $('rs-pass').value, code: $('rs-code').value || undefined }); location.href = d.account.entitled ? '/app' : '/billing'; }
+    catch (err) { show($('rs-msg'), err.message, 'err'); busy(e.target, false); } });
+  $('bi-logout')?.addEventListener('click', async e => { e.preventDefault(); try { await api('/account/logout', {}); } catch {} location.href = '/'; });
+
+  (async () => {
+    await whoami(); renderNav();
+    if (view === '/signup' && joinCode) {
+      try { const j = await api('/account/invite/' + joinCode); $('su-join-note').hidden = false; $('su-join-note').textContent = `You're joining “${j.workspace}” (owner: ${j.owner}). No payment needed.`; }
+      catch (e) { show($('su-msg'), e.message, 'err'); }
+    } else if (view === '/signup') { try { const c = await api('/account/config'); if (c.inviteRequired) { $('su-invite-wrap').hidden = false; $('su-invite').required = true; } } catch {} }
+    if (view === '/billing') {
+      renderBilling(); renderWorkspace(); renderTokens(); renderPolicy(); renderPush(); renderAutomation();
+      renderTotp();                                                                               // T-0092: was wrongly nested in the password-submit handler, so the 2FA pill stuck on …
+      $('so-all').onclick = async () => { try { const d = await api('/account/logout-all', {}); show($('so-msg'), d.message); } catch (err) { show($('so-msg'), err.message, 'err'); } };   // T-0032
+      if (me?.logins?.length) $('login-hist').innerHTML = 'Recent sign-ins: ' + me.logins.slice().reverse().map(l => `${esc(new Date(l.at).toLocaleString())} from ${esc(l.ip)}`).join(' · ');
+      // Just back from Stripe: the webhook can lag a few seconds, so ask the server to re-check.
+      if (me && !me.entitled && new URLSearchParams(location.search).get('done') === '1') {
+        for (let i = 0; i < 6 && !me.entitled; i++) {
+          await new Promise(r => setTimeout(r, 2500));
+          try { me = await api('/billing/refresh', {}); } catch {}
+          renderBilling();
+        }
+      }
+    } else if (me && (view === '/signup' || view === '/login')) {
+      location.replace(me.entitled ? '/app' : '/billing');
+    }
+  })();
+})();
+</script>
+</body>
+</html>
