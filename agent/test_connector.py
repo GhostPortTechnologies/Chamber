@@ -295,7 +295,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.24.0")
+check("the connector reports its version", m.AGENT_VERSION == "3.25.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -730,6 +730,25 @@ check("after the job each run's result goes on the record under the one answer, 
 check("a description the person was never shown does not change what counts as the same command; anything else does",
       mk.ask_sig("Bash", {"command": "ls", "description": "a"}) == mk.ask_sig("Bash", {"command": "ls", "description": "b"}) and mk.ask_sig("Bash", {"command": "ls"}) != mk.ask_sig("Bash", {"command": "ls "})
       and mk.ask_sig("Bash", {"command": "ls"}) != mk.ask_sig("Bash", {"command": "ls", "timeout": 5}) and mk.ask_sig("WebFetch", {"url": "a", "description": "x"}) != mk.ask_sig("WebFetch", {"url": "a"}))
+print("review of 13 Nov: only what a person approved is applied")
+import hashlib as _hl
+ma = load("ollama", "m", extra={"CHAMBER_GIT_REPO": tempfile.mkdtemp(prefix="apply-repo-"), "CHAMBER_GIT_APPLY": "1"})
+PATCH = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"
+applied, noted = [], []
+def api_apply(method, path, body=None):
+    if path.startswith("/api/tickets?status=approved"): return {"tickets": [
+        {"id": "T-0101", "title": "standing job", "approved_by": "alice", "standing": {"id": "S-1"}, "hasDiff": True},
+        {"id": "T-0102", "title": "swapped", "approved_by": "alice", "approved_diff": {"version": 1, "sha256": "0" * 64}, "hasDiff": True},
+        {"id": "T-0103", "title": "as approved", "approved_by": "alice", "approved_diff": {"version": 1, "sha256": _hl.sha256(PATCH.encode()).hexdigest()}, "hasDiff": True}]}
+    if path.endswith("/diff"): return {"diff": PATCH}
+    if path.endswith("/update"): noted.append((path, (body or {}).get("note", "")))
+    return {"ok": True}
+ma.api = api_apply; ma.post = lambda *a, **k: None
+ma.apply_patch_to_repo = lambda repo, patch, tid, title, approver, push=False: (applied.append(tid), {"ok": True, "branch": "chamber/" + tid, "sha": "abc1234"})[1]
+st_ap = {"proposals": {t: {"room": "general", "msg_id": None, "has_diff": True} for t in ("T-0101", "T-0102", "T-0103")}}
+ma.save_state = lambda s: None; ma.LAST_APPROVED_CHECK = 0; ma.apply_approved(st_ap)
+check("a ticket approved in advance by a standing approval is never applied as a patch from here", "T-0101" not in applied and st_ap["proposals"]["T-0101"].get("done") == "standing", (applied, st_ap["proposals"]["T-0101"]))
+check("a change that is not the version a person approved is refused and said so; the approved one is applied", applied == ["T-0103"] and st_ap["proposals"]["T-0102"].get("done") == "reported" and any(p.startswith("/api/tickets/T-0102/") and "not the version alice approved" in n for p, n in noted) and st_ap["proposals"]["T-0103"].get("done") == "applied", (applied, noted, st_ap["proposals"]))
 sys.argv = ["chamber-agent.py"]
 srv.shutdown()
 print(f"\n{passed} passed, {failed} failed")

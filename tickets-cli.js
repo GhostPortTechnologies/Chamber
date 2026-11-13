@@ -223,7 +223,7 @@ switch (verb) {                                                               //
   case 'meta': {                                                              // T-0072: one server-managed field; the server decides who may call this
     const t = findTicket(pos[1] || fail('meta requires a ticket id'));
     if (!flags.by) fail('meta requires --by');
-    const allowed = ['applied', 'apply_by', 'reverts', 'reverted_by', 'reviewer', 'pr', 'github', 'request_mail', 'draft', 'draft_job'];   // T-0205: + request_mail   // T-0189: + reviewer; T-0191: + pr; T-0197: + github
+    const allowed = ['applied', 'apply_by', 'reverts', 'reverted_by', 'reviewer', 'pr', 'github', 'request_mail', 'draft', 'draft_job', 'approved_diff'];   // T-0205: + request_mail   // T-0189: + reviewer; T-0191: + pr; T-0197: + github
     if (!allowed.includes(flags.set)) fail(`meta --set must be one of ${allowed.join(', ')}`);
     let value; try { value = JSON.parse(flags.json); } catch { fail('meta requires --json <value>'); }
     t[flags.set] = value;
@@ -248,6 +248,7 @@ switch (verb) {                                                               //
   case 'revised': {                                                           // T-0189: a new version of the change was attached
     const t = findTicket(pos[1] || fail('revised requires a ticket id'));
     if (!flags.by) fail('revised requires --by');
+    if (t.status !== 'proposed') fail(`a new version can only be attached while ${t.id} waits for approval (it is ${t.status})`);   // review 2026-11-13: it used to say "the approval was cleared" on an approved ticket and leave it approved
     const v = Math.max(2, parseInt(flags.version, 10) || 2), was = t.changes, had = Array.isArray(t.approvals) ? t.approvals.length : 0;
     t.updates = Array.isArray(t.updates) ? t.updates : [];
     t.updates.push({ at: nowISO(), by: flags.by, note: `NEW VERSION ${v} of the change attached${was ? ` after the changes ${was.by} asked for` : ''}${had ? '; the earlier approval was cleared' : ''}` });

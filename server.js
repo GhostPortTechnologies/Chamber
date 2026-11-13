@@ -2083,7 +2083,10 @@ echo "${MARK}$__rc|$PWD"`;
   if (diffMatch && method === 'POST') {
     const id = diffMatch[1]; const t = (loadTickets().tickets || []).find(x => x.id === id);
     if (!t) return json(res, 404, { error: 'no such ticket' });
-    if (!['proposed', 'approved'].includes(t.status)) return json(res, 409, { error: `a diff can only be attached while the ticket is proposed or approved (it is ${t.status})` });
+    // Review 2026-11-13: a change used to be accepted on an APPROVED ticket too. The agent that proposed a ticket could so replace the
+    // change after a person had approved it (the record said the approval was cleared, the ticket stayed approved), and a ticket
+    // approved in advance by a standing approval could be given a patch for a chat agent to apply outside the standing limits.
+    if (t.status !== 'proposed') return json(res, 409, { error: t.status === 'approved' ? `${id} is already approved, so its change cannot be replaced: what a person approved is what gets applied. Propose a new ticket for a different change.` : `a change can only be attached while the ticket waits for approval (it is ${t.status})` });
     const role = accounts.enabled ? accounts.sessionRole(sess) : 'owner';
     if (!sess?.username || (sess.username !== t.proposed_by && role !== 'owner' && role !== 'admin')) return json(res, 403, { error: 'only the proposer, the owner or an admin can attach a diff' });
     let raw = ''; try { raw = await new Promise((ok, bad) => { req.setEncoding('utf8'); req.on('data', c => { raw += c; if (raw.length > 220 * 1024) req.destroy(new Error('too large')); }); req.on('end', () => ok(raw)); req.on('error', bad); }); } catch { return json(res, 413, { error: 'diff over 200 KB' }); }
@@ -2187,7 +2190,7 @@ echo "${MARK}$__rc|$PWD"`;
     const agent = [meta.by, t.proposed_by].find(n => n && data.users[n]?.role === 'ai') || null;
     let posted = false;
     if (agent && data.rooms[room]) {
-      const lines = open.slice(0, 25).map(c => `- ${c.file || 'the diff'} (diff line ${c.line}): ${c.text.replace(/\s+/g, ' ').slice(0, 300)}`);
+      const lines = open.filter(c => data.users[c.by]?.role === 'human').slice(0, 25).map(c => `- ${c.by} on ${c.file || 'the diff'} (diff line ${c.line}): ${c.text.replace(/\s+/g, ' ').slice(0, 300)}`);   // review 2026-11-13: this goes to the agent under the asker's name, so only what people wrote, each with its author
       const made = postMessage(data, { username: sess.username, room, text: `@${agent} Changes asked for on ${id} (version ${cur}) by ${sess.username}.${note ? '\n' + note : ''}${lines.length ? '\nComments on lines:\n' + lines.join('\n') : ''}\nSend a new version of the change for ${id}.` });
       posted = !made.error;
     }
@@ -2503,7 +2506,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
       return json(res, 200, { ok: true, linked: false, message: `Unlinked ${l.repo}. The key is deleted; the tickets stay, and Chamber no longer reads or writes that repository.` });
     }
     const repo = String(body?.repo || '').trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, ''), label = String(body?.label || 'chamber').trim(), key = String(body?.token || '').trim();
-    if (!/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(repo)) return json(res, 400, { error: 'Write the repository as owner/name, for example acme/shop.' });
+    if (!/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(repo) || repo.split('/').some(p => /^\.+$/.test(p))) return json(res, 400, { error: 'Write the repository as owner/name, for example acme/shop.' });   // review 2026-11-13: "../.." passed and pointed the key at other GitHub addresses
     if (!label || label.length > 50 || /[,\n]/.test(label)) return json(res, 400, { error: 'The label is one GitHub label name (no commas), up to 50 characters.' });
     if (key.length < 20 || key.length > 255 || /\s/.test(key)) return json(res, 400, { error: 'Paste the GitHub key (a fine-grained token starts with github_pat_).' });
     const a = await ghCall(key, 'GET', `/repos/${repo}`).catch(e => ({ status: 0, data: { message: e.message } }));
@@ -2708,6 +2711,12 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
         }
       }
     }
+    let approveDiff = null;                                                                                   // review 2026-11-13: the change that is approved is the version the person was shown
+    if (action === 'approve') {
+      try { const dm = JSON.parse(fs.readFileSync(path.join(diffDir(), ticketId + '.json'), 'utf8')), patch = fs.readFileSync(path.join(diffDir(), ticketId + '.patch'), 'utf8');
+            approveDiff = { version: Number.isInteger(dm.version) ? dm.version : 1, sha256: crypto.createHash('sha256').update(patch).digest('hex') }; } catch { /* this ticket carries no change */ }
+      if (approveDiff && body.version !== undefined && body.version !== null && Number(body.version) !== approveDiff.version) return json(res, 409, { error: `The change on ${ticketId} was replaced by version ${approveDiff.version} after you opened it. Look at version ${approveDiff.version} first, then approve.` });
+    }
     if (action === 'claim' && accounts.enabled && (sess?.agent || sess?.role === 'ai')) {                   // T-0203: no new tickets once the AI budget is used up
       const bs = budgetState(accounts.workspaceOf(sess));
       if (bs && bs.agentOver(sess.username)) { audit(sess, { action: 'ticket-claim-refused', ticket: ticketId, reason: 'ai budget' }, true); return json(res, 402, { error: `The AI budget for ${bs.monthName} is used up (${bs.money(bs.spentCents)}${bs.monthlyCents ? ' of ' + bs.money(bs.monthlyCents) : ''}${bs.perAgent[sess.username] ? `; this agent's own limit is ${bs.money(bs.perAgent[sess.username])}` : ''}). New tickets wait until the owner raises it or the month turns.` }); }
@@ -2773,6 +2782,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
     }
     const r = await runTicketsCLI(args);
     if (!r.ok) return json(res, 400, { error: r.stderr || `${action} failed` });
+    if (approveDiff && ((loadTickets().tickets || []).find(x => x.id === ticketId) || {}).status === 'approved') await runTicketsCLI(['meta', ticketId, '--by', String(body.by), '--set', 'approved_diff', '--json', JSON.stringify(approveDiff)]);   // on the record: which version was approved, with its fingerprint (the connector checks it before applying)
     if (['approve', 'reject', 'claim', 'close', 'cancel'].includes(action)) await requestMoved(ticketId, sess?.username || body.by);   // T-0205: tell the requester
     if (action !== 'log') audit(sess, { action: 'ticket-' + action, ticket: ticketId, note: body.note ? String(body.note).slice(0, 200) : undefined, reason: body.reason ? String(body.reason).slice(0, 200) : undefined }, true);   // [new] T-0015; T-0057: humans too; T-0143: run-log lines are progress, not audited
     return json(res, 200, { ok: true, message: r.stdout });

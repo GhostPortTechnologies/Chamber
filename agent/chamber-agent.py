@@ -49,6 +49,8 @@ Guardrails (T-0015, first cut):
     what it read and did; a new top-level mention starts a fresh session. Sessions end after CHAMBER_SESSION_IDLE_MIN minutes
     without a reply (60). Claude Code keeps the conversation on this machine in its usual place (~/.claude, which the agent
     itself may not read). CHAMBER_SESSIONS=off goes back to one fresh run per mention with no session file. Replies are redacted for anything that looks like a secret.
+  - 3.25.0 (review 2026-11-13): an approved patch is applied only when it is the version a person approved (the ticket carries
+    its fingerprint), and never for a ticket approved in advance by a standing approval.
   - T-0211 (3.24.0): a person can answer "Allow for this job": exactly the same tool use may then run again in the same job
     without a new question. Chamber is asked before each such run (it keeps the 30 minute limit and records every run).
   - T-0207 (3.23.0): when a request from an outside person arrives and the owner has drafting on, this connector writes a draft onto
@@ -63,7 +65,7 @@ Guardrails (T-0015, first cut):
 
 SPDX-License-Identifier: AGPL-3.0-only  |  Copyright (C) 2026 GhostPort Technologies
 """
-import json, os, re, socket, subprocess, sys, threading, time, urllib.request, urllib.error, urllib.parse, base64, shutil, tempfile, uuid
+import json, os, re, socket, subprocess, sys, threading, time, urllib.request, urllib.error, urllib.parse, base64, shutil, tempfile, uuid, hashlib
 import pty, select, fcntl, termios, struct                        # T-0134: drive the CLI's sign-in from the Terminal tab
 
 def _ask_mcp_main():
@@ -151,7 +153,7 @@ CLAUDE_BIN = os.environ.get("CHAMBER_CLAUDE_BIN", "claude")
 POLL_SEC = int(os.environ.get("CHAMBER_POLL_SEC", "5"))
 CLAUDE_TIMEOUT = int(os.environ.get("CHAMBER_CLAUDE_TIMEOUT", "300"))
 STATE = os.environ.get("CHAMBER_STATE", os.path.expanduser("~/.chamber-agent-state.json"))
-AGENT_VERSION = "3.24.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
+AGENT_VERSION = "3.25.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
 FALLBACK_SEC = int(os.environ.get("CHAMBER_FALLBACK_SEC", "20"))   # T-0046: poll + presence ping interval while the event stream is up
 BACKEND = os.environ.get("CHAMBER_BACKEND", "claude").strip().lower()           # T-0055
 MODEL = os.environ.get("CHAMBER_MODEL", "").strip()
@@ -1475,10 +1477,16 @@ def apply_approved(state):
         t = approved.get(tid)
         if not t: continue
         approver = t.get("approved_by") or "a commander"
+        if t.get("standing"):                                                             # 3.25.0 (review 2026-11-13): approved in advance means the named worker, as a pull request, inside the limits. Never a patch applied from here.
+            info["done"] = "standing"; log(f"{tid}: approved in advance by a standing approval; no patch is applied from here"); continue
         try: d = api("GET", f"/api/tickets/{tid}/diff")
         except Exception: d = None
         if not d or not d.get("diff"): info["done"] = "no-diff"; continue
-        if GIT_REPO and GIT_APPLY:
+        want = (t.get("approved_diff") or {}).get("sha256")                              # 3.25.0: the fingerprint of the version the person approved
+        if want and hashlib.sha256(d["diff"].encode("utf-8")).hexdigest() != want:
+            res = {"ok": False}
+            note = f"I did not apply the patch on {tid}: the change on the ticket is not the version {approver} approved. Nothing was changed. Propose it again as a new ticket."
+        elif GIT_REPO and GIT_APPLY:
             res = apply_patch_to_repo(GIT_REPO, d["diff"], tid, t.get("title", tid), approver, push=GIT_PUSH)
             orig = t.get("reverts") or info.get("reverts")
             if not res.get("ok") and orig and not branch_merged(GIT_REPO, f"chamber/{orig}"):   # T-0072: undoing something that never reached this branch

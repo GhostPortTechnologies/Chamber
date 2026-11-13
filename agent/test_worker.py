@@ -282,6 +282,25 @@ check("1.9.0: the helper starts with no settings and no key at all, and silence 
 src9 = open(os.path.join(HERE, "chamber-worker.py")).read(); live_fn = src9.split("def work(t):", 1)[1].split("\ndef ", 1)[0]
 check("1.9.0: the live-folder job has no asking in it at all", "ask_" not in live_fn and "may_ask" not in live_fn and '"dontAsk"' in live_fn)
 for k in ("FAKE_ASKS", "FAKE_ANSWERS", "WORKER_ASK_WAIT_SEC"): os.environ.pop(k, None)
+print("review of 13 Nov: the worker's own checks do not see its keys")
+fake3 = os.path.join(PRT, "fakeclaude-tests")                           # changes app.py and adds a test file, as an AI session would
+open(fake3, "w").write("#!/usr/bin/env python3\nimport json\nopen('app.py', 'w').write('x = 4\\n')\nopen('test_app.py', 'w').write('def test_x():\\n    assert True\\n')\n"
+                       "print(json.dumps({'type': 'result', 'result': 'Changed app.py and added a test. The key ghp_" + "a" * 36 + " was in a file I read.', 'total_cost_usd': 0.01}))\n")
+os.chmod(fake3, 0o755); os.environ["WORKER_CLAUDE"] = fake3
+WR = load(); seen_runs = []; real_run = WR.run; said = []
+def spy_run(cmd, cwd=None, timeout=600, env=None):
+    if cmd[:3] in (["python3", "-m", "pytest"], ["python3", "-m", "py_compile"]): seen_runs.append((cmd[2], None if env is None else set(env)))
+    if cmd[:3] == ["python3", "-m", "pytest"]: return 0, ""
+    return real_run(cmd, cwd=cwd, timeout=timeout, env=env)
+def api_rec(m, p, b=None): said.append((m, p, b)); return {}
+WR.run = spy_run; WR.api = api_rec; WR.presence = lambda *a, **k: None; GH["posts"].clear()
+ok7, msg7, info7 = WR.work_pr({"id": "T-0075", "title": "Add a test", "body": "x", "approved_by": "alice"})
+check("review 13 Nov: the test run and the compile check the worker makes after the AI session get neither the Chamber key nor the GitHub key",
+      ok7 and {k for k, _ in seen_runs} == {"pytest", "py_compile"} and all(e is not None and "CHAMBER_TOKEN" not in e and "WORKER_GITHUB_TOKEN" not in e and "PATH" in e for _, e in seen_runs), (ok7, msg7[:120], [(k, None if e is None else sorted(x for x in e if "TOKEN" in x)) for k, e in seen_runs]))
+sent7 = json.dumps([b for _, _, b in said]) + json.dumps(GH["posts"][0][1] if GH["posts"] else {})
+check("review 13 Nov: what the AI wrote goes to the room, the ticket and the pull request with anything that looks like a key taken out", "ghp_aaaa" not in sent7 and "[redacted secret]" in sent7 and "[redacted secret]" in (GH["posts"][0][1].get("body", "") if GH["posts"] else ""), sent7[-300:])
+srcR = open(os.path.join(HERE, "chamber-worker.py")).read(); liveR = srcR.split("def work(t):", 1)[1].split("\ndef ", 1)[0]
+check("review 13 Nov: the live-folder job runs its checks the same way", liveR.count('"py_compile", f], cwd=wt, env=env)') == 1 and liveR.count('"pytest", "-q", "-x"], cwd=wt, timeout=600, env=env)') == 1)
 del os.environ["FAKE_SLEEP"]; ghs.shutdown()
 for k in ("WORKER_MODE", "WORKER_GITHUB_TOKEN", "WORKER_GITHUB_API", "WORKER_GITHUB_REPO", "WORKER_PARALLEL", "FAKE_ENV_OUT"): os.environ.pop(k, None)
 

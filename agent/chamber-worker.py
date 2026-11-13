@@ -142,13 +142,13 @@ def api(method, path, body=None):
 
 
 def say(text):
-    try: api("POST", "/api/messages", {"username": ME, "text": text[:1500], "room": ROOM, "type": "message"})
+    try: api("POST", "/api/messages", {"username": ME, "text": redact(text)[:1500], "room": ROOM, "type": "message"})   # 1.10.1: nothing that looks like a key leaves with the AI's words
     except Exception as e: log(f"say failed: {e}")
 
 
 def ticket(verb, tid, **kw):
     """POST a ticket verb; True on success (1.3.0: callers fall back when the server refuses, e.g. an older Chamber on release)."""
-    try: api("POST", f"/api/tickets/{tid}/{verb}", {"by": ME, **kw}); return True
+    try: api("POST", f"/api/tickets/{tid}/{verb}", {"by": ME, **{k: (redact(v) if isinstance(v, str) else v) for k, v in kw.items()}}); return True
     except Exception as e: log(f"ticket {verb} {tid} failed: {e}"); return False
 
 
@@ -202,7 +202,7 @@ def health_ok():
     return False
 
 
-WORKER_VERSION = "worker-1.10.0"
+WORKER_VERSION = "worker-1.10.1"
 
 
 def wlog(tid, line, model=None):
@@ -425,10 +425,10 @@ def work(t):
                            "so deploying my version would overwrite them. Commit the live tree first (git add + git commit), then add a note to this ticket and I will retry.")
         for f in files:
             if f.endswith(".py"):
-                rc, out = run(["python3", "-m", "py_compile", f], cwd=wt)
+                rc, out = run(["python3", "-m", "py_compile", f], cwd=wt, env=env)
                 if rc: return False, f"py_compile failed on {f}: {out[-600:]}; nothing deployed"
         if any(fn.startswith("test_") for fn in os.listdir(wt)):
-            rc, out = run(["python3", "-m", "pytest", "-q", "-x"], cwd=wt, timeout=600)
+            rc, out = run(["python3", "-m", "pytest", "-q", "-x"], cwd=wt, timeout=600, env=env)   # 1.10.1 (review 2026-11-13): the tests are code the AI just wrote; they get the same key-free environment as the AI session
             # rc 5 = pytest collected no tests (some repos keep their test_*.py as plain scripts run by hand). Not a failure.
             if rc not in (0, 5): return False, f"tests failed; nothing deployed:\n{out[-900:]}"
         wlog(tid, "py_compile and tests passed; committing to branch " + branch)
@@ -769,10 +769,10 @@ def work_pr(t):
         if bad: return False, f"refused: change touches protected paths {bad}; no pull request", None
         for f in files:
             if f.endswith(".py"):
-                rc, out = run(["python3", "-m", "py_compile", f], cwd=wt)
+                rc, out = run(["python3", "-m", "py_compile", f], cwd=wt, env=env)
                 if rc: return False, f"py_compile failed on {f}: {out[-600:]}; no pull request", None
         if any(fn.startswith("test_") for fn in os.listdir(wt)):
-            rc, out = run(["python3", "-m", "pytest", "-q", "-x"], cwd=wt, timeout=600)
+            rc, out = run(["python3", "-m", "pytest", "-q", "-x"], cwd=wt, timeout=600, env=env)   # 1.10.1 (review 2026-11-13): the tests are code the AI just wrote; they get the same key-free environment as the AI session
             if rc not in (0, 5): return False, f"tests failed; no pull request:\n{out[-900:]}", None
         git("add", "-A", "--", ".", *JUNK, cwd=wt)
         sd = t.get("standing") or {}
@@ -792,7 +792,7 @@ def work_pr(t):
         if not slug: return False, "pushed the branch, but cannot tell which GitHub repository this is: set WORKER_GITHUB_REPO=owner/name", None
         desc = (f"Chamber ticket {tid}, {approved}. Made by {ME}; tests passed before this was opened.\n\n{tail}\n\n"
                 f"Merging this pull request closes {tid} in Chamber. Closing it without merging hands the ticket back.")
-        code, pr = gh("POST", f"/repos/{slug}/pulls", {"title": f"{title[:200]} ({tid})", "head": branch, "base": base, "body": desc, "maintainer_can_modify": True})
+        code, pr = gh("POST", f"/repos/{slug}/pulls", {"title": f"{title[:200]} ({tid})", "head": branch, "base": base, "body": redact(desc), "maintainer_can_modify": True})
         if code == 422:                                                  # one already open for this branch: the new commit is on it now
             _, found = gh("GET", f"/repos/{slug}/pulls?head={urllib.parse.quote(slug.split('/')[0] + ':' + branch)}&state=open")
             if isinstance(found, list) and found: code, pr = 200, found[0]

@@ -172,7 +172,7 @@ function before(file, room, beforeTs, limit = 200) {                 // T-0035: 
   return db.prepare('SELECT * FROM (SELECT * FROM messages WHERE room = ? AND ts < ? ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC').all(room, beforeTs, Math.min(limit, 500)).map(rowToMsg);
 }
 function runsSince(file, sinceTs, limit = 20000) {                       // T-0194: agent answers with a run record (model, tokens, time, cost), oldest first
-  return open(file).prepare('SELECT * FROM messages WHERE run IS NOT NULL AND ts >= ? ORDER BY ts LIMIT ?').all(Number(sinceTs) || 0, limit).map(rowToMsg).filter(m => !m.deleted);
+  return open(file).prepare('SELECT * FROM messages WHERE run IS NOT NULL AND ts >= ? ORDER BY ts DESC LIMIT ?').all(Number(sinceTs) || 0, limit).reverse().map(rowToMsg).filter(m => !m.deleted);
 }
 function setPrefs(file, username, prefs) { open(file).prepare('UPDATE users SET prefs = ? WHERE username = ?').run(prefs ? JSON.stringify(prefs) : null, String(username)); }   // T-0072
 function get(file, id) { const r = open(file).prepare('SELECT * FROM messages WHERE id = ?').get(String(id)); return r ? rowToMsg(r) : null; }

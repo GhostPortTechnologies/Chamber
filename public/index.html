@@ -2338,6 +2338,7 @@ async function awTest() {
 }
 async function ticketAction(id, action) {
   const payload = { by: currentUser };                                          // [new] request body; close adds a note below
+  if (action === 'approve') { const dvA = document.getElementById('tm-diff'); if (dvA && dvA.dataset.ticket === id && dvA.dataset.latest) payload.version = Number(dvA.dataset.latest); }   // review 2026-11-13: approve the version that was on screen; the server refuses if a newer one arrived meanwhile
   if (action === 'cancel') {                                                    // T-0143: a cancel must say why
     const reason = await askDialog({ title: `Cancel ${id}`, label: 'Reason', hint: 'Why this ticket should not be done. It becomes rejected with this reason.', min: 3, ok: 'Cancel ticket' });
     if (!reason) return;
@@ -3272,7 +3273,8 @@ function loadTicketDiff(t, version) {                                         //
   const dv = document.getElementById('tm-diff');
   Promise.all([fetch(`${API}/api/tickets/${t.id}/diff${version ? '?version=' + version : ''}`).then(r => r.json()), fetch(`${API}/api/tickets/${t.id}/comments`).then(r => r.json()).catch(() => ({ comments: [] }))])
     .then(([d, c]) => { if (openTicketId !== t.id) return; const v = (d.meta && d.meta.version) || 1;
-      dv.innerHTML = renderDiffPanel(t, d, (c.comments || []).filter(x => x.version === v)); dv.dataset.version = v; dv.dataset.ticket = t.id;
+      dv.innerHTML = renderDiffPanel(t, d, (c.comments || []).filter(x => x.version === v)); dv.dataset.version = v; dv.dataset.ticket = t.id; dv.dataset.latest = d.current || v;   // the newest version this person was shown
+     
       if (version) { const b = dv.querySelector('.tabs-mini button:nth-child(2)'); if (b) miniTab(b, 'df'); } })
     .catch(() => { dv.innerHTML = ''; });
 }

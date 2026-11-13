@@ -69,6 +69,7 @@ const LANDING = path.join(__dirname, 'public', 'landing.html');
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
 const USER_RE = /^[a-zA-Z0-9_-]{2,24}$/;
 const WS_RE = /^[a-f0-9]{16}$/;
+const RESERVED_NAMES = new Set(['chamber-reminder', 'github-issues', 'chamber']);   // review 2026-11-13: names Chamber itself posts or records under; nobody else may take them
 const MIN_PASSWORD = 10;
 const MAX_MEMBERS = parseInt(process.env.CHAMBER_MAX_MEMBERS, 10) || 25;
 // T-0199: guest seats for the business side. A viewer reads everything (and approves when the owner names them, T-0190); a requester
@@ -115,6 +116,7 @@ function createAgentToken(store, ctx, ws, by, name, username) {
   name = String(name || '').trim().slice(0, 48); username = String(username || '').trim();
   if (name.length < 2) return { error: 'Give the token a name (2 to 48 characters), e.g. "Pi Claude".' };
   if (!USER_RE.test(username)) return { error: 'Agent username: 2 to 24 letters, numbers, - or _.' };
+  if (RESERVED_NAMES.has(username.toLowerCase())) return { error: 'That username is taken.', code: 409 };
   if (store.usernames[username.toLowerCase()]) return { error: 'That username is taken.', code: 409 };
   if (billingState(store.accounts[ws.owner]) === 'trial' && Object.keys(ws.tokens || {}).length >= TRIAL_TOKENS) return { error: `The free trial includes ${TRIAL_TOKENS} agents. Subscribe on the Account page to add more.`, code: 403 };   // T-0159
   if (Object.keys(ws.tokens || {}).length >= 20) return { error: 'Limit of 20 agent tokens per workspace.' };
@@ -734,6 +736,7 @@ async function handle(req, res, url, ctx0) {
     }
     if (!EMAIL_RE.test(email)) return ctx.json(res, 400, { error: 'Enter a valid email address.' }), true;
     if (!USER_RE.test(username)) return ctx.json(res, 400, { error: 'Username: 2 to 24 letters, numbers, - or _.' }), true;
+    if (RESERVED_NAMES.has(username.toLowerCase())) return ctx.json(res, 409, { error: 'That username is taken.' }), true;
     if (password.length < MIN_PASSWORD) return ctx.json(res, 400, { error: `Password must be at least ${MIN_PASSWORD} characters.` }), true;
     if (store.accounts[email]) return ctx.json(res, 409, { error: 'An account with that email already exists. Log in instead.' }), true;
     if (store.usernames[username.toLowerCase()]) return ctx.json(res, 409, { error: 'That username is taken.' }), true;
