@@ -223,7 +223,7 @@ switch (verb) {                                                               //
   case 'meta': {                                                              // T-0072: one server-managed field; the server decides who may call this
     const t = findTicket(pos[1] || fail('meta requires a ticket id'));
     if (!flags.by) fail('meta requires --by');
-    const allowed = ['applied', 'apply_by', 'reverts', 'reverted_by', 'reviewer', 'pr', 'github'];   // T-0189: + reviewer; T-0191: + pr; T-0197: + github
+    const allowed = ['applied', 'apply_by', 'reverts', 'reverted_by', 'reviewer', 'pr', 'github', 'request_mail', 'draft', 'draft_job'];   // T-0205: + request_mail   // T-0189: + reviewer; T-0191: + pr; T-0197: + github
     if (!allowed.includes(flags.set)) fail(`meta --set must be one of ${allowed.join(', ')}`);
     let value; try { value = JSON.parse(flags.json); } catch { fail('meta requires --json <value>'); }
     t[flags.set] = value;

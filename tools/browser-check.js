@@ -341,13 +341,38 @@ async function run(size) {
         await p2.fill('#su-email', `${ru}@test.invalid`); await p2.fill('#su-user', ru); await p2.fill('#su-pass', 'browser-check-password'); await p2.click('button[type=submit]:visible');
         await p2.waitForFunction(() => !document.querySelector('#su-email')?.offsetParent, null, { timeout: 12000 });
         await p2.goto(BASE + '/app', { waitUntil: 'networkidle' }); const onReq = new URL(p2.url()).pathname === '/requests';
-        await p2.fill('#rq-title', 'Please add a price list to the shop'); await p2.fill('#rq-body', 'Sent by the browser check.'); await p2.click('#rq-send');
+        await p2.fill('#rq-title', 'Please add a price list to the shop'); await p2.fill('#rq-body', 'Sent by the browser check.');
+        await p2.setInputFiles('#rq-files', { name: 'price list.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64') });   // T-0206: a 1 x 1 picture
+        const pickedNote = await p2.locator('#rq-files-note').innerText(); await p2.click('#rq-send');
         await p2.locator('#rq-list', { hasText: 'Please add a price list to the shop' }).waitFor();
         const info = await p2.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, status: document.querySelector('#rq-list .st')?.textContent }));
+        const mailRow = await p2.evaluate(() => { const r = document.getElementById('rq-mail-row'), c = document.getElementById('rq-mail'); return { shown: !!r && !r.hidden && r.offsetParent !== null, checked: !!c && c.checked, off: !!c && c.disabled, note: document.getElementById('rq-mail-note')?.textContent || '' }; });   // T-0205
+        check(`${size}: Your requests has the email switch, and says plainly when this Chamber cannot send email`, mailRow.shown && mailRow.checked && (mailRow.off ? /no email set up/.test(mailRow.note) : true), JSON.stringify(mailRow));
+        const pic = await p2.evaluate(async () => { const im = document.querySelector('#rq-list .rq-files img'); if (!im) return { found: false }; if (!im.complete) await new Promise(r => { im.onload = im.onerror = r; }); return { found: true, w: im.naturalWidth, src: im.getAttribute('src'), sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }; });   // T-0206
+        check(`${size}: a picture added to a request is named before sending, goes with it, and shows on the requester's own request`, /price list\.png/.test(pickedNote) && pic.found && pic.w === 1 && /^\/api\/requests\/files\/[a-f0-9]{24}$/.test(pic.src) && pic.sw <= pic.cw + 1, JSON.stringify({ pickedNote, pic }));
         try { await p2.screenshot({ path: path.join(OUT, `${size}-requests.png`), fullPage: true }); } catch {}
         check(`${size}: a client who joins through a requester link lands on Your requests, sends a request and sees it waiting`, onReq && info.status === 'Waiting for approval' && info.sw <= info.cw + 1 && errs2.length === 0, JSON.stringify({ url: p2.url(), info, errs2 }));
       } finally { await ctx2.close(); }
       const board = await page.evaluate(async () => ((await (await fetch('/api/tickets')).json()).tickets || []).some(t => /Please add a price list to the shop/.test(t.title) && (t.tags || []).includes('request')));
+      await page.goto(BASE + '/app', { waitUntil: 'networkidle' });                 // T-0206: the team sees the picture on the ticket
+      const seen = await page.evaluate(async () => { const t = ((await (await fetch('/api/tickets')).json()).tickets || []).find(t => /Please add a price list to the shop/.test(t.title)); if (!t) return {}; await loadTickets(); openTicketModal(t.id); await new Promise(r => setTimeout(r, 300)); const box = document.getElementById('tm-files'), im = box && box.querySelector('img'); if (im && !im.complete) await new Promise(r => { im.onload = im.onerror = r; }); const out = { files: (t.files || []).length, shown: !!box && box.style.display !== 'none' && /Sent with the request/.test(box.textContent), w: im ? im.naturalWidth : 0, fits: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1 }; closeTicketModal(); return out; });
+      check(`${size}: the team sees the requester's picture on the ticket`, seen.files === 1 && seen.shown && seen.w === 1 && seen.fits, JSON.stringify(seen));
+      const drafted = await page.evaluate(async () => {                               // T-0207: an agent drafts a plan for the request; a person adds it
+        const h = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + sessionStorage.getItem('bcAsker') };
+        let job = null; for (let i = 0; i < 6 && !(job && /price list/.test(job.title)); i++) job = (await (await fetch('/api/drafts/next', { headers: h })).json()).job;
+        if (!job) return { job: null };
+        const r = await fetch(`/api/tickets/${job.ticket}/draft`, { method: 'POST', headers: h, body: JSON.stringify({ understood: 'The client wants a price list on the shop page.', plan: '1. Add a prices section to shop.html\n2. Link it from the menu', touches: 'shop.html', risk: 'low', risk_why: 'one page', who: 'agent', who_why: 'small and clear', question: 'Which prices should be listed?' }) });
+        await loadTickets(); openTicketModal(job.ticket); await new Promise(r => setTimeout(r, 300));
+        const box = document.getElementById('tm-draft');
+        return { status: r.status, files: (job.files || []).length, shown: !!box && box.style.display !== 'none', txt: box ? box.innerText : '', fits: document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1 };
+      });
+      check(`${size}: an agent's draft shows on the request as a suggestion, apart from the request itself`, drafted.status === 201 && drafted.files === 1 && drafted.shown && /Agent's suggestion/.test(drafted.txt) && /not part of the ticket until a person adds it/.test(drafted.txt) && /Which prices should be listed/.test(drafted.txt) && drafted.fits, JSON.stringify(drafted).slice(0, 500));
+      await shot('request-draft');
+      await page.locator('#tm-draft button', { hasText: 'Add to the ticket' }).click();
+      await page.waitForFunction(() => /Plan drafted by/.test(document.getElementById('tm-body')?.innerText || ''), null, { timeout: 8000 });
+      const usedD = await page.evaluate(() => ({ body: document.getElementById('tm-body').innerText, draft: document.getElementById('tm-draft').innerText, btn: !!document.querySelector('#tm-draft button') })); await page.evaluate(() => closeTicketModal());
+      check(`${size}: Add to the ticket puts the plan under the request and says who added it`, /Sent by the browser check\./.test(usedD.body) && /Link it from the menu/.test(usedD.body) && /added to the ticket by/.test(usedD.draft) && !usedD.btn, JSON.stringify(usedD).slice(0, 400));
+      await page.goto(BASE + '/billing', { waitUntil: 'networkidle' });
       check(`${size}: the account page shows the approval rules, makes a requester link, and the owner sees the request on the board`, rulesOk && !!link && board, JSON.stringify({ rulesOk, link: !!link, board }));
     });
     await step('account page: check the record and AI usage', async () => {                           // T-0194

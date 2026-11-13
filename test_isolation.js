@@ -15,11 +15,12 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-iso-'));
 const PORT = 20000 + Math.floor(Math.random() * 20000);
 const BASE = `http://127.0.0.1:${PORT}`;
 const INVITE = 'TEST-CODE-1234';
+const freePort = () => new Promise((resolve, reject) => { const s = require('net').createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });   // a port the system says is free right now; fixed ranges collided now and then with the runner's own outgoing connections
 const env = { ...process.env, CHAMBER_ACCOUNTS: '1', CHAMBER_STRIPE_SECRET: 'sk_test_dummy', CHAMBER_STRIPE_WEBHOOK_SECRET: 'whsec_dummy',
   CHAMBER_STRIPE_PRICE: 'price_dummy', CHAMBER_PUBLIC_URL: BASE, CHAMBER_INVITE_CODE: INVITE, CHAMBER_PORT: String(PORT), CHAMBER_HOST: '127.0.0.1', CHAMBER_TEST_HOOKS: '1', CHAMBER_WRITES_PER_MINUTE: '1000', CHAMBER_MAX_ROOMS: '4', CHAMBER_MAX_MEMBERS: '3', CHAMBER_MAX_STREAMS_SESSION: '3', CHAMBER_LOGIN_PER_MINUTE: '1000',
   CHAMBER_DATA: path.join(TMP, 'chamber.json'), CHAMBER_REVIEWS: path.join(TMP, 'reviews.json'),
   CHAMBER_TICKETS_FILE: path.join(TMP, 'tickets.json'), CHAMBER_TICKETS_CLI: path.join(APP, 'tickets-cli.js') };
-const FLEET_PORT = 42000 + Math.floor(Math.random() * 9000); env.CHAMBER_FLEET_URL = `http://127.0.0.1:${FLEET_PORT}/fleet/tenant/routers`; env.CHAMBER_FLEET_CACHE_MS = '300';   // T-0153: a stub fleet (loopback, test hooks only), started in the fleet section
+const FLEET_PORT = 10000 + Math.floor(Math.random() * 9000);   /* below the system's outgoing range */ env.CHAMBER_FLEET_URL = `http://127.0.0.1:${FLEET_PORT}/fleet/tenant/routers`; env.CHAMBER_FLEET_CACHE_MS = '300';   // T-0153: a stub fleet (loopback, test hooks only), started in the fleet section
 
 let pass = 0, fail = 0;
 function check(name, ok, detail = '') { if (ok) { pass++; console.log(`  ok   ${name}`); } else { fail++; console.log(`  FAIL ${name} ${detail}`); } }
@@ -1251,8 +1252,8 @@ function markPaid(...emails) {                                   // simulate a p
         if (it && rq.method === 'POST') { subS.items.data.find(i => i.id === it[1]).quantity = Number(q.quantity); return send(200, {}); }
         if (it && rq.method === 'DELETE') { subS.items.data = subS.items.data.filter(i => i.id !== it[1]); return send(200, {}); }
         send(404, { error: { message: 'no such thing' } }); }); });
-      const sport = 62000 + Math.floor(Math.random() * 1900); await new Promise(r => fake.listen(sport, '127.0.0.1', r));
-      const port5 = 60100 + Math.floor(Math.random() * 1800), B5 = `http://127.0.0.1:${port5}`; const dir5 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-stor-'));
+      const sport = await freePort(); await new Promise(r => fake.listen(sport, '127.0.0.1', r));
+      const port5 = await freePort(), B5 = `http://127.0.0.1:${port5}`; const dir5 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-stor-'));
       const env5 = { ...env, CHAMBER_STRIPE_STORAGE_PRICE: 'price_storage', CHAMBER_STORAGE_PRICE_LABEL: '$24 / year', CHAMBER_STORAGE_SELLABLE_GB: '30', CHAMBER_STRIPE_TEST_PORT: String(sport), CHAMBER_PUBLIC_URL: B5, CHAMBER_PORT: String(port5), CHAMBER_DATA: path.join(dir5, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir5, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir5, 'tickets.json') };
       const srv5 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env5, stdio: ['ignore', 'pipe', 'pipe'] }); let log5 = ''; srv5.stdout.on('data', d => log5 += d); srv5.stderr.on('data', d => log5 += d);
       const c5 = async (method, p, { token, body } = {}) => { const r = await fetch(B5 + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1306,7 +1307,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { srv5.kill(); fake.close(); try { fs.rmSync(dir5, { recursive: true, force: true }); } catch {} }
     }
     console.log('approval rules and business roles (T-0190, T-0199)');
-    { const port6 = 61950 + Math.floor(Math.random() * 1500), B6 = `http://127.0.0.1:${port6}`; const dir6 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-roles-'));
+    { const port6 = await freePort(), B6 = `http://127.0.0.1:${port6}`; const dir6 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-roles-'));
       const env6 = { ...env, CHAMBER_PUBLIC_URL: B6, CHAMBER_PORT: String(port6), CHAMBER_MAX_GUESTS: '3', CHAMBER_DATA: path.join(dir6, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir6, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir6, 'tickets.json') };
       const srv6 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env6, stdio: ['ignore', 'pipe', 'pipe'] }); let log6 = ''; srv6.stdout.on('data', d => log6 += d); srv6.stderr.on('data', d => log6 += d);
       const c6 = async (method, p, { token, body, redirect } = {}) => { const r = await fetch(B6 + p, { method, redirect: redirect || 'follow', signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text, headers: r.headers }; };
@@ -1381,7 +1382,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { srv6.kill(); try { fs.rmSync(dir6, { recursive: true, force: true }); } catch {} }
     }
     console.log('laptop install without admin rights (T-0186)');
-    { const port7 = 63500 + Math.floor(Math.random() * 1500), B7 = `http://127.0.0.1:${port7}`; const dir7 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-laptop-'));
+    { const port7 = await freePort(), B7 = `http://127.0.0.1:${port7}`; const dir7 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-laptop-'));
       const env7 = { ...env, CHAMBER_PUBLIC_URL: B7, CHAMBER_PORT: String(port7), CHAMBER_DATA: path.join(dir7, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir7, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir7, 'tickets.json') };
       const srv7 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env7, stdio: ['ignore', 'pipe', 'pipe'] }); let log7 = ''; srv7.stdout.on('data', d => log7 += d); srv7.stderr.on('data', d => log7 += d);
       const c7 = async (method, p, { token, body } = {}) => { const r = await fetch(B7 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1414,7 +1415,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { if (agent) { try { process.kill(-agent.pid, 'SIGTERM'); } catch {} } srv7.kill(); try { fs.rmSync(dir7, { recursive: true, force: true }); } catch {} }
     }
     console.log('review that talks back (T-0189)');
-    { const port8 = 58200 + Math.floor(Math.random() * 1500), B8 = `http://127.0.0.1:${port8}`; const dir8 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-review-'));
+    { const port8 = await freePort(), B8 = `http://127.0.0.1:${port8}`; const dir8 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-review-'));
       const env8 = { ...env, CHAMBER_PUBLIC_URL: B8, CHAMBER_PORT: String(port8), CHAMBER_DATA: path.join(dir8, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir8, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir8, 'tickets.json') };
       const srv8 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env8, stdio: ['ignore', 'pipe', 'pipe'] }); let log8 = ''; srv8.stdout.on('data', d => log8 += d); srv8.stderr.on('data', d => log8 += d);
       const c8 = async (method, p, { token, body } = {}) => { const r = await fetch(B8 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1492,7 +1493,7 @@ function markPaid(...emails) {                                   // simulate a p
       check('T-0194: the ticket worker reports what each run cost; totals are kept on the ticket and show on the usage page; nonsense is refused', lg.status === 200 && lg2.status === 400 && tu?.runs === 2 && tu.cost_cents === 15 && tu.ms === 4000 && ut?.worker?.cost_cents === 15, JSON.stringify([tu, ut]));
     }
     console.log('nobody waits silently for an approval (T-0201)');
-    { const port10 = 56500 + Math.floor(Math.random() * 1500), B10 = `http://127.0.0.1:${port10}`; const dir10 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-remind-'));
+    { const port10 = await freePort(), B10 = `http://127.0.0.1:${port10}`; const dir10 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-remind-'));
       const env10 = { ...env, CHAMBER_PUBLIC_URL: B10, CHAMBER_PORT: String(port10), CHAMBER_DATA: path.join(dir10, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir10, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir10, 'tickets.json') };
       const srv10 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env10, stdio: ['ignore', 'pipe', 'pipe'] }); let log10 = ''; srv10.stdout.on('data', d => log10 += d); srv10.stderr.on('data', d => log10 += d);
       const c10 = async (method, p, { token, body } = {}) => { const r = await fetch(B10 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1526,7 +1527,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { srv10.kill(); try { fs.rmSync(dir10, { recursive: true, force: true }); } catch {} }
     }
     console.log('a weekly report for the business (T-0202)');
-    { const port11 = 54800 + Math.floor(Math.random() * 1500), B11 = `http://127.0.0.1:${port11}`; const dir11 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-report-'));
+    { const port11 = await freePort(), B11 = `http://127.0.0.1:${port11}`; const dir11 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-report-'));
       const env11 = { ...env, CHAMBER_PUBLIC_URL: B11, CHAMBER_PORT: String(port11), CHAMBER_DATA: path.join(dir11, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir11, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir11, 'tickets.json') };
       const srv11 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env11, stdio: ['ignore', 'pipe', 'pipe'] }); let log11 = ''; srv11.stdout.on('data', d => log11 += d); srv11.stderr.on('data', d => log11 += d);
       const c11 = async (method, p, { token, body } = {}) => { const r = await fetch(B11 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text, headers: r.headers }; };
@@ -1559,7 +1560,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { srv11.kill(); try { fs.rmSync(dir11, { recursive: true, force: true }); } catch {} }
     }
     console.log('an AI budget the business sets (T-0203)');
-    { const port12 = 53100 + Math.floor(Math.random() * 1500), B12 = `http://127.0.0.1:${port12}`; const dir12 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-budget-'));
+    { const port12 = await freePort(), B12 = `http://127.0.0.1:${port12}`; const dir12 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-budget-'));
       const env12 = { ...env, CHAMBER_PUBLIC_URL: B12, CHAMBER_PORT: String(port12), CHAMBER_DATA: path.join(dir12, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir12, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir12, 'tickets.json') };
       const srv12 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env12, stdio: ['ignore', 'pipe', 'pipe'] }); let log12 = ''; srv12.stdout.on('data', d => log12 += d); srv12.stderr.on('data', d => log12 += d);
       const c12 = async (method, p, { token, body } = {}) => { const r = await fetch(B12 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1597,7 +1598,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { srv12.kill(); try { fs.rmSync(dir12, { recursive: true, force: true }); } catch {} }
     }
     console.log('an evidence pack for each job (T-0204)');
-    { const port13 = 51500 + Math.floor(Math.random() * 1400), B13 = `http://127.0.0.1:${port13}`; const dir13 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-evidence-'));
+    { const port13 = await freePort(), B13 = `http://127.0.0.1:${port13}`; const dir13 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-evidence-'));
       const env13 = { ...env, CHAMBER_PUBLIC_URL: B13, CHAMBER_PORT: String(port13), CHAMBER_DATA: path.join(dir13, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir13, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir13, 'tickets.json') };
       const srv13 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env13, stdio: ['ignore', 'pipe', 'pipe'] }); let log13 = ''; srv13.stdout.on('data', d => log13 += d); srv13.stderr.on('data', d => log13 += d);
       const c13 = async (method, p, { token, body } = {}) => { const r = await fetch(B13 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1637,7 +1638,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { srv13.kill(); try { fs.rmSync(dir13, { recursive: true, force: true }); } catch {} }
     }
     console.log('standing approvals for routine jobs (T-0200)');
-    { const port14 = 48100 + Math.floor(Math.random() * 1000), B14 = `http://127.0.0.1:${port14}`; const dir14 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-standing-'));
+    { const port14 = await freePort(), B14 = `http://127.0.0.1:${port14}`; const dir14 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-standing-'));
       const env14 = { ...env, CHAMBER_PUBLIC_URL: B14, CHAMBER_PORT: String(port14), CHAMBER_DATA: path.join(dir14, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir14, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir14, 'tickets.json') };
       const srv14 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env14, stdio: ['ignore', 'pipe', 'pipe'] }); let log14 = ''; srv14.stdout.on('data', d => log14 += d); srv14.stderr.on('data', d => log14 += d);
       const c14 = async (method, p, { token, body } = {}) => { const r = await fetch(B14 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1695,7 +1696,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { srv14.kill(); try { fs.rmSync(dir14, { recursive: true, force: true }); } catch {} }
     }
     console.log('any AI tool can use Chamber through MCP (T-0198)');
-    { const port15 = 47100 + Math.floor(Math.random() * 1000), B15 = `http://127.0.0.1:${port15}`; const dir15 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-mcp-'));
+    { const port15 = await freePort(), B15 = `http://127.0.0.1:${port15}`; const dir15 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-mcp-'));
       const env15 = { ...env, CHAMBER_PUBLIC_URL: B15, CHAMBER_PORT: String(port15), CHAMBER_DATA: path.join(dir15, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir15, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir15, 'tickets.json') };
       const srv15 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env15, stdio: ['ignore', 'pipe', 'pipe'] }); let log15 = ''; srv15.stdout.on('data', d => log15 += d); srv15.stderr.on('data', d => log15 += d);
       const c15 = async (method, p, { token, body } = {}) => { const r = await fetch(B15 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1750,7 +1751,7 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { for (const m of [mcp1, mcp2, mcp3]) try { if (m) m.p.kill(); } catch {} srv15.kill(); try { fs.rmSync(dir15, { recursive: true, force: true }); } catch {} }
     }
     console.log('the agent asks, a person taps Allow or Deny (T-0188)');
-    { const port16 = 46100 + Math.floor(Math.random() * 900), B16 = `http://127.0.0.1:${port16}`; const dir16 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-asks-'));
+    { const port16 = await freePort(), B16 = `http://127.0.0.1:${port16}`; const dir16 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-asks-'));
       const env16 = { ...env, CHAMBER_PUBLIC_URL: B16, CHAMBER_PORT: String(port16), CHAMBER_DATA: path.join(dir16, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir16, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir16, 'tickets.json') };
       const srv16 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env16, stdio: ['ignore', 'pipe', 'pipe'] }); let log16 = ''; srv16.stdout.on('data', d => log16 += d); srv16.stderr.on('data', d => log16 += d);
       const c16 = async (method, p, { token, body } = {}) => { const r = await fetch(B16 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1821,6 +1822,111 @@ function markPaid(...emails) {                                   // simulate a p
         check('T-0188: the app shows waiting questions with Allow once / Deny, and the account page has the switch per agent', /id="ask-bar"/.test(app16) && /function answerAsk\(/.test(app16) && /d\.kind === 'asks'/.test(app16) && /data-mayask=/.test(land16));
       } finally { srv16.kill(); try { fs.rmSync(dir16, { recursive: true, force: true }); } catch {} }
     }
+    console.log('requests: an email when a request moves (T-0205)');
+    { const port17 = await freePort(), B17 = `http://127.0.0.1:${port17}`; const dir17 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-reqmail-'));
+      const env17 = { ...env, CHAMBER_PUBLIC_URL: B17, CHAMBER_PORT: String(port17), CHAMBER_DATA: path.join(dir17, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir17, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir17, 'tickets.json'), CHAMBER_FILES_QUOTA_MB: '1', CHAMBER_REQUEST_FILES_DAY: '6' };   // T-0206: a 1 MB file allowance and 6 files a day, to reach both limits
+      const srv17 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env17, stdio: ['ignore', 'pipe', 'pipe'] }); let log17 = ''; srv17.stdout.on('data', d => log17 += d); srv17.stderr.on('data', d => log17 += d);
+      const c17 = async (method, p, { token, body } = {}) => { const r = await fetch(B17 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c17('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', su = async (u, extra) => (await c17('POST', '/account/signup', { body: { email: `${u}@test.invalid`, username: u, password: PW, ...extra } })).json || {};
+        const confirm = async u => { await new Promise(r => setTimeout(r, 150)); const l = (log17.match(new RegExp(`\\[accounts\\] verify link for ${u}: (\\S+)`)) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); return !!l; };
+        const O = await su('own17', { invite: INVITE }); await confirm('own17');
+        const f17 = path.join(dir17, 'accounts.json'), s17 = JSON.parse(fs.readFileSync(f17, 'utf8')); Object.assign(s17.accounts['own17@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f17, JSON.stringify(s17));
+        const mCode = ((await c17('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1], M = await su('mem17', { join: mCode }); await confirm('mem17');
+        const rCode = ((await c17('POST', '/account/workspace/invite-reset', { token: O.token, body: { role: 'requester' } })).json?.inviteUrl || '').split('/join/')[1];
+        const R = await su('req17', { join: rCode }), R2 = await su('other17', { join: rCode }); await confirm('other17');
+        const AG = (await c17('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Bot', username: 'bot17' } })).json?.token;
+        await c17('POST', '/api/messages', { token: O.token, body: { text: 'CHAT-LINE-NOT-FOR-CLIENTS about the contact form', room: 'general' } });
+        const mails = async () => { await new Promise(r => setTimeout(r, 200)); return [...log17.matchAll(/\[request-mail\] to (\S+): (.+)/g)].map(m => ({ to: m[1], ...JSON.parse(m[2]) })); };
+        const send = async (who, title, body) => (await c17('POST', '/api/requests', { token: who.token, body: { title, body } })).json?.id;
+        const act = (who, id, verb, body) => c17('POST', `/api/tickets/${id}/${verb}`, { token: who.token, body: { by: 'x', ...body } });
+        const tk = async id => ((await c17('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(t => t.id === id) || {};
+        const qA = await send(R, 'Add a contact form to the shop page', 'By Friday if possible.'), qOther = await send(R2, 'Other client: new logo', 'PRIVATE-TO-OTHER-CLIENT');
+        const ap0 = await act(O, qA, 'approve'), m0 = await mails(), pg0 = (await c17('GET', '/api/requests', { token: R.token })).json?.mail || {}, t0 = await tk(qA);
+        check('T-0205: nothing is sent to an address that was never confirmed, and the page tells the person so', !!qA && ap0.status === 200 && m0.length === 0 && pg0.on === true && pg0.confirmed === false && t0.request_mail?.approved?.sent === false && t0.request_mail.approved.why === 'email not confirmed', JSON.stringify([ap0.status, m0.length, pg0, t0.request_mail]));
+        const okc = await confirm('req17');
+        const cl1 = await act(M, qA, 'claim'), m1 = await mails();
+        check('T-0205: when work starts the requester gets one short email, with a link to Your requests and how to stop the emails', okc && cl1.status === 200 && m1.length === 1 && m1[0].to === 'req17@test.invalid' && m1[0].subject === 'Chamber: your request "Add a contact form to the shop page" is being worked on'
+          && m1[0].text.includes(`(${qA})`) && /Work on it has started\./.test(m1[0].text) && m1[0].text.includes(`${B17}/requests`) && /To stop these emails/.test(m1[0].text), JSON.stringify(m1).slice(0, 400));
+        await act(M, qA, 'release', { note: 'handing it back for a moment' }); await act(M, qA, 'claim'); const m2 = await mails();
+        check('T-0205: a request that is handed back and taken again says nothing twice', m2.length === 1 && (await tk(qA)).status === 'in_progress', String(m2.length));
+        const cls = await act(M, qA, 'close', { note: `The contact form is on the shop page now.\n\`\`\`js\nconst secretCode = 1;\n\`\`\`\nIt reuses the mailer from ${qOther}.` }), m3 = await mails(), done = m3[1] || {};
+        check('T-0205: when it is done the email carries the closing note, without code and without other tickets', cls.status === 200 && m3.length === 2 && /is done$/.test(done.subject || '') && /The contact form is on the shop page now\./.test(done.text) && /\(code left out\)/.test(done.text) && !/secretCode/.test(done.text) && !done.text.includes(qOther) && /another ticket/.test(done.text), JSON.stringify(done).slice(0, 500));
+        const qB = await send(R, 'Rebuild the whole site in a week'), rj = await act(O, qB, 'reject', { reason: 'Too big for one request. Please send the parts one by one.' }), m4 = await mails(), no = m4[2] || {};
+        check('T-0205: when it is turned down the email gives the reason', rj.status === 200 && m4.length === 3 && /is not going ahead$/.test(no.subject || '') && /Too big for one request/.test(no.text), JSON.stringify(no).slice(0, 300));
+        const offBad = await c17('POST', '/api/requests/mail', { token: R.token, body: { on: 'no' } }), offAg = await c17('POST', '/api/requests/mail', { token: AG, body: { on: false } }), off = await c17('POST', '/api/requests/mail', { token: R.token, body: { on: false } });
+        const qC = await send(R, 'Add opening hours to the footer'); await act(O, qC, 'approve'); const m5 = await mails(), pg5 = (await c17('GET', '/api/requests', { token: R.token })).json?.mail || {};
+        const on = await c17('POST', '/api/requests/mail', { token: R.token, body: { on: true } }); await act(M, qC, 'claim'); const m6 = await mails();
+        check('T-0205: the requester can switch the emails off and on again, from their own page; old news is not sent later', offBad.status === 400 && offAg.status === 403 && off.status === 200 && m5.length === 3 && pg5.on === false && (await tk(qC)).request_mail?.approved?.why === 'switched off' && on.status === 200 && m6.length === 4 && /is being worked on$/.test(m6[3].subject), JSON.stringify([offBad.status, offAg.status, off.status, m5.length, pg5, m6.length]));
+        const qM = await send(M, 'A request from a member'); await act(M, qM, 'approve'); const tPlain = ((await c17('POST', '/api/tickets', { token: M.token, body: { title: 'Not a request at all', for: 'human', by: 'x' } })).json?.message || '').match(/T-\d+/)?.[0]; await act(O, tPlain, 'approve');
+        const m7 = await mails(), all = m7.map(m => m.subject + '\n' + m.text).join('\n');
+        check('T-0205: no email about a change the person made themselves, none for tickets that are not requests, and never chat or another client\'s request', m7.length === 4 && m7.every(m => m.to === 'req17@test.invalid') && !/CHAT-LINE-NOT-FOR-CLIENTS|PRIVATE-TO-OTHER-CLIENT|new logo/.test(all) && (await tk(qM)).request_mail?.approved?.why === 'their own change' && !(await tk(tPlain)).request_mail, JSON.stringify([m7.length, m7.map(m => m.to)]));
+        const au17 = (await c17('GET', '/account/workspace/audit?format=json', { token: O.token })).json?.entries || [];
+        check('T-0205: each email sent is on the activity record, and the requester still reaches nothing but their requests', au17.filter(e => e.action === 'request-mail').length === 4 && au17.some(e => e.action === 'request-mail-off' && e.actor === 'req17') && (await c17('GET', '/api/messages', { token: R.token })).status === 403 && (await c17('POST', '/api/requests/mail/x', { token: R.token, body: { on: true } })).status === 403);
+        // T-0206: pictures and files on a request
+        const up17 = async (token, name, type, buf, p = '/api/requests/files') => { const r = await fetch(B17 + p, { method: 'POST', signal: AbortSignal.timeout(8000), headers: { Authorization: `Bearer ${token}`, 'Content-Type': type, 'X-File-Name': encodeURIComponent(name) }, body: buf }); let j = null; try { j = await r.json(); } catch {} return { status: r.status, json: j }; };
+        const raw17 = async (token, p) => { const r = await fetch(B17 + p, { signal: AbortSignal.timeout(8000), headers: { Authorization: `Bearer ${token}` } }); return { status: r.status, buf: Buffer.from(await r.arrayBuffer()), type: r.headers.get('content-type'), csp: r.headers.get('content-security-policy') }; };
+        const png17 = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(300 * 1024, 7)]), txt17 = Buffer.from('Steps: open the shop page, tap Pay, nothing happens.\n');
+        const used0 = (await c17('GET', '/api/files', { token: O.token })).json?.bytes || 0;
+        const f1 = await up17(R.token, 'broken button.png', 'image/png', png17), f2 = await up17(R.token, 'steps.txt', 'text/plain', txt17);
+        const qF = (await c17('POST', '/api/requests', { token: R.token, body: { title: 'The pay button is broken', body: 'See the picture.', files: [f1.json?.file?.id, f2.json?.file?.id] } })).json?.id;
+        const mineF = ((await c17('GET', '/api/requests', { token: R.token })).json?.requests || []).find(q => q.id === qF) || {}, own1 = await raw17(R.token, `/api/requests/files/${f1.json?.file?.id}`);
+        check('T-0206: a requester adds files to a request, sees them on their own request and can open them', f1.status === 201 && f2.status === 201 && !!qF && (mineF.files || []).length === 2 && mineF.files[0].url === `/api/requests/files/${mineF.files[0].id}` && !('by' in (f1.json.file || {})) && own1.status === 200 && own1.buf.equals(png17) && own1.type === 'image/png' && /sandbox/.test(own1.csp || ''), JSON.stringify([f1.status, f2.status, qF, mineF.files, own1.status]));
+        const chat17 = await up17(O.token, 'team-notes.txt', 'text/plain', Buffer.from('TEAM-ONLY-FILE'), '/api/files?room=general'); await c17('POST', '/api/messages', { token: O.token, body: { text: 'notes', room: 'general', attachments: [chat17.json?.file?.id] } });
+        const fO = await up17(R2.token, 'other-client.txt', 'text/plain', Buffer.from('OTHER-CLIENT-FILE')), qO = (await c17('POST', '/api/requests', { token: R2.token, body: { title: 'Other client: with a file', files: [fO.json?.file?.id] } })).json?.id;
+        const peek = []; for (const p of [`/api/requests/files/${fO.json?.file?.id}`, `/api/requests/files/${chat17.json?.file?.id}`, `/api/files/${f1.json?.file?.id}`, `/api/files/${chat17.json?.file?.id}`, '/api/files']) peek.push((await raw17(R.token, p)).status);
+        const cross = (await raw17(R2.token, `/api/requests/files/${f1.json?.file?.id}`)).status, memTry = (await raw17(M.token, `/api/requests/files/${f1.json?.file?.id}`)).status;
+        check('T-0206: a requester can open the files of their own requests and nothing else: not another client\'s, not a file from chat, not the file list', !!qO && chat17.status === 201 && peek.join() === '404,404,403,403,403' && cross === 404 && memTry === 404, peek.join() + ' ' + cross + ' ' + memTry);
+        const onT = ((await c17('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(t => t.id === qF) || {}, teamGet = await raw17(M.token, `/api/files/${f2.json?.file?.id}`), botGet = await raw17(AG, `/api/files/${f1.json?.file?.id}`);
+        check('T-0206: the team (and its agents) see the files on the ticket and can open them', (onT.files || []).length === 2 && onT.files.some(f => f.name === 'broken button.png' && f.by === 'req17') && teamGet.status === 200 && teamGet.buf.equals(txt17) && botGet.status === 200, JSON.stringify(onT.files || []).slice(0, 300));
+        const usedNow = (await c17('GET', '/api/files', { token: O.token })).json || {}, listed = (usedNow.files || []).filter(f => f.room === 'req:' + qF).length;
+        check('T-0206: request files count toward the workspace\'s storage and show in the Files tab, where the team can delete them', usedNow.bytes === used0 + png17.length + txt17.length + 14 + 17 && listed === 2, JSON.stringify([used0, usedNow.bytes, listed]));
+        const p1 = await up17(R.token, 'a.txt', 'text/plain', Buffer.from('a')), p2 = await up17(R.token, 'b.txt', 'text/plain', Buffer.from('b')), p3 = await up17(R.token, 'c.txt', 'text/plain', Buffer.from('c')), p4 = await up17(R.token, 'd.txt', 'text/plain', Buffer.from('d'));
+        const four = await c17('POST', '/api/requests', { token: R.token, body: { title: 'Too many files', files: [p1, p2, p3].map(x => x.json?.file?.id).concat(f1.json?.file?.id) } });
+        const reuse = await c17('POST', '/api/requests', { token: R.token, body: { title: 'Reusing a sent file', files: [f1.json?.file?.id] } }), foreign = await c17('POST', '/api/requests', { token: R.token, body: { title: 'Naming a chat file', files: [chat17.json?.file?.id] } });
+        const three = await c17('POST', '/api/requests', { token: R.token, body: { title: 'Three files is fine', files: [p1, p2, p3].map(x => x.json?.file?.id) } }), agUp = await up17(AG, 'x.txt', 'text/plain', Buffer.from('x')), vUp = await up17(M.token, 'm.txt', 'text/plain', Buffer.from('m'));
+        check('T-0206: at most 3 files per request; a file cannot be used twice, and a request cannot take a file that is not the sender\'s own upload', p3.status === 201 && p4.status === 409 && four.status === 400 && reuse.status === 400 && foreign.status === 400 && three.status === 200 && agUp.status === 403 && vUp.status === 201, [p3.status, p4.status, four.status, reuse.status, foreign.status, three.status, agUp.status, vUp.status].join());
+        const big = await up17(R.token, 'big.bin', 'application/octet-stream', Buffer.alloc(800 * 1024, 1));
+        check('T-0206: when the workspace\'s file space is full the requester is told in plain words', big.status === 413 && /file space is full/.test(big.json?.error || ''), JSON.stringify(big));
+        await c17('POST', `/api/tickets/${qF}/approve`, { token: O.token, body: { by: 'x' } });
+        const ev17 = (await c17('GET', `/api/tickets/${qF}/evidence?format=json`, { token: O.token })).json?.tickets?.[0] || {}, del = await fetch(`${B17}/api/files/${f2.json?.file?.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${O.token}` } });
+        const afterDel = ((await c17('GET', '/api/requests', { token: R.token })).json?.requests || []).find(q => q.id === qF) || {};
+        check('T-0206: the evidence pack lists what was sent with the request, and a file the team deletes is gone for the requester too', (ev17.request_files || []).length === 2 && ev17.request_files.every(f => /^[a-f0-9]{64}$/.test(f.sha256 || '')) && del.status === 200 && (afterDel.files || []).length === 1, JSON.stringify([ev17.request_files, del.status, (afterDel.files || []).length]).slice(0, 300));
+        const d5 = await up17(R.token, 'e.txt', 'text/plain', Buffer.from('e')), d6 = await up17(R.token, 'f.txt', 'text/plain', Buffer.from('f')), d7 = await up17(R.token, 'g.txt', 'text/plain', Buffer.from('g'));
+        check('T-0206: one person can add only so many files a day (6 in this test), so an invited client cannot fill the team\'s file space', d5.status === 201 && d6.status === 201 && d7.status === 429 && /limit/.test(d7.json?.error || ''), [d5.status, d6.status, d7.status].join());
+        // T-0207: an agent drafts a plan for each new request
+        const pong0 = (await c17('POST', '/api/ping', { token: AG, body: { username: 'bot17', version: '3.23.0' } })).json || {};
+        const nxP = await c17('GET', '/api/drafts/next', { token: O.token }), nx1 = (await c17('GET', '/api/drafts/next', { token: AG })).json?.job || {};
+        check('T-0207: a new request waits for a draft; the agent learns it from its ping and takes the oldest one, with the request text; a person cannot take it', pong0.drafts >= 1 && nxP.status === 403 && nx1.ticket === qOther && nx1.title === 'Other client: new logo' && nx1.body === 'PRIVATE-TO-OTHER-CLIENT' && nx1.by === 'other17' && Array.isArray(nx1.files), JSON.stringify([pong0.drafts, nxP.status, nx1]).slice(0, 300));
+        const AG2 = (await c17('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Bot2', username: 'bot17b' } })).json?.token;
+        const good = { understood: 'The client wants a new logo on the site.', plan: '1. Get the logo file from the client\n2. Replace logo.png\n3. Check the header on a phone', touches: 'public/logo.png', risk: 'LOW', risk_why: 'one image file', who: 'person', who_why: 'needs the file from the client', question: 'Can you send the logo as a PNG?', usage: { cost_cents: 2.5 } };
+        const dOther = await c17('POST', `/api/tickets/${qOther}/draft`, { token: AG2, body: good }), dBad = await c17('POST', `/api/tickets/${qOther}/draft`, { token: AG, body: { ...good, risk: 'tiny' } }), dPerson = await c17('POST', `/api/tickets/${qOther}/draft`, { token: O.token, body: good });
+        const dOk = await c17('POST', `/api/tickets/${qOther}/draft`, { token: AG, body: good }), dTwice = await c17('POST', `/api/tickets/${qOther}/draft`, { token: AG, body: good }), tD = await tk(qOther);
+        check('T-0207: only the agent that took the request writes its draft, once, and it must be complete; the request itself is not changed and nothing is approved', !!AG2 && dOther.status === 409 && dBad.status === 400 && dPerson.status === 403 && dOk.status === 201 && dTwice.status === 409 && tD.draft?.by === 'bot17' && tD.draft.risk === 'low' && tD.draft.who === 'person' && tD.draft.question === 'Can you send the logo as a PNG?' && tD.status === 'proposed' && tD.body === 'PRIVATE-TO-OTHER-CLIENT' && !tD.approved_by && tD.usage?.runs === 1 && tD.usage.cost_cents === 2.5, JSON.stringify([dOther.status, dBad.status, dPerson.status, dOk.status, dTwice.status, tD.draft]).slice(0, 400));
+        const mineO = await c17('GET', '/api/requests', { token: R2.token }), mailsD = await mails();
+        check('T-0207: the requester never sees the draft: not on their page and not by email', mineO.status === 200 && /new logo/.test(mineO.text) && !/Replace logo|new logo on the site|Can you send the logo|draft/.test(mineO.text) && !mailsD.some(m => /Replace logo|Can you send the logo/.test(m.text)), mineO.text.slice(0, 300));
+        const useR = await c17('POST', `/api/tickets/${qOther}/draft/use`, { token: R2.token, body: {} }), useA = await c17('POST', `/api/tickets/${qOther}/draft/use`, { token: AG, body: {} }), useM = await c17('POST', `/api/tickets/${qOther}/draft/use`, { token: M.token, body: {} }), useAgain = await c17('POST', `/api/tickets/${qOther}/draft/use`, { token: O.token, body: {} }), tU = await tk(qOther);
+        check('T-0207: a person adds the draft to the ticket (the plan goes under the request and who does it is set); the requester and the agent cannot', useR.status === 403 && useA.status === 403 && useM.status === 200 && useAgain.status === 409 && String(tU.body).startsWith('PRIVATE-TO-OTHER-CLIENT\n\n---\nPlan drafted by bot17 (an AI agent), added by mem17:') && /2\. Replace logo\.png/.test(tU.body) && tU.for === 'human' && tU.draft.used?.by === 'mem17' && tU.status === 'proposed', JSON.stringify([useR.status, useA.status, useM.status, useAgain.status, tU.for, String(tU.body).slice(0, 120)]));
+        const n2 = (await c17('GET', '/api/drafts/next', { token: AG })).json?.job || {}, n2b = (await c17('GET', '/api/drafts/next', { token: AG2 })).json?.job;
+        await new Promise(r => setTimeout(r, 1700)); const n2c = (await c17('GET', '/api/drafts/next', { token: AG2 })).json?.job || {};
+        const late = await c17('POST', `/api/tickets/${n2.ticket}/draft`, { token: AG, body: good }), fail2 = await c17('POST', `/api/tickets/${n2.ticket}/draft`, { token: AG2, body: { failed: 'the model did not answer' } });
+        const n3 = (await c17('GET', '/api/drafts/next', { token: AG })).json?.job || {}; await new Promise(r => setTimeout(r, 1700)); const n4 = (await c17('GET', '/api/drafts/next', { token: AG })).json;
+        check('T-0207: a request an agent took but never answered is offered once more, then left alone; a failed draft is recorded and not retried; files come with the job', n2.ticket === qO && n2.files?.[0]?.name === 'other-client.txt' && !!n2b?.ticket && n2b.ticket !== qO && n2c.ticket === qO && late.status === 409 && fail2.status === 200 && (await tk(qO)).draft_job?.state === 'failed' && n3.ticket === n2b.ticket && n4?.job === null, JSON.stringify([n2.ticket, n2b?.ticket, n2c.ticket, late.status, fail2.status, n3.ticket, n4]));
+        const offM = await c17('POST', '/account/workspace', { token: M.token, body: { requestDrafts: false } }), offO = await c17('POST', '/account/workspace', { token: O.token, body: { requestDrafts: false } });
+        const qOff = await send(R2, 'A request while drafting is off'), tOff = await tk(qOff), nOff = (await c17('GET', '/api/drafts/next', { token: AG })).json || {}, pongOff = (await c17('POST', '/api/ping', { token: AG, body: { username: 'bot17', version: '3.23.0' } })).json || {};
+        const onO = await c17('POST', '/account/workspace', { token: O.token, body: { requestDrafts: true } }), wsNow = (await c17('GET', '/account/workspace', { token: O.token })).json || {};
+        check('T-0207: only the owner switches drafting off; then nothing happens when a request arrives', offM.status === 403 && offO.status === 200 && offO.json?.requestDrafts === false && !!qOff && !tOff.draft_job && nOff.job === null && nOff.off === true && pongOff.drafts === 0 && onO.json?.requestDrafts === true && wsNow.requestDrafts === true, JSON.stringify([offM.status, offO.status, tOff.draft_job, nOff, pongOff.drafts, wsNow.requestDrafts]));
+        const au207 = ((await c17('GET', '/account/workspace/audit?format=json', { token: O.token })).json?.entries || []).map(e => e.action);
+        check('T-0207: taking, writing, failing and adding a draft are on the activity record', ['draft-take', 'ticket-draft', 'draft-failed', 'ticket-draft-used', 'request-drafts'].every(a => au207.includes(a)), [...new Set(au207)].join().slice(0, 300));
+        const app207 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8');
+        check('T-0207: the app shows the draft as the agent\'s suggestion with Add to the ticket, and the account page has the switch', /id="tm-draft"/.test(app207) && /Agent's suggestion/.test(app207) && /function useDraft\(/.test(app207) && /id="rd-on"/.test(fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8')));
+        const pg206 = fs.readFileSync(path.join(APP, 'public', 'requests.html'), 'utf8'), app206 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8');
+        check('T-0206: Your requests has the file picker, and the ticket shows what was sent', /id="rq-files"/.test(pg206) && /\/api\/requests\/files/.test(pg206) && /id="tm-files"/.test(app206) && /Sent with the request/.test(app206));
+        const pg17 = fs.readFileSync(path.join(APP, 'public', 'requests.html'), 'utf8');
+        check('T-0205: the Your requests page has the switch', /id="rq-mail"/.test(pg17) && /\/api\/requests\/mail/.test(pg17) && /Email me when one of my requests moves/.test(pg17));
+      } finally { srv17.kill(); try { fs.rmSync(dir17, { recursive: true, force: true }); } catch {} }
+    }
     console.log('GitHub issues link (T-0197)');
     { const ghCalls = [], ghIssues = [
         { number: 1, title: 'Checkout button does nothing on Safari', body: 'Tap Pay, nothing happens.', labels: [{ name: 'chamber' }], user: { login: 'cust1' }, html_url: 'https://github.com/o/r/issues/1', state: 'open' },
@@ -1837,7 +1943,7 @@ function markPaid(...emails) {                                   // simulate a p
         if (q.method === 'PATCH' && (m = q.url.match(/^\/repos\/o\/r\/issues\/(\d+)$/))) { const i = ghIssues.find(x => x.number === +m[1]); if (i) i.state = 'closed'; return send(200, { number: +m[1], state: 'closed' }); }
         send(404, { message: 'Not Found' }); }); });
       await new Promise(r => gh.listen(0, '127.0.0.1', r));
-      const port17 = 45100 + Math.floor(Math.random() * 900), B17 = `http://127.0.0.1:${port17}`; const dir17 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-github-'));
+      const port17 = await freePort(), B17 = `http://127.0.0.1:${port17}`; const dir17 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-github-'));
       const env17 = { ...env, CHAMBER_PUBLIC_URL: B17, CHAMBER_PORT: String(port17), CHAMBER_DATA: path.join(dir17, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir17, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir17, 'tickets.json'), CHAMBER_GITHUB_API: `http://127.0.0.1:${gh.address().port}` };
       const srv17 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env17, stdio: ['ignore', 'pipe', 'pipe'] }); let log17 = ''; srv17.stdout.on('data', d => log17 += d); srv17.stderr.on('data', d => log17 += d);
       const c17 = async (method, p, { token, body } = {}) => { const r = await fetch(B17 + p, { method, signal: AbortSignal.timeout(20000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
@@ -1883,7 +1989,7 @@ function markPaid(...emails) {                                   // simulate a p
     console.log('free trial (T-0159)');
     { const cfg0 = (await call('GET', '/account/config')).json;
       check('with no trial configured nothing changes: invite code still required, trialDays 0', cfg0.inviteRequired === true && cfg0.trialDays === 0);
-      const port4 = 52000 + Math.floor(Math.random() * 8000), B4 = `http://127.0.0.1:${port4}`; const dir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-trial-'));
+      const port4 = await freePort(), B4 = `http://127.0.0.1:${port4}`; const dir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-trial-'));
       const env4 = { ...env, CHAMBER_TRIAL_DAYS: '14', CHAMBER_TRIAL_SIGNUPS_PER_IP_DAY: '2', CHAMBER_TRIAL_FILES_MB: '1', CHAMBER_PUBLIC_URL: B4, CHAMBER_PORT: String(port4), CHAMBER_DATA: path.join(dir4, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir4, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir4, 'tickets.json') };
       const srv4 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env4, stdio: ['ignore', 'pipe', 'pipe'] }); let log4 = ''; srv4.stdout.on('data', d => log4 += d); srv4.stderr.on('data', d => log4 += d);
       const c4 = async (method, p, { token, body } = {}) => { const r = await fetch(B4 + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };

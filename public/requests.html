@@ -45,6 +45,8 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--line);margin-t
 .rq-btn:disabled{opacity:.6}
 .rq{border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;margin:10px 0;background:var(--surface)}
 .rq .res{margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.rq-files{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}.rq-files img{max-width:120px;max-height:90px;border-radius:6px;border:1px solid var(--line);display:block}.rq-files a{overflow-wrap:anywhere}
+#rq-files{max-width:100%}
 .st{display:inline-block;font-size:11px;padding:0 8px;border-radius:999px;border:1px solid var(--line-strong);color:var(--dim);margin-left:6px}
 .st.done{color:var(--accent);border-color:var(--accent-line)}.st.rejected{color:var(--danger)}
 #rq-msg{display:inline-block;margin-left:10px;font-size:13px}
@@ -57,35 +59,67 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--line);margin-t
 <input id="rq-title" maxlength="120" required placeholder="For example: add a contact form to the shop page">
 <label for="rq-body">Details (optional)</label>
 <textarea id="rq-body" rows="5" maxlength="4000" placeholder="Anything that helps: where, why, by when, and how you will know it is done"></textarea>
+<label for="rq-files">Pictures or files (optional, up to 3)</label>
+<input type="file" id="rq-files" multiple>
+<div class="dim" id="rq-files-note"></div>
 <button type="submit" class="rq-btn" id="rq-send">Send request</button><span id="rq-msg" role="status"></span>
 </form>
 <h2>Sent so far</h2>
 <div id="rq-list"><p class="dim">Loading your requests.</p></div>
+<p class="dim" id="rq-mail-row" hidden><label><input type="checkbox" id="rq-mail"> Email me when one of my requests moves (approved, started, done or not going ahead)</label> <span id="rq-mail-note" role="status"></span></p>
 <p class="dim"><a href="/billing">Your account</a> · <a href="/help">Help</a> · <a href="#" id="rq-out">Log out</a></p>
 <script>
 (() => {                                                                    // T-0199: the page a requester (client, manager) uses
   const $ = id => document.getElementById(id);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const when = s => s ? new Date(s).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  let mailSaid = false, maxFiles = 3, maxMb = 10;
+  const size = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+  function picked() {                                                        // T-0206: say what will be sent, and what will not fit, before anything is uploaded
+    const fs = [...$('rq-files').files], big = fs.filter(f => f.size > maxMb * 1048576);
+    const bad = fs.length > maxFiles ? `That is ${fs.length} files; a request takes at most ${maxFiles}.` : big.length ? `${big[0].name} is ${size(big[0].size)}; the limit is ${maxMb} MB for one file.` : '';
+    $('rq-files-note').textContent = bad || fs.map(f => `${f.name} (${size(f.size)})`).join(', ');
+    return bad ? null : fs;
+  }
+  $('rq-files').addEventListener('change', picked);
   async function load() {
     let r; try { r = await fetch('/api/requests'); } catch { $('rq-list').innerHTML = '<p class="dim">Could not reach Chamber. It retries in a minute.</p>'; return; }
     if (r.status === 401) { location.href = '/login'; return; }
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { $('rq-list').innerHTML = `<p class="dim">${esc(d.error || 'Could not load your requests.')}</p>`; return; }
-    const list = d.requests || [];
+    maxFiles = d.max_files || 3; maxMb = d.max_file_mb || 10;                   // T-0206
+    const list = d.requests || [], em = d.mail || {};                          // T-0205: the email switch
+    $('rq-mail-row').hidden = false; $('rq-mail').checked = em.on !== false; $('rq-mail').disabled = em.set_up === false;
+    if (!mailSaid) $('rq-mail-note').textContent = em.set_up === false ? 'This Chamber has no email set up, so none are sent.' : em.confirmed === false && em.on !== false ? 'They start once you confirm your email address: use the link in the email you got when you signed up.' : '';
     $('rq-list').innerHTML = list.length ? list.map(q => `<div class="rq"><div><b>${esc(q.title)}</b><span class="st ${esc(q.status)}">${esc(q.statusText)}</span></div>`
       + `<div class="dim">${esc(q.id)} · sent ${esc(when(q.sent))}${q.finished ? ' · finished ' + esc(when(q.finished)) : ''}</div>`
+      + ((q.files || []).length ? `<div class="rq-files">${q.files.map(f => /^image\/(png|jpeg|gif|webp)$/.test(f.mime) ? `<a href="${esc(f.url)}" target="_blank" rel="noopener" title="${esc(f.name)}"><img src="${esc(f.url)}" alt="${esc(f.name)}" loading="lazy"></a>` : `<a href="${esc(f.url)}?download">${esc(f.name)}</a>`).join('')}</div>` : '')
       + (q.result ? `<div class="res">${esc(q.result)}</div>` : '') + (q.reason ? `<div class="res">Reason: ${esc(q.reason)}</div>` : '') + '</div>').join('')
       : '<p class="dim">No requests yet. Your first one appears here as soon as you send it.</p>';
   }
   $('rq-form').addEventListener('submit', async e => {
     e.preventDefault(); $('rq-send').disabled = true; $('rq-msg').textContent = 'Sending…';
     try {
-      const r = await fetch('/api/requests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: $('rq-title').value, body: $('rq-body').value }) });
+      const fs = picked(); if (!fs) throw new Error($('rq-files-note').textContent);
+      const ids = [];
+      for (const [i, f] of fs.entries()) {                                       // T-0206: the files first, then the request that names them
+        $('rq-msg').textContent = `Adding file ${i + 1} of ${fs.length}…`;
+        const u = await fetch('/api/requests/files', { method: 'POST', headers: { 'Content-Type': f.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(f.name) }, body: f });
+        const ud = await u.json().catch(() => ({}));
+        if (!u.ok) throw new Error(ud.error || `Could not add ${f.name}. Try again.`);
+        ids.push(ud.file.id);
+      }
+      $('rq-msg').textContent = 'Sending…';
+      const r = await fetch('/api/requests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: $('rq-title').value, body: $('rq-body').value, files: ids }) });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error || 'Could not send it. Try again.');
-      $('rq-title').value = ''; $('rq-body').value = ''; $('rq-msg').textContent = `Sent as ${d.id}. The team can see it now.`; load();
+      $('rq-title').value = ''; $('rq-body').value = ''; $('rq-files').value = ''; $('rq-files-note').textContent = ''; $('rq-msg').textContent = `Sent as ${d.id}. The team can see it now.`; load();
     } catch (err) { $('rq-msg').textContent = err.message; } finally { $('rq-send').disabled = false; }
+  });
+  $('rq-mail').addEventListener('change', async () => {                      // T-0205
+    const on = $('rq-mail').checked; mailSaid = true;
+    try { const r = await fetch('/api/requests/mail', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }) }); if (!r.ok) throw new Error(); $('rq-mail-note').textContent = on ? 'Emails are on.' : 'Emails are off.'; }
+    catch { $('rq-mail').checked = !on; $('rq-mail-note').textContent = 'Could not save that. Try again.'; }
   });
   $('rq-out').addEventListener('click', async e => { e.preventDefault(); try { await fetch('/account/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch {} location.href = '/'; });
   load(); setInterval(load, 60000);

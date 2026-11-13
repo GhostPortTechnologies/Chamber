@@ -288,6 +288,20 @@ function budgetWorkspaces() {
   return Object.values(store.workspaces).filter(ws => ws.budget && (ws.budget.monthlyCents > 0 || Object.keys(ws.budget.perAgent || {}).length))
     .map(ws => ({ ws: ws.id, admins: members(store, ws.id).filter(a => ['owner', 'admin'].includes(wsRoleOf(a, ws)) && (a.chatRole || 'human') === 'human').map(a => a.username) }));
 }
+// T-0205: who gets the email when a request moves. { email, username, wanted, confirmed } for a person of this workspace, else null.
+function draftsOn(wsId) { const ws = ENABLED && wsId ? load().workspaces[wsId] : null; return !!ws && !ws.requestDraftsOff; }   // T-0207: on unless the owner switched it off
+function requestMailFor(wsId, username) {
+  if (!ENABLED || !wsId || !username) return null;
+  const store = load(), a = store.accounts[store.usernames[String(username).toLowerCase()]];
+  if (!a || a.workspace !== wsId) return null;
+  return { email: a.email, username: a.username, wanted: a.requestMailOff !== true, confirmed: verified(a) };
+}
+function setRequestMail(sess, on) {                                // the person's own switch, on the Your requests page
+  if (!ENABLED || !sess || sess.agent || !sess.email) return false;
+  const store = load(), a = store.accounts[sess.email]; if (!a) return false;
+  if (on) delete a.requestMailOff; else a.requestMailOff = true;
+  save(store); return true;
+}
 function workspaceName(wsId) { const ws = ENABLED && wsId ? load().workspaces[wsId] : null; return ws ? ws.name : null; }   // T-0204
 function canApprove(sess) {                                        // for /api/me: should the app offer Approve to this person?
   if (!ENABLED) return true;
@@ -1063,6 +1077,7 @@ async function handle(req, res, url, ctx0) {
         inviteUrls: amAdmin ? Object.fromEntries(GUEST_ROLES.map(r => [r, myWs.invites && myWs.invites[r] ? `${PUBLIC_URL}/join/${myWs.invites[r]}` : null])) : null,   // T-0199
         seats: { full: fullMembers(store, myWs.id).length, maxFull: MAX_MEMBERS, guests: guestMembers(store, myWs.id).length, maxGuests: MAX_GUESTS },   // T-0199
         approval: approvalRules(myWs),                                           // T-0190
+        requestDrafts: !myWs.requestDraftsOff,                                   // T-0207
         report: amAdmin ? reportView(myWs) : null,                               // T-0202
         budget: budgetOf(myWs.id),                                               // T-0203
         fleet: myWs.fleet ? { linked: true, tenant: myWs.fleet.tenant || '', by: myWs.fleet.by, at: myWs.fleet.at, state: myWs.fleet.state || 'ok', lastError: myWs.fleet.lastError || null } : { linked: false },   // T-0153: never the key
@@ -1198,6 +1213,12 @@ async function handle(req, res, url, ctx0) {
         const n = approverNames(store, myWs).length;
         if (n < 2 && (two !== 'none' || ap.noSelf)) approvalWarning = 'Only one person may approve right now, so these rules cannot fully apply yet: tickets are not blocked, and each one notes that a rule could not be met. They apply fully once a second approver exists.';
       }
+      if (b?.requestDrafts !== undefined) {                                                                          // T-0207: a connected agent drafts a plan for each new request
+        if (!amOwner) return ownerOnly(), true;
+        if (typeof b.requestDrafts !== 'boolean') return ctx.json(res, 400, { error: 'requestDrafts must be true or false' }), true;
+        if (b.requestDrafts) delete myWs.requestDraftsOff; else myWs.requestDraftsOff = true;
+        ctx.audit(sess, { action: 'request-drafts', on: b.requestDrafts }, true);
+      }
       if (b?.agentPolicy !== undefined) {
         if (!amOwner) return ownerOnly(), true;                                                                        // T-0034: policy is the owner's call
         if (!['owner', 'members'].includes(b.agentPolicy)) return ctx.json(res, 400, { error: 'agentPolicy must be owner or members' }), true;
@@ -1215,7 +1236,7 @@ async function handle(req, res, url, ctx0) {
         myWs.name = name; ctx.audit(sess, { action: 'workspace-rename', name }, true);   // T-0057
       }
       save(store);
-      return ctx.json(res, 200, { ok: true, name: myWs.name, agentPolicy: myWs.agentPolicy || 'owner', retentionDays: myWs.retentionDays || 0, approval: approvalRules(myWs), approvalWarning, budget: budgetOf(myWs.id) }), true;
+      return ctx.json(res, 200, { ok: true, name: myWs.name, agentPolicy: myWs.agentPolicy || 'owner', retentionDays: myWs.retentionDays || 0, requestDrafts: !myWs.requestDraftsOff, approval: approvalRules(myWs), approvalWarning, budget: budgetOf(myWs.id) }), true;
     }
     if (p === '/account/workspace/invite-reset' && m === 'POST') {
       if (!verified(me)) return ctx.json(res, 403, { error: 'Confirm your email address first (account page).', needsVerification: true }), true;   // T-0032
@@ -1618,4 +1639,4 @@ function retentionSettings() {                                    // T-0037: [{ 
 function fleetLinkOf(wsId) { return (load().workspaces[wsId] || {}).fleet || null; }                       // T-0153: the stored link record (sealed key + status), or null
 function fleetMark(wsId, patch) { const store = load(); const f = (store.workspaces[wsId] || {}).fleet; if (!f) return; Object.assign(f, patch); save(store); }
 const fleetDir = () => path.dirname(FILE);                                                                  // where fleet-link.key lives (beside accounts.json)
-module.exports = { enabled: ENABLED, standingRules, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };
+module.exports = { enabled: ENABLED, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };

@@ -506,6 +506,8 @@
     #toast { bottom: auto; top: calc(58px + env(safe-area-inset-top)); }   /* T-0180: was over the Approve / Propose buttons */
     #ticket-modal .modal-head h2 { white-space: normal; overflow: visible; text-transform: none; letter-spacing: 0; font-size: 14px; }   /* T-0180: the title was cut off and shown nowhere else */
   }
+.tm-files-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}.tm-files-row img{max-width:140px;max-height:110px;border-radius:6px;border:1px solid var(--line);display:block}.tm-files-row a{overflow-wrap:anywhere}
+#tm-draft{border:1px dashed var(--line-strong);border-radius:8px;padding:10px 12px;margin-top:10px;background:var(--surface)}#tm-draft>div{margin:5px 0;overflow-wrap:anywhere}#tm-draft .draft-head{color:var(--text-dim);font-size:12px}#tm-draft .draft-plan{white-space:pre-wrap;margin-top:2px}
 </style>
 </head>
 <body>
@@ -943,6 +945,8 @@
       <div class="meta-row" id="tm-fleet-row" style="display:none"></div>   <!-- T-0153: live status of routers this ticket names -->
       <div class="meta-row" id="tm-model-row" style="display:none"><b>Model:</b> <span id="tm-model"></span></div>   <!-- T-0143 -->
       <div class="body" id="tm-body"></div>
+      <div id="tm-files" style="display:none;margin-top:8px"></div>   <!-- T-0206: what the requester sent with it -->
+      <div id="tm-draft" style="display:none"></div>   <!-- T-0207: the agent's suggestion -->
       <div id="tm-diff" style="display:none;margin-top:10px"></div>
       <div class="updates" id="tm-updates"></div>
       <div id="tm-runlog"></div>   <!-- T-0143: the agent's run log, live while in progress -->
@@ -1877,7 +1881,7 @@ function ticketCardHtml(t) {
         <span class="pri-${esc(t.priority)}">● ${esc(t.priority)}</span>
         <span>${esc(t.type)}</span>
         <span>${esc(t.proposed_by)}</span>
-        <span${t.status === 'proposed' ? ' title="waiting for approval"' : ''}>${t.status === 'proposed' ? 'waiting ' : ''}${ageStr(t.proposed_at)}</span>${t.changes && t.status === 'proposed' ? '<span class="pill warn">changes asked</span>' : ''}${t.reviewer && t.status === 'proposed' ? `<span>review: ${esc(t.reviewer)}</span>` : ''}${t.github ? `<span class="pill" title="From GitHub issue #${Number(t.github.number)} in ${esc(t.github.repo)}">GitHub #${Number(t.github.number)}</span>` : ''}${t.standing ? `<span class="pill ok" title="Approved in advance by standing approval ${esc(t.standing.id)}: ${esc(t.standing.what)}">standing ${esc(t.standing.id)}</span>` : ''}${t.pr ? `<span class="pill${t.pr.state === 'merged' ? ' ok' : ''}">PR #${Number(t.pr.number)} ${esc(t.pr.state)}</span>` : ''}${t.status === 'proposed' && Array.isArray(t.approvals) && t.approvals.length ? `<span title="approved by ${esc(t.approvals.map(a => a.by).join(', '))}">✓ ${t.approvals.length} of ${esc(t.approvals_needed || 2)}</span>` : ''}
+        <span${t.status === 'proposed' ? ' title="waiting for approval"' : ''}>${t.status === 'proposed' ? 'waiting ' : ''}${ageStr(t.proposed_at)}</span>${t.changes && t.status === 'proposed' ? '<span class="pill warn">changes asked</span>' : ''}${(t.files || []).length ? `<span class="pill" title="Sent with the request">${t.files.length} file${t.files.length === 1 ? '' : 's'}</span>` : ''}${t.draft && t.status === 'proposed' ? `<span class="pill" title="An agent drafted a plan for this request. Open it to read the suggestion.">${t.draft.used ? 'draft added' : 'draft ready'}</span>` : ''}${t.reviewer && t.status === 'proposed' ? `<span>review: ${esc(t.reviewer)}</span>` : ''}${t.github ? `<span class="pill" title="From GitHub issue #${Number(t.github.number)} in ${esc(t.github.repo)}">GitHub #${Number(t.github.number)}</span>` : ''}${t.standing ? `<span class="pill ok" title="Approved in advance by standing approval ${esc(t.standing.id)}: ${esc(t.standing.what)}">standing ${esc(t.standing.id)}</span>` : ''}${t.pr ? `<span class="pill${t.pr.state === 'merged' ? ' ok' : ''}">PR #${Number(t.pr.number)} ${esc(t.pr.state)}</span>` : ''}${t.status === 'proposed' && Array.isArray(t.approvals) && t.approvals.length ? `<span title="approved by ${esc(t.approvals.map(a => a.by).join(', '))}">✓ ${t.approvals.length} of ${esc(t.approvals_needed || 2)}</span>` : ''}
       </div>
     </div>`;
 }
@@ -1934,6 +1938,19 @@ function openTicketModal(id) {
   document.getElementById('tm-proposed-by').textContent = t.proposed_by;
   document.getElementById('tm-proposed-at').innerHTML = fmtDate(t.proposed_at);   // T-0065
   document.getElementById('tm-body').innerHTML = renderText(t.body || '(no body)', { noCollapse: true });   // T-0068: tickets render like chat
+  const tf = document.getElementById('tm-files');                              // T-0206
+  if ((t.files || []).length) { tf.style.display = 'block'; tf.innerHTML = '<b>Sent with the request:</b><div class="tm-files-row">' + t.files.map(f => IMG_TYPES.has(f.mime) ? `<a href="#" title="${escA(f.name)}" onclick="event.preventDefault();openLightbox('${escJ(f.id)}','${escJ(f.name)}')"><img src="${API}/api/files/${esc(f.id)}" alt="${escA(f.name)}" loading="lazy"></a>` : `<a href="${API}/api/files/${esc(f.id)}?download" download="${escA(f.name)}">${esc(f.name)} (${fmtSize(f.size)})</a>`).join('') + '</div>'; }
+  else { tf.style.display = 'none'; tf.innerHTML = ''; }
+  const td = document.getElementById('tm-draft'), dr = t.draft;                // T-0207: the agent's suggestion; not part of the ticket until a person adds it
+  if (dr) {
+    const canUse = t.status === 'proposed' && !dr.used && !['viewer', 'requester'].includes(currentWsRole);
+    td.style.display = 'block';
+    td.innerHTML = `<div class="draft-head"><b>Agent's suggestion</b> · drafted by ${esc(dr.by)}, ${fmtDate(dr.at)} · ${dr.used ? `added to the ticket by ${esc(dr.used.by)}` : 'not part of the ticket until a person adds it'}</div>`
+      + `<div><b>What it understood:</b> ${esc(dr.understood)}</div><div><b>Plan:</b><div class="draft-plan">${esc(dr.plan)}</div></div><div><b>Would touch:</b> ${esc(dr.touches || 'not sure')}</div>`
+      + `<div><b>Risk:</b> <span class="pill${dr.risk === 'high' ? ' warn' : ''}">${esc(dr.risk)}</span> ${esc(dr.risk_why || '')}</div><div><b>Who should do it:</b> ${dr.who === 'agent' ? 'an AI agent' : 'a person'}${dr.who_why ? ' · ' + esc(dr.who_why) : ''}</div>`
+      + (dr.question ? `<div><b>Question for the requester:</b> ${esc(dr.question)} <a href="#" data-q="${escA(dr.question)}" onclick="event.preventDefault();copyDraftQuestion(this.dataset.q)">copy</a><div class="dim small">The requester does not see this. Pass it on yourself if you want it asked.</div></div>` : '')
+      + (canUse ? `<div><button class="btn btn-sm" type="button" onclick="useDraft('${escJ(t.id)}')">Add to the ticket</button> <span class="dim small">Puts the plan under the request and sets who does it. Nothing starts until someone approves the ticket.</span></div>` : '');
+  } else { td.style.display = 'none'; td.innerHTML = ''; }
 
   document.getElementById('tm-approved-row').style.display = t.approved_by ? 'block' : 'none';
   document.getElementById('tm-approved-by').textContent = t.approved_by || '';
@@ -2396,6 +2413,16 @@ function renderAsks() {
     <div class="ask-btns">${a.canAnswer ? `<button class="btn btn-primary btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','allow')">Allow once</button><button class="btn btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','deny')">Deny</button>` : '<span class="dim small">Waiting for someone who may approve.</span>'}
     <span class="dim small">${esc(a.id)} · no answer in <span data-left="${esc(a.id)}">${askLeft(a)}</span> means no</span></div></div>`).join('');
 }
+// ── T-0207: the agent's draft on a request ──
+async function useDraft(id) {
+  try {
+    const r = await fetch(`${API}/api/tickets/${encodeURIComponent(id)}/draft/use`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || 'Could not add the draft', 'err'); return; }
+    toast('Added to the ticket'); await loadTickets(); openTicketModal(id);
+  } catch { toast('Network error: nothing was changed.', 'err'); }
+}
+function copyDraftQuestion(q) { (navigator.clipboard ? navigator.clipboard.writeText(q) : Promise.reject()).then(() => toast('Copied')).catch(() => { prompt('Copy this question', q); }); }
 async function answerAsk(id, decision) {
   document.querySelectorAll(`#ask-bar [data-ask="${CSS.escape(id)}"] button`).forEach(b => { b.disabled = true; });
   try {
@@ -3652,12 +3679,13 @@ function renderFiles() {
   const folderCards = q ? '' : upCard + subs.map(f => `<div class="fcard folder" data-drop="${escA(f.path)}" role="button" tabindex="0" onclick="openFolder('${escJ(f.path)}')" onkeydown="if(event.key==='Enter')openFolder('${escJ(f.path)}')"><div class="thumb">📁</div><div class="fbody"><div class="fname" title="${escA(f.path)}">${esc(f.path.split('/').pop())}</div><div class="fmeta">${f.files} file${f.files === 1 ? '' : 's'}</div></div></div>`).join('');
   const cards = files.map(f => {
     const img = IMG_TYPES.has(f.mime), url = `${API}/api/files/${esc(f.id)}`;
-    const rm = roomsCache[f.room]; const rname = rm ? (rm.dm ? '@' + (rm.dm.find(n => n !== currentUser) || rm.dm[0]) : '#' + (rm.name || f.room)) : '#' + f.room;
+    const rq = /^req:(T-\d+)$/.exec(f.room || '');                               // T-0206: a file that came with a request
+    const rm = roomsCache[f.room]; const rname = rq ? 'request ' + rq[1] : rm ? (rm.dm ? '@' + (rm.dm.find(n => n !== currentUser) || rm.dm[0]) : '#' + (rm.name || f.room)) : '#' + f.room;
     const sel = filesSelecting ? `<input type="checkbox" class="fsel" aria-label="Select ${escA(f.name)}" ${filesSel.has(f.id) ? 'checked' : ''} onchange="toggleSel('${escJ(f.id)}', this.checked)">` : '';
     const where = !filesFolder && f.folder ? ` · <span class="ffolder" title="in folder">${esc(f.folder)}</span>` : '';
     return `<div class="fcard${filesSel.has(f.id) ? ' selected' : ''}" draggable="true" data-fid="${esc(f.id)}">${sel}<div class="thumb" onclick="${img ? `openLightbox('${escJ(f.id)}','${escJ(f.name)}')` : `openFilePreview('${escJ(f.id)}','${escJ(f.name)}','${escJ(f.mime)}')`}">${img ? `<img src="${url}" alt="${escA(f.name)}" loading="lazy">` : fileIcon(f.mime, f.name)}</div>
       <div class="fbody"><div class="fname" title="${escA(f.name)}">${esc(f.name)}</div><div class="fmeta">${fmtSize(f.size)} · ${esc(f.by)} · ${esc(rname)} · ${fmtDate(f.ts)}${where}</div>
-      <div class="facts"><a href="${url}?download" download="${escA(f.name)}">download</a>${f.msg_id ? `<a onclick="switchView('chat');jumpTo('${escJ(f.room)}','${escJ(f.msg_id)}')">go to message</a>` : ''}<a onclick="moveFile(['${escJ(f.id)}'])">move</a>${canManageFile(f) ? `<a class="danger" onclick="deleteFile('${escJ(f.id)}','${escJ(f.name)}')">delete</a>` : ''}</div></div></div>`;
+      <div class="facts"><a href="${url}?download" download="${escA(f.name)}">download</a>${rq ? `<a onclick="switchView('tickets');openTicketModal('${escJ(rq[1])}')">open request</a>` : f.msg_id ? `<a onclick="switchView('chat');jumpTo('${escJ(f.room)}','${escJ(f.msg_id)}')">go to message</a>` : ''}<a onclick="moveFile(['${escJ(f.id)}'])">move</a>${canManageFile(f) ? `<a class="danger" onclick="deleteFile('${escJ(f.id)}','${escJ(f.name)}')">delete</a>` : ''}</div></div></div>`;
   }).join('');
   grid.innerHTML = (folderCards + cards) || (q ? '<div class="empty">Nothing matches that search here.</div>'
     : filesFolder ? '<div class="empty"><b>This folder is empty.</b><br>Upload here, drag a file onto a folder, or use a file\'s <em>move</em> link.</div>'

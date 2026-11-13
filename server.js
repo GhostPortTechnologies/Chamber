@@ -1079,6 +1079,63 @@ function askExpire(d) {                                                      // 
   return n;
 }
 
+// ── T-0207: an agent drafts a plan for each new request ──────────────────────────────────────────────────────────────────────
+// A request arrives as an outside person wrote it. A connected chat agent (connector 3.23 or newer) reads it and adds a draft to
+// the ticket: what it understands is wanted, a short plan, what the work would touch, a risk level, whether a person or an agent
+// should do it, and a question for the requester when something essential is missing. The draft is a suggestion beside the
+// request: the request itself is not changed, nothing is approved, and the requester never sees the draft (it is in no reply to
+// /api/requests and in no email). A person adds it to the ticket, edits, approves or rejects as usual. The owner can switch it off.
+const DRAFT_LEASE_MS = TEST_HOOKS ? 1500 : 10 * 60e3, DRAFT_MAX_AGE_MS = 24 * 3600e3, DRAFT_TRIES = 2;
+function draftsOn(ws) { return process.env.CHAMBER_REQUEST_DRAFTS !== 'off' && (!accounts.enabled || accounts.draftsOn(ws)); }
+function draftWaiting(now = Date.now()) {                                    // requests that still want a draft, oldest first
+  return (loadTickets().tickets || []).filter(t => t.type === 'request' && t.status === 'proposed' && !t.draft && t.draft_job && now - Date.parse(t.proposed_at) < DRAFT_MAX_AGE_MS
+    && (t.draft_job.state === 'waiting' || (t.draft_job.state === 'taken' && now - t.draft_job.at > DRAFT_LEASE_MS && (t.draft_job.tries || 1) < DRAFT_TRIES)));
+}
+function draftCount(sess) {                                                  // rides the connector's ping, so it need not poll
+  try { const ws = reqScope.getStore()?.ws; if (!draftsOn(ws)) return 0; const bs = accounts.enabled ? budgetState(accounts.workspaceOf(sess)) : null; return bs && bs.agentOver(sess.username) ? 0 : draftWaiting().length; } catch { return 0; }
+}
+
+// ── T-0205: tell the person who sent a request when it moves ────────────────────────────────────────────────────────────────
+// One short email when their request is approved, when work starts, when it is done (with the closing note) and when it is turned
+// down (with the reason). It says only what their Your requests page shows for that one request: no chat, no code, no other
+// tickets. Each of the four is sent at most once per request (ticket.request_mail), so a request that is handed back and taken
+// again says nothing twice. Nothing is sent to an address that was never confirmed, to someone who switched these emails off, or
+// about a change the person made themselves.
+// T-0206: pictures and files on a request. They live in the workspace's ordinary file store (same size limit, same storage count,
+// same safe way of serving), under a room key no person can create ("req:<ticket>"; room names have no colon) with the ticket id
+// where a chat file has its message id. The team opens them like any file; the person who sent the request opens them through
+// /api/requests/files/<id>, which serves a file only when it belongs to one of their own requests.
+const REQUEST_FILES_MAX = 3, REQ_PENDING = 'req:pending', REQUEST_FILES_DAY = parseInt(process.env.CHAMBER_REQUEST_FILES_DAY, 10) || 15;   // per request; unsent uploads; per person per day
+function requestFiles(ticketId) { return store.filesForMsg(F().data, ticketId).filter(f => f.room === 'req:' + ticketId); }
+const REQUEST_MAIL = { approved: 'was approved', in_progress: 'is being worked on', done: 'is done', rejected: 'is not going ahead' };
+function requestMailText(t, who, wsName) {
+  const title = String(t.title || '').replace(/^\[request\]\s*/i, '').replace(/\s+/g, ' ').slice(0, 120);
+  const plain = s => String(s || '').replace(/```[\s\S]*?(```|$)/g, '(code left out)').replace(/\bT-\d{4}\b/g, m => m === t.id ? m : 'another ticket').replace(/[ \t]+\n/g, '\n').trim().slice(0, 1500);
+  const closed = (t.updates || []).filter(u => /^CLOSED\b/.test(String(u.note || ''))).pop();
+  const what = { approved: 'A person on the team approved it. Work has not started yet.', in_progress: 'Work on it has started.',
+    done: closed ? 'What the team wrote when closing it:\n\n' + plain(String(closed.note).replace(/^CLOSED:?\s*/, '')) : 'The team closed it as done.',
+    rejected: t.reject_reason ? 'The reason given:\n\n' + plain(t.reject_reason) : 'No reason was written down.' }[t.status];
+  const base = (process.env.CHAMBER_PUBLIC_URL || '').replace(/\/$/, '');
+  return { subject: `Chamber: your request "${title}" ${REQUEST_MAIL[t.status]}`,
+    text: `Hello ${who.username},\n\nYour request "${title}" (${t.id})${wsName ? ' in ' + wsName : ''} ${REQUEST_MAIL[t.status]}.\n${what}\n\nAll your requests: ${base}/requests\n\nYou get this email because you sent this request in Chamber. To stop these emails, open that page and untick "Email me when one of my requests moves".\n` };
+}
+async function requestMoved(ticketId, actor) {
+  try {
+    if (!accounts.enabled || !ticketId) return;
+    const t = (loadTickets().tickets || []).find(x => x.id === ticketId);
+    if (!t || t.type !== 'request' || !REQUEST_MAIL[t.status] || (t.request_mail || {})[t.status]) return;
+    const ws = reqScope.getStore()?.ws, who = accounts.requestMailFor(ws, t.proposed_by); if (!who) return;
+    const own = String(actor || '').toLowerCase() === who.username.toLowerCase(), send = who.wanted && who.confirmed && !own;
+    const mark = { ...(t.request_mail || {}), [t.status]: { at: new Date().toISOString(), sent: send, why: send ? undefined : own ? 'their own change' : !who.wanted ? 'switched off' : 'email not confirmed' } };
+    const r = await runTicketsCLI(['meta', t.id, '--by', String(actor || 'chamber'), '--set', 'request_mail', '--json', JSON.stringify(mark)]);   // marked first: a second trigger finds the mark and stays quiet
+    if (!r.ok || !send) return;
+    const m = requestMailText(t, who, accounts.workspaceName(ws));
+    if (TEST_HOOKS) console.log(`[request-mail] to ${who.email}: ${JSON.stringify(m)}`);
+    if (mail.enabled) mail.send({ to: who.email, subject: m.subject, text: m.text }).catch(e => console.error('[request-mail] failed:', e.message));
+    audit({ username: String(actor || 'chamber') }, { action: 'request-mail', ticket: t.id, status: t.status, to: who.username }, true);
+  } catch (e) { console.error('[request-mail]', e.message); }
+}
+
 // ── T-0197: link a workspace with one GitHub repository's issues ─────────────────────────────────────────────────────────────
 // The owner links one repository with a fine-grained key (Issues: read and write) and a label. Every couple of minutes Chamber reads
 // the open issues with that label: each new one becomes a proposed ticket (a person still approves it). When the ticket is approved,
@@ -1375,7 +1432,7 @@ async function handleRequest(req, res, sess) {                              // [
   // approving or rejecting a ticket, which the approval rules (T-0190) then allow only when the owner has named them as an approver.
   if (url.pathname.startsWith('/api/') && accounts.enabled && sess && !sess.agent) {
     const gr = accounts.sessionRole(sess);
-    if (gr === 'requester' && !/^\/api\/(requests|health)$/.test(url.pathname)) return json(res, 403, { error: 'You are a requester in this workspace: you can send requests and follow your own, nothing else.' });
+    if (gr === 'requester' && !/^\/api\/(requests|requests\/mail|requests\/files|requests\/files\/[a-f0-9]{24}|health)$/.test(url.pathname)) return json(res, 403, { error: 'You are a requester in this workspace: you can send requests and follow your own, nothing else.' });
     if (gr === 'viewer' && method !== 'GET' && !/^\/api\/(ping|me\/prefs|tickets\/[A-Za-z0-9-]+\/(approve|reject|changes)|standing|standing\/S-\d{1,5}\/(withdraw|confirm)|asks\/A-\d{1,6}\/answer)$/.test(url.pathname)) return json(res, 403, { error: 'You are a viewer in this workspace: you can read, not change anything.' });
   }
   if (url.pathname.startsWith('/api/') && accounts.enabled && method !== 'GET' && url.pathname !== '/api/ping' && accounts.sessionReadOnly(sess)) {   // [new] T-0028
@@ -1729,19 +1786,29 @@ echo "${MARK}$__rc|$PWD"`;
   }
 
   // ── Files (T-0064) ────────────────────────────────────────────────────────────────────────────────────
-  if (url.pathname === '/api/files' && method === 'POST') {                  // raw body upload; name in X-File-Name (URL-encoded), type in Content-Type
+  if ((url.pathname === '/api/files' || url.pathname === '/api/requests/files') && method === 'POST') {   // raw body upload; name in X-File-Name (URL-encoded), type in Content-Type
     if (!sess?.username) return json(res, 401, { error: 'login first' });
+    const forRequest = url.pathname === '/api/requests/files';                 // T-0206: a file for a request that is about to be sent
+    if (forRequest && sess.agent) { req.resume(); return json(res, 403, { error: 'agents propose tickets; requests are for people' }); }
+    if (forRequest && store.filesOrphans(F().data, Date.now() + 1).filter(f => f.room === REQ_PENDING && String(f.by).toLowerCase() === sess.username.toLowerCase()).length >= REQUEST_FILES_MAX) { req.resume(); return json(res, 409, { error: `At most ${REQUEST_FILES_MAX} files per request. Send the request first; files that were added but never sent clear after an hour.` }); }
+    if (forRequest) {                                                          // one invited person cannot fill the team's file space: a cap per person per day
+      const me = sess.username.toLowerCase(), dayAgo = Date.now() - 864e5;
+      const sent = (loadTickets().tickets || []).filter(t => t.type === 'request' && String(t.proposed_by || '').toLowerCase() === me).reduce((n, t) => n + requestFiles(t.id).filter(f => f.ts > dayAgo).length, 0);
+      const unsent = store.filesOrphans(F().data, Date.now() + 1).filter(f => f.room === REQ_PENDING && String(f.by).toLowerCase() === me).length;
+      if (sent + unsent >= REQUEST_FILES_DAY) { req.resume(); return json(res, 429, { error: `You have added ${REQUEST_FILES_DAY} files in the last day, which is the limit. Send the request without this file, or add it tomorrow.` }); }
+    }
     const limit = MAX_FILE_MB * 1048576;
     const declared = parseInt(req.headers['content-length'], 10) || 0;
     if (declared > limit) { req.resume(); return json(res, 413, { error: `That file is ${(declared / 1048576).toFixed(1)} MB; the limit is ${MAX_FILE_MB} MB.` }); }
     const data = loadData();
-    const room = url.searchParams.get('room') || req.headers['x-chamber-room'] || 'general';
-    if (!Object.hasOwn(data.rooms, String(room))) return json(res, 404, { error: `No room '${String(room).slice(0, 40)}' in this workspace.` });
-    if (!canSeeRoom(data, room, sess.username)) return json(res, 403, { error: 'not a member of that room' });
-    const folder = cleanFolder(url.searchParams.get('folder') ?? req.headers['x-chamber-folder']);   // T-0149: upload straight into a folder
+    const room = forRequest ? REQ_PENDING : (url.searchParams.get('room') || req.headers['x-chamber-room'] || 'general');
+    if (!forRequest && !Object.hasOwn(data.rooms, String(room))) return json(res, 404, { error: `No room '${String(room).slice(0, 40)}' in this workspace.` });
+    if (!forRequest && !canSeeRoom(data, room, sess.username)) return json(res, 403, { error: 'not a member of that room' });
+    const folder = forRequest ? null : cleanFolder(url.searchParams.get('folder') ?? req.headers['x-chamber-folder']);   // T-0149: upload straight into a folder
     if (folder === false) { req.resume(); return json(res, 400, { error: FOLDER_RULE }); }
     const used = store.filesBytes(F().data);
     const quotaMb = quotaMbFor(sess);                                                   // T-0159: smaller while on the free trial
+    if (forRequest && used.b + declared > quotaMb * 1048576) { req.resume(); return json(res, 413, { error: 'The team\'s file space is full, so this file cannot be added. Send the request without it and tell the team.', quota: true }); }
     if (used.b + declared > quotaMb * 1048576) { req.resume(); return json(res, 413, { error: `This workspace has used ${(used.b / 1048576).toFixed(0)} of its ${quotaMb} MB for files. Delete some messages with files first${quotaMb < FILES_QUOTA_MB ? ', or subscribe for ' + FILES_QUOTA_MB + ' MB' : ''}.${quotaMb < FILES_QUOTA_MB ? '' : storageHint()}`, quota: true }); }
     let name = 'file'; try { name = cleanName(decodeURIComponent(String(req.headers['x-file-name'] || ''))); } catch { name = cleanName(req.headers['x-file-name']); }
     let mime = String(req.headers['content-type'] || 'application/octet-stream').split(';')[0].trim().toLowerCase().slice(0, 100) || 'application/octet-stream';
@@ -1763,6 +1830,7 @@ echo "${MARK}$__rc|$PWD"`;
     let rec = store.fileAdd(F().data, { id, name, mime, size, sha256: hash.digest('hex'), by: sess.username, ts: Date.now(), room });
     if (folder) { store.fileSetFolder(F().data, id, folder); store.folderAdd(F().data, folder, sess.username, Date.now()); rec = store.fileGet(F().data, id); }   // T-0149
     audit(sess, { action: 'file', id, name, bytes: size, room, folder: folder || undefined });
+    if (forRequest) return json(res, 201, { ok: true, file: { id: rec.id, name: rec.name, size: rec.size, mime: rec.mime } });
     return json(res, 201, { ok: true, file: fileMeta(rec), expires_in_s: 3600 });
   }
   if (url.pathname === '/api/files' && method === 'GET') {                   // the workspace's shared files, newest first (?room= to narrow; T-0149: ?folder= too)
@@ -1852,13 +1920,19 @@ echo "${MARK}$__rc|$PWD"`;
     audit(sess, { action: 'file-move', id: rec.id, name: rec.name, from: rec.folder || '/', folder: folder || '/' });
     return json(res, 200, { ok: true, file: fileMeta(store.fileGet(F().data, rec.id)) });
   }
-  if (url.pathname.startsWith('/api/files/') && method === 'GET') {          // the bytes; only members of the file's room, only inside this workspace
-    const id = url.pathname.slice('/api/files/'.length).replace(/\/+$/, '');
+  const reqFileM = method === 'GET' ? url.pathname.match(/^\/api\/requests\/files\/([a-f0-9]{24})$/) : null;   // T-0206: a file of one's own request
+  if ((url.pathname.startsWith('/api/files/') || reqFileM) && method === 'GET') {          // the bytes; only members of the file's room, only inside this workspace
+    const id = reqFileM ? reqFileM[1] : url.pathname.slice('/api/files/'.length).replace(/\/+$/, '');
     if (!/^[a-f0-9]{24}$/.test(id)) return json(res, 404, { error: 'no such file' });
     const rec = store.fileGet(F().data, id);
     if (!rec) return json(res, 404, { error: 'no such file' });
+    if (reqFileM) {                                                            // T-0206: only a file of the person's own request (or their own upload not sent yet), nothing else
+      const me = String(sess?.username || '').toLowerCase(), tk = rec.msg_id && rec.room === 'req:' + rec.msg_id ? (loadTickets().tickets || []).find(t => t.id === rec.msg_id) : null;
+      const own = !!me && !sess.agent && (tk ? String(tk.proposed_by || '').toLowerCase() === me : !rec.msg_id && rec.room === REQ_PENDING && String(rec.by).toLowerCase() === me);
+      if (!own) return json(res, 404, { error: 'no such file' });
+    }
     const data = loadData();
-    if (!canSeeRoom(data, rec.room || 'general', sess?.username)) return json(res, 403, { error: 'not a member of that room' });
+    if (!reqFileM && !canSeeRoom(data, rec.room || 'general', sess?.username)) return json(res, 403, { error: 'not a member of that room' });
     if (!rec.msg_id && rec.by.toLowerCase() !== String(sess?.username || '').toLowerCase()) return json(res, 404, { error: 'no such file' });   // not sent yet: only the uploader sees it
     const p = path.join(filesDir(), rec.id); let st; try { st = fs.statSync(p); } catch { return json(res, 410, { error: 'the file is gone' }); }
     const inline = INLINE_IMAGE.has(rec.mime) && !url.searchParams.has('download');
@@ -1984,7 +2058,7 @@ echo "${MARK}$__rc|$PWD"`;
     const status = url.searchParams.get('status');
     if (status) tickets = tickets.filter(x => x.status === status);
     const forQ = url.searchParams.get('for'); if (forQ === 'agent' || forQ === 'human') tickets = tickets.filter(x => ticketFor(x) === forQ);   // T-0145/T-0155: a worker asks for=agent and never sees people's tickets
-    tickets = tickets.map(x => ({ ...x, tags: ticketTags(x), for: ticketFor(x) }));                                 // T-0145: parsed tags; T-0155: who does it
+    tickets = tickets.map(x => { const rf = x.type === 'request' ? requestFiles(x.id) : []; return { ...x, tags: ticketTags(x), for: ticketFor(x), ...(rf.length ? { files: rf.map(fileMeta) } : {}) }; });   // T-0206: what the requester sent with it                                 // T-0145: parsed tags; T-0155: who does it
     let withDiff = new Set(); try { withDiff = new Set(fs.readdirSync(diffDir()).filter(f => f.endsWith('.patch')).map(f => f.slice(0, -6))); } catch {}   // [new] T-0063
     return json(res, 200, { tickets: tickets.map(x => withDiff.has(x.id) ? { ...x, hasDiff: true } : x) });
   }
@@ -2227,6 +2301,69 @@ echo "${MARK}$__rc|$PWD"`;
   // T-0199: requests from the business side. A request becomes a proposed ticket on the team's board, titled [request] so it stands
   // out, with who-does-it left open for the team to decide. Whoever sent it sees only their own requests: the status in plain words and
   // the closing note or the reason, never the chat, the run log, the code or anyone else's tickets.
+  // T-0207: drafts for requests. An agent takes the oldest waiting request, writes its draft; a person adds it to the ticket.
+  if (url.pathname === '/api/drafts/next' && method === 'GET') {
+    if (!askIsAgent(sess)) return json(res, 403, { error: 'agents write drafts; people decide' });
+    const ws = reqScope.getStore()?.ws;
+    if (!draftsOn(ws)) return json(res, 200, { job: null, off: true });
+    const bs = accounts.enabled ? budgetState(accounts.workspaceOf(sess)) : null;
+    if (bs && bs.agentOver(sess.username)) return json(res, 200, { job: null, budget: true });
+    const t = draftWaiting()[0]; if (!t) return json(res, 200, { job: null });
+    const r = await runTicketsCLI(['meta', t.id, '--by', sess.username, '--set', 'draft_job', '--json', JSON.stringify({ state: 'taken', by: sess.username, at: Date.now(), tries: (t.draft_job.tries || 0) + 1 })]);
+    if (!r.ok) return json(res, 200, { job: null });
+    audit(sess, { action: 'draft-take', ticket: t.id });
+    return json(res, 200, { job: { ticket: t.id, title: String(t.title || '').replace(/^\[request\]\s*/i, ''), body: String(t.body || ''), by: t.proposed_by, files: requestFiles(t.id).map(fileMeta) } });
+  }
+  const draftM = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/draft(\/use)?$/);
+  if (draftM && method === 'POST' && !draftM[2]) {
+    if (!askIsAgent(sess)) return json(res, 403, { error: 'agents write drafts; people decide' });
+    const body = await parseBody(req, sess).catch(() => null), lc = s => String(s || '').toLowerCase();
+    const t = (loadTickets().tickets || []).find(x => x.id === draftM[1]); if (!t) return json(res, 404, { error: 'no such ticket' });
+    const job = t.draft_job || {};
+    if (t.type !== 'request' || t.draft || job.state !== 'taken' || lc(job.by) !== lc(sess.username)) return json(res, 409, { error: 'this request is not waiting for a draft from this agent' });
+    const meta = (k, v) => runTicketsCLI(['meta', t.id, '--by', sess.username, '--set', k, '--json', JSON.stringify(v)]);
+    if (body?.failed) {
+      await meta('draft_job', { state: 'failed', by: sess.username, at: Date.now(), tries: job.tries || 1, why: String(body.failed).slice(0, 300) });
+      audit(sess, { action: 'draft-failed', ticket: t.id, why: String(body.failed).slice(0, 200) }); notify('tickets');
+      return json(res, 200, { ok: true });
+    }
+    const clean = (v, max) => String(v == null ? '' : v).replace(/\r/g, '').trim().slice(0, max);
+    const d = { understood: clean(body?.understood, 600), plan: clean(body?.plan, 2000), touches: clean(body?.touches, 600), risk: ['low', 'medium', 'high'].includes(lc(body?.risk)) ? lc(body.risk) : null, risk_why: clean(body?.risk_why, 300),
+                who: ['person', 'agent'].includes(lc(body?.who)) ? lc(body.who) : null, who_why: clean(body?.who_why, 300), question: clean(body?.question, 500) || null, by: sess.username, at: new Date().toISOString(), model: clean(body?.model, 60) || undefined };
+    if (d.understood.length < 10 || d.plan.length < 10 || !d.risk || !d.who) return json(res, 400, { error: 'a draft needs understood, plan, risk (low, medium or high) and who (person or agent)' });
+    if (/^none\.?$/i.test(d.question || '')) d.question = null;
+    const r = await meta('draft', d); if (!r.ok) return json(res, 400, { error: r.stderr || 'could not save the draft' });
+    await meta('draft_job', { state: 'done', by: sess.username, at: Date.now(), tries: job.tries || 1 });
+    const u = body?.usage && typeof body.usage === 'object' ? body.usage : null, num = v => typeof v === 'number' && isFinite(v) && v >= 0 && v <= 1e10 ? v : undefined;
+    if (u) {                                                                     // what the draft cost: on the ticket (AI usage page, like a worker's run) and toward the AI budget
+      const cu = Object.fromEntries(Object.entries({ cost_cents: num(u.cost_cents), tokens_in: num(u.tokens_in), tokens_out: num(u.tokens_out) }).filter(([, v]) => v !== undefined));
+      if (Object.keys(cu).length) await runTicketsCLI(['log', t.id, '--by', sess.username, '--usage', JSON.stringify(cu)]);
+      if (typeof cu.cost_cents === 'number' && cu.cost_cents <= 1e7) { try { fs.appendFileSync(path.join(path.dirname(F().data), 'usage-log.jsonl'), JSON.stringify({ ts: Date.now(), agent: sess.username, ticket: t.id, cents: cu.cost_cents }) + '\n', { mode: 0o600 }); } catch (e) { console.error('[usage] log failed:', e.message); } }
+    }
+    audit(sess, { action: 'ticket-draft', ticket: t.id, risk: d.risk, who: d.who, question: !!d.question }); notify('tickets');
+    return json(res, 201, { ok: true });
+  }
+  if (draftM && method === 'POST' && draftM[2]) {                               // a person adds the agent's draft to the ticket
+    if (!sess?.username || askIsAgent(sess) || loadData().users[sess.username]?.role !== 'human') return json(res, 403, { error: 'a person decides what goes into the ticket; an agent cannot' });
+    const t = (loadTickets().tickets || []).find(x => x.id === draftM[1]); if (!t || !t.draft) return json(res, 404, { error: 'there is no draft on that ticket' });
+    if (t.status !== 'proposed') return json(res, 409, { error: 'only a ticket that still waits for approval can take the draft' });
+    if (t.draft.used) return json(res, 409, { error: `the draft was already added by ${t.draft.used.by}` });
+    const d = t.draft, who = ticketFor(t) || (d.who === 'agent' ? 'agent' : 'human');
+    const block = `\n\n---\nPlan drafted by ${d.by} (an AI agent), added by ${sess.username}:\n\nWhat is wanted: ${d.understood}\n\nPlan:\n${d.plan}\n\nWould touch: ${d.touches || 'not sure'}\nRisk: ${d.risk}${d.risk_why ? ' - ' + d.risk_why : ''}`;
+    const args = ['edit', t.id, '--by', sess.username, '--body', (String(t.body || '') + block).slice(0, 20000)]; if (!ticketFor(t)) args.push('--for', who);
+    const r = await runTicketsCLI(args); if (!r.ok) return json(res, 400, { error: r.stderr || 'could not add the draft' });
+    await runTicketsCLI(['meta', t.id, '--by', sess.username, '--set', 'draft', '--json', JSON.stringify({ ...d, used: { by: sess.username, at: new Date().toISOString() } })]);
+    audit(sess, { action: 'ticket-draft-used', ticket: t.id }, true); notify('tickets');
+    return json(res, 200, { ok: true, for: who });
+  }
+  if (url.pathname === '/api/requests/mail' && method === 'POST') {            // T-0205: the person's own switch for emails about their requests
+    if (!sess?.username || sess.agent) return json(res, 403, { error: 'for people' });
+    const body = await parseBody(req, sess).catch(() => null);
+    if (typeof body?.on !== 'boolean') return json(res, 400, { error: 'on: true or false' });
+    if (!accounts.setRequestMail(sess, body.on)) return json(res, 400, { error: 'could not save that' });
+    audit(sess, { action: 'request-mail-' + (body.on ? 'on' : 'off') }, true);
+    return json(res, 200, { ok: true, on: body.on });
+  }
   if (url.pathname === '/api/requests') {
     if (!sess?.username) return json(res, 401, { error: 'login first' });
     if (sess.agent) return json(res, 403, { error: 'agents propose tickets; requests are for people' });
@@ -2237,9 +2374,11 @@ echo "${MARK}$__rc|$PWD"`;
         const closed = (t.updates || []).filter(u => /^CLOSED\b/.test(String(u.note || ''))).pop();
         return { id: t.id, title: plainTitle(t.title), status: t.status, statusText: STATUS[t.status] || t.status, sent: t.proposed_at || null,
                  finished: t.closed_at || t.rejected_at || null, result: t.status === 'done' && closed ? String(closed.note).replace(/^CLOSED:?\s*/, '').slice(0, 2000) : null,
-                 reason: t.status === 'rejected' ? String(t.reject_reason || '').slice(0, 1000) : null };
+                 reason: t.status === 'rejected' ? String(t.reject_reason || '').slice(0, 1000) : null,
+                 files: requestFiles(t.id).map(f => ({ id: f.id, name: f.name, size: f.size, mime: f.mime, url: '/api/requests/files/' + f.id })) };   // T-0206
       });
-      return json(res, 200, { requests: mine.reverse() });
+      const rm = accounts.requestMailFor(reqScope.getStore()?.ws, sess.username);   // T-0205: their email switch
+      return json(res, 200, { requests: mine.reverse(), max_files: REQUEST_FILES_MAX, max_file_mb: MAX_FILE_MB, mail: { on: rm ? rm.wanted : true, confirmed: rm ? rm.confirmed : true, set_up: mail.enabled } });
     }
     if (method === 'POST') {
       if (!TICKETS_WRITE_ENABLED) return json(res, 501, { error: 'tickets are not switched on in this Chamber' });
@@ -2247,10 +2386,15 @@ echo "${MARK}$__rc|$PWD"`;
       const title = String(body?.title || '').replace(/\s+/g, ' ').trim(), text = String(body?.body || '').trim();
       if (title.length < 3 || title.length > 120) return json(res, 400, { error: 'Say what you need in 3 to 120 characters.' });
       if (text.length > 4000) return json(res, 400, { error: 'Details: at most 4000 characters.' });
+      const fileIds = Array.isArray(body?.files) ? [...new Set(body.files.map(String))] : [];   // T-0206
+      if (fileIds.length > REQUEST_FILES_MAX) return json(res, 400, { error: `At most ${REQUEST_FILES_MAX} files per request.` });
+      if (fileIds.some(fid => { const f = /^[a-f0-9]{24}$/.test(fid) ? store.fileGet(F().data, fid) : null; return !f || f.msg_id || f.room !== REQ_PENDING || lc(f.by) !== lc(sess.username); })) return json(res, 400, { error: 'One of the files could not be found. Add it again and send once more.' });
       const r = await runTicketsCLI(['propose', '--by', sess.username, '--title', '[request] ' + plainTitle(title), '--body', text, '--type', 'request', '--priority', 'normal']);
       if (!r.ok) return json(res, 400, { error: r.stderr || 'could not send the request' });
       const id = (String(r.stdout).match(/T-\d+/) || [])[0] || null;
-      audit(sess, { action: 'request', ticket: id }, true);
+      if (id && fileIds.length) store.filesAttach(F().data, fileIds, 'req:' + id, id);   // T-0206: from now on they belong to this request
+      audit(sess, { action: 'request', ticket: id, files: fileIds.length || undefined }, true);
+      if (id && draftsOn(reqScope.getStore()?.ws)) { await runTicketsCLI(['meta', id, '--by', sess.username, '--set', 'draft_job', '--json', JSON.stringify({ state: 'waiting', at: Date.now() })]); notify('tickets'); }   // T-0207: a connected agent drafts a plan for it
       return json(res, 200, { ok: true, id });
     }
     return json(res, 405, { error: 'GET or POST' });
@@ -2310,6 +2454,7 @@ echo "${MARK}$__rc|$PWD"`;
         closed: t.closed_by ? { by: t.closed_by, at: t.closed_at } : null, result: closeNote(t), applied: t.applied || null, reverts: t.reverts || null,
         change: cur ? { current_version: cur, versions } : null, comments: (rj(path.join(diffDir(), t.id + '.comments.json')) || []).filter(c => single || c.version === cur),
         history: t.updates || [], run_log: t.log || [], worker_usage: t.usage || null, agent_runs: mine,
+        request_files: requestFiles(t.id).map(f => ({ name: f.name, bytes: f.size, sha256: f.sha256 || null, by: f.by, at: new Date(f.ts).toISOString() })),   // T-0206
         questions: asksAll.filter(a => a.ticket === t.id).map(a => ({ id: a.id, agent: a.agent, tool: a.tool, what: a.summary, asked_at: a.at, status: a.status, answered_by: a.answeredBy || null, answered_at: a.answeredAt || null, via: a.via || null, result: a.result || null })), record: record.filter(e => e.ticket === t.id).slice(-500) };
     });
     const chk = verifyAudit(dir), pack = { kind: 'chamber-evidence', version: 1, workspace: accounts.enabled ? accounts.workspaceName(accounts.workspaceOf(sess)) : null, generated_at: new Date().toISOString(), generated_by: sess.username,
@@ -2325,7 +2470,7 @@ echo "${MARK}$__rc|$PWD"`;
 <tr><th>Approved</th><td>${t.approvals.length ? t.approvals.map(a => `${E(a.by)}, ${E(when(a.at))}${a.standing ? `, in advance by standing approval ${E(a.standing)}${t.standing && t.standing.what ? ` (${E(t.standing.what)})` : ''}` : ''}`).join('<br>') : 'not approved'}</td></tr>
 ${t.rejected ? `<tr><th>Turned down</th><td>by ${E(t.rejected.by)}, ${E(when(t.rejected.at))}: ${E(t.rejected.reason)}</td></tr>` : ''}<tr><th>Done by</th><td>${E(t.worked_by || '')}${t.closed ? `; closed by ${E(t.closed.by)}, ${E(when(t.closed.at))}` : ''}</td></tr>
 ${t.applied ? `<tr><th>Applied</th><td>branch ${E(t.applied.branch)} ${E(t.applied.sha)} by ${E(t.applied.by)}</td></tr>` : ''}</table>
-<h3>The request</h3><pre>${E(t.request)}</pre>${t.result ? `<h3>The result</h3><pre>${E(t.result)}</pre>` : ''}
+<h3>The request</h3><pre>${E(t.request)}</pre>${t.request_files.length ? `<h3>Files sent with the request</h3><ul>${t.request_files.map(f => `<li>${E(f.name)} (${f.bytes} bytes, by ${E(f.by)}, SHA-256 ${E(f.sha256 || 'not recorded')})</li>`).join('')}</ul>` : ''}${t.result ? `<h3>The result</h3><pre>${E(t.result)}</pre>` : ''}
 ${t.change ? `<h3>The change (version ${t.change.current_version})</h3>${t.change.versions.map(v => `<div class="v"><b>Version ${v.version}</b> by ${E(v.by)} ${E(when(v.at))}: ${v.files.map(E).join(', ')} (+${v.added} -${v.removed})${v.plain ? `<div>In plain words: ${E(v.plain.what || '')} ${v.plain.risk ? 'Risk: ' + E(v.plain.risk) : ''}</div>` : ''}<pre>${E(v.diff || '')}</pre></div>`).join('')}` : ''}
 ${t.comments.length ? `<h3>Review comments</h3><ul>${t.comments.map(c => `<li>${E(c.by)} on version ${c.version}, line ${c.line}${c.file ? ' of ' + E(c.file) : ''}: ${E(c.text)}</li>`).join('')}</ul>` : ''}
 ${t.agent_runs.length ? `<h3>What the agents ran (${t.agent_runs.length} answer${t.agent_runs.length === 1 ? '' : 's'} naming ${E(t.id)})</h3>${t.agent_runs.map(r => `<div class="v"><b>${E(r.agent)}</b> ${E(when(r.at))}${r.model ? ', ' + E(r.model) : ''}${r.cost_cents != null ? `, $${(r.cost_cents / 100).toFixed(2)}` : ''}${r.commands.length ? r.commands.map(c => `<pre>$ ${E(c.tool)}: ${E(c.input)}${c.exit != null ? `   (exit ${E(c.exit)})` : ''}\n${E(c.output || '')}</pre>`).join('') : '<div class="dim">no commands recorded</div>'}</div>`).join('')}` : ''}
@@ -2603,6 +2748,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
     }
     const r = await runTicketsCLI(args);
     if (!r.ok) return json(res, 400, { error: r.stderr || `${action} failed` });
+    if (['approve', 'reject', 'claim', 'close', 'cancel'].includes(action)) await requestMoved(ticketId, sess?.username || body.by);   // T-0205: tell the requester
     if (action !== 'log') audit(sess, { action: 'ticket-' + action, ticket: ticketId, note: body.note ? String(body.note).slice(0, 200) : undefined, reason: body.reason ? String(body.reason).slice(0, 200) : undefined }, true);   // [new] T-0015; T-0057: humans too; T-0143: run-log lines are progress, not audited
     return json(res, 200, { ok: true, message: r.stdout });
   }
@@ -2901,7 +3047,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
         since: state !== prev.state ? Date.now() : prev.since,
         error: body.error ? { text: String(body.error).slice(0, 200), at: Date.now() } : undefined });    // the connector resends its last error for an hour, then it clears
     }
-    return json(res, 200, { ok: true, latestAgentVersion: sess?.agent ? LATEST_AGENT_VERSION : undefined,
+    return json(res, 200, { ok: true, latestAgentVersion: sess?.agent ? LATEST_AGENT_VERSION : undefined, drafts: sess?.agent ? draftCount(sess) : undefined,   // T-0207: requests waiting for a draft
       askConfig: sess?.agent ? loadAskConfig() : undefined });                          // [changed] T-0136: read from where it is really stored        // [new] T-0132: settings ride the ping the connector already sends
   }
 
