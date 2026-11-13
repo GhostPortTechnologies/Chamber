@@ -73,6 +73,10 @@ if [ -f "$STAGE/agent/test_connector.py" ]; then                                
   PYOUT=$(cd "$STAGE" && as_chamber python3 agent/test_connector.py 2>&1) || { say "connector tests failed:"; grep -E 'FAIL|Error' <<<"$PYOUT" | head -8; note "ABORT connector-tests $target"; exit 1; }
   say "connector tests: $(tail -1 <<<"$PYOUT")"
 fi
+if [ -f "$STAGE/agent/test_worker.py" ]; then                                    # 2026-11-13 (T-0194): the ticket worker's tests too (they were run by hand before)
+  WKOUT=$(cd "$STAGE" && as_chamber python3 agent/test_worker.py 2>&1) || { say "worker tests failed:"; grep -E 'FAIL|Error' <<<"$WKOUT" | head -8; note "ABORT worker-tests $target"; exit 1; }
+  say "worker tests: $(tail -1 <<<"$WKOUT")"
+fi
 
 # T-0173: open the real pages in a headless browser (phone + desktop size) against a private copy of the staged tree.
 # Added after 2026-11-12, when a page script error blanked the front page and log in while every server test passed.

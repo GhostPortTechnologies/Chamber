@@ -171,6 +171,9 @@ function before(file, room, beforeTs, limit = 200) {                 // T-0035: 
   const db = open(file);
   return db.prepare('SELECT * FROM (SELECT * FROM messages WHERE room = ? AND ts < ? ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC').all(room, beforeTs, Math.min(limit, 500)).map(rowToMsg);
 }
+function runsSince(file, sinceTs, limit = 20000) {                       // T-0194: agent answers with a run record (model, tokens, time, cost), oldest first
+  return open(file).prepare('SELECT * FROM messages WHERE run IS NOT NULL AND ts >= ? ORDER BY ts LIMIT ?').all(Number(sinceTs) || 0, limit).map(rowToMsg).filter(m => !m.deleted);
+}
 function setPrefs(file, username, prefs) { open(file).prepare('UPDATE users SET prefs = ? WHERE username = ?').run(prefs ? JSON.stringify(prefs) : null, String(username)); }   // T-0072
 function get(file, id) { const r = open(file).prepare('SELECT * FROM messages WHERE id = ?').get(String(id)); return r ? rowToMsg(r) : null; }
 // T-0071: one place for every change to an existing message. `updated` is bumped on each call so since= polling and the
@@ -414,6 +417,6 @@ function importWorkspaceData(file, chat, files) {
     return { users: Object.keys((chat && chat.users) || {}).length, rooms: Object.keys((chat && chat.rooms) || {}).length, messages: n, fileRefs: nf };
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
-module.exports = { archivePick, archiveRemove, archiveRowToMsg, load, loadLight, save, importChat, importFiles, importWorkspaceData, messages, messagesSince, maxSeq, before, get, edit, update, remove, search, pinnedIn, toggleReaction, repliesTo, setPrefs, maintenance, retention, deleteWorkspaceDb,
+module.exports = { runsSince, archivePick, archiveRemove, archiveRowToMsg, load, loadLight, save, importChat, importFiles, importWorkspaceData, messages, messagesSince, maxSeq, before, get, edit, update, remove, search, pinnedIn, toggleReaction, repliesTo, setPrefs, maintenance, retention, deleteWorkspaceDb,
                    fileAdd, fileGet, filesAttach, filesForMsg, filesList, filesOrphans, fileDelete, filesBytes,   // T-0064
                    fileSetFolder, foldersList, folderAdd, folderRename, folderDelete, attachmentRemoved };        // T-0149

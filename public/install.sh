@@ -7,18 +7,20 @@
 # Options (connector): --token chk_...  --commanders a,b  [--rooms general]  [--workdir /path]  [--tools Read,Grep,Glob]
 #                      [--backend claude|ollama|openai|gemini] [--model NAME] [--llm-url URL] [--llm-key KEY]
 #         (worker):    --token chk_...  --repo /path/to/live/git/repo  --service systemd-unit  [--health URL]  [--approvers a,b]  [--scope "what it owns"]  [--triage auto|strict|off]
+#         (worker, pull requests instead of the live folder, T-0191): --mode pr --repo /path/to/a/clone --github-token TOKEN [--base main] [--parallel 1..5]
 #         (both):      [--url https://chamber.example.com]  [--oauth-token sk-ant-oat01-...]  [--no-claude]  [--dry-run]  [--uninstall]
 # The token is created in Chamber: Account -> AI agents -> Create token (or use the in-app "Add an agent" wizard, which writes this line for you).
 # Re-running updates the scripts in place. Connector settings you do not pass again are kept as they are (T-0174), so
 # adding the Claude sign-in later is just:  ... | sudo bash -s -- --role connector --oauth-token sk-ant-oat01-...
 set -uo pipefail
 URL=https://chamber.ghostporttechnologies.com; ROLE=""; TOKEN=""; COMMANDERS=""; ROOMS=""; WORKDIR=""; TOOLS=""   # T-0174: empty = "not given"; a re-run keeps what the settings file already says
-BACKEND=""; MODEL=""; LLM_URL=""; LLM_KEY=""; REPO=""; SERVICE=""; HEALTH=""; APPROVERS=""; OAUTH=""; NO_CLAUDE=0; DRY=0; UNINSTALL=0; SCOPE=""; TRIAGE=""
+BACKEND=""; MODEL=""; LLM_URL=""; LLM_KEY=""; REPO=""; SERVICE=""; HEALTH=""; APPROVERS=""; OAUTH=""; NO_CLAUDE=0; DRY=0; UNINSTALL=0; SCOPE=""; TRIAGE=""; WMODE=live; GHTOKEN=""; WBASE=""; WPAR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE=$2; shift 2;; --token) TOKEN=$2; shift 2;; --commanders) COMMANDERS=$2; shift 2;; --rooms) ROOMS=$2; shift 2;;
     --workdir) WORKDIR=$2; shift 2;; --tools) TOOLS=$2; shift 2;; --backend) BACKEND=$2; shift 2;; --model) MODEL=$2; shift 2;;
     --llm-url) LLM_URL=$2; shift 2;; --llm-key) LLM_KEY=$2; shift 2;; --repo) REPO=$2; shift 2;; --service) SERVICE=$2; shift 2;;
+    --mode) WMODE=$2; shift 2;; --github-token) GHTOKEN=$2; shift 2;; --base) WBASE=$2; shift 2;; --parallel) WPAR=$2; shift 2;;   # T-0191/T-0192: worker pull-request mode
     --health) HEALTH=$2; shift 2;; --approvers) APPROVERS=$2; shift 2;; --scope) SCOPE=$2; shift 2;; --triage) TRIAGE=$2; shift 2;; --url) URL=${2%/}; shift 2;; --oauth-token) OAUTH=$2; shift 2;;
     --no-claude) NO_CLAUDE=1; shift;; --dry-run) DRY=1; shift;; --uninstall) UNINSTALL=1; shift;;
     -h|--help) sed -n '2,13p' "$0" 2>/dev/null || echo "see the header of install.sh"; exit 0;;
@@ -36,7 +38,9 @@ if [ $UNINSTALL = 0 ] && [ $DRY = 0 ] && [ -z "$TOKEN" ] && ! grep -qs '^CHAMBER
 
 if [ $ROLE = connector ]; then USER_=chamber-agent; OPT=/opt/chamber-agent; ENVF=/etc/chamber-agent.env; UNIT=chamber-agent; SRC=/agent/chamber-agent.py; SCRIPT=chamber-agent.py   # T-0174: was /source, which is the whole source archive, so step 3 failed for every new connector
 else USER_=chamber-worker; OPT=/opt/chamber-worker; ENVF=/etc/chamber-worker.env; UNIT=chamber-worker; SRC=/worker; SCRIPT=chamber-worker.py
-  [ -n "$REPO" ] && [ -n "$SERVICE" ] || [ $UNINSTALL = 1 ] || { red "worker needs --repo <live git repo> and --service <systemd unit it may restart>"; exit 2; }
+  case "$WMODE" in live|pr) ;; *) red "--mode is live (deploy into the live folder) or pr (pull requests on GitHub)"; exit 2;; esac
+  if [ "$WMODE" = pr ]; then [ -n "$REPO" ] || [ $UNINSTALL = 1 ] || { red "pull-request mode needs --repo <a clone of the GitHub repository>"; exit 2; }
+  else [ -n "$REPO" ] && [ -n "$SERVICE" ] || [ $UNINSTALL = 1 ] || { red "worker needs --repo <live git repo> and --service <systemd unit it may restart> (or --mode pr for pull requests)"; exit 2; }; fi
 fi
 HOMEDIR=/var/lib/$USER_
 
@@ -87,6 +91,7 @@ if [ $DRY = 0 ]; then
       [ -n "$MODEL" ] && echo "CHAMBER_MODEL=$MODEL"   # 3.16.1: for Claude too (e.g. claude-opus-5-5)
       [ "$BACKEND" != claude ] && { echo "CHAMBER_BACKEND=$BACKEND"; [ -n "$LLM_URL" ] && echo "CHAMBER_LLM_URL=$LLM_URL"; [ -n "$LLM_KEY" ] && echo "CHAMBER_LLM_KEY=$LLM_KEY"; }
     else echo "WORKER_REPO=$REPO"; echo "WORKER_SERVICE=$SERVICE"; echo "WORKER_HEALTH=$HEALTH"; echo "WORKER_APPROVERS=${APPROVERS:-$COMMANDERS}"
+      echo "WORKER_MODE=$WMODE"; [ -n "$GHTOKEN" ] && echo "WORKER_GITHUB_TOKEN=$GHTOKEN"; [ -n "$WBASE" ] && echo "WORKER_BASE=$WBASE"; [ -n "$WPAR" ] && echo "WORKER_PARALLEL=$WPAR"   # T-0191/T-0192
       [ -n "$SCOPE" ] && echo "WORKER_SCOPE=$SCOPE"; [ -n "$TRIAGE" ] && echo "WORKER_TRIAGE=$TRIAGE"; fi   # T-0151: triage settings (defaults: auto, scope from the file list)
     [ -n "$OAUTH" ] && echo "CLAUDE_CODE_OAUTH_TOKEN=$OAUTH"
   } > $ENVF.new; chown root:$USER_ $ENVF.new; chmod 0640 $ENVF.new; mv $ENVF.new $ENVF
@@ -95,7 +100,8 @@ fi
 
 say "5/7 service $UNIT"
 if [ $ROLE = worker ]; then
-  run bash -c "printf '%s\n' '# chamber-worker: the ONLY root action it may take (restart the service it deploys).' 'chamber-worker ALL=(root) NOPASSWD: /usr/bin/systemctl restart $SERVICE' > /etc/sudoers.d/chamber-worker && chmod 0440 /etc/sudoers.d/chamber-worker && visudo -cf /etc/sudoers.d/chamber-worker >/dev/null"
+  if [ "$WMODE" = pr ]; then run rm -f /etc/sudoers.d/chamber-worker   # T-0191: pull-request mode restarts nothing, so it gets no root right at all
+  else run bash -c "printf '%s\n' '# chamber-worker: the ONLY root action it may take (restart the service it deploys).' 'chamber-worker ALL=(root) NOPASSWD: /usr/bin/systemctl restart $SERVICE' > /etc/sudoers.d/chamber-worker && chmod 0440 /etc/sudoers.d/chamber-worker && visudo -cf /etc/sudoers.d/chamber-worker >/dev/null"; fi
   if [ $DRY = 0 ]; then curl -fsSL "$URL/worker.service" | sed "s|__REPO_GROUP__|$REPO_GROUP|; s|__REPO__|$REPO|" > /etc/systemd/system/$UNIT.service; fi
 else
   if [ $DRY = 0 ]; then curl -fsSL "$URL/agent.service" -o /etc/systemd/system/$UNIT.service.new || { red "could not download the unit file"; exit 1; }

@@ -100,18 +100,29 @@ function audit(sess, entry, always = false) {
   const dir = path.dirname(F().data), file = path.join(dir, 'audit.json');
   try {
     fs.mkdirSync(dir, { recursive: true });
+    const headFile = path.join(dir, 'audit-head.json'); let head = {}; try { head = JSON.parse(fs.readFileSync(headFile, 'utf8')); } catch { /* first chained entry */ }   // T-0194
+    rec.n = (head.n || 0) + 1; rec.prev = head.h || null; rec.h = auditChain.hash(rec);
     fs.appendFileSync(path.join(dir, `audit-${new Date(rec.ts).toISOString().slice(0, 7)}.jsonl`), JSON.stringify(rec) + '\n', { mode: 0o600 });
+    { const tmpH = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmpH, JSON.stringify({ n: rec.n, h: rec.h, since: head.since || rec.ts }), { mode: 0o600 }); fs.renameSync(tmpH, headFile); }
     let log = []; try { log = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first entry */ }
     log.push(rec);
     if (log.length > AUDIT_RECENT) log = log.slice(-AUDIT_RECENT);
     const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(log)); fs.renameSync(tmp, file);
   } catch (e) { console.error('[audit] write failed:', e.message); }
 }
+const auditChain = require('./auditchain');                                   // T-0194: tamper-evident activity record
+function verifyAudit(dir) {                                                   // T-0194: walk the record as written and recompute every check value
+  let files = []; try { files = fs.readdirSync(dir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort(); } catch { /* no record yet */ }
+  const entries = [];
+  for (const f of files) fs.readFileSync(path.join(dir, f), 'utf8').split('\n').forEach((line, i) => { if (!line) return; let r; try { r = JSON.parse(line); } catch { r = null; } entries.push(r && typeof r === 'object' ? { ...r, _where: { file: f, line: i + 1 } } : null); });
+  let head = null; try { head = JSON.parse(fs.readFileSync(path.join(dir, 'audit-head.json'), 'utf8')); } catch { /* none yet */ }
+  return { ...auditChain.verify(entries, head), since: head && head.since || null };
+}
 function auditAll(dir) {                                                       // T-0057: everything we have, oldest first (archives + recent, de-duplicated)
   const seen = new Set(), out = [];
   const files = fs.readdirSync(dir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort();
-  for (const f of files) for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) { if (!line) continue; try { const r = JSON.parse(line); const k = `${r.ts}|${r.actor || r.agent}|${r.action}`; if (!seen.has(k)) { seen.add(k); out.push(r); } } catch {} }
-  try { for (const r of JSON.parse(fs.readFileSync(path.join(dir, 'audit.json'), 'utf8'))) { const k = `${r.ts}|${r.actor || r.agent}|${r.action}`; if (!seen.has(k)) { seen.add(k); out.push(r); } } } catch {}
+  for (const f of files) for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) { if (!line) continue; try { const r = JSON.parse(line); const k = r.h ? 'h:' + r.h : `${r.ts}|${r.actor || r.agent}|${r.action}`; if (!seen.has(k)) { seen.add(k); out.push(r); } } catch {} }
+  try { for (const r of JSON.parse(fs.readFileSync(path.join(dir, 'audit.json'), 'utf8'))) { const k = r.h ? 'h:' + r.h : `${r.ts}|${r.actor || r.agent}|${r.action}`; if (!seen.has(k)) { seen.add(k); out.push(r); } } } catch {}
   return out.sort((a, b) => a.ts - b.ts);
 }
 
@@ -613,7 +624,7 @@ function shellSweep() {
   for (const [k, j] of shellJobs) if (now - (j.doneAt || j.at) > SHELL_TTL_MS) shellJobs.delete(k);
 }
 const consoleCwd = new Map();                                               // T-0101: per-owner working directory for the Terminal console
-const ACCOUNTS_CTX = { sessions, createSession, getSession, json, parseBody, loadData, loadDataFull, importWorkspace, saveData, loginThrottled, serveStatic, withWorkspace,
+const ACCOUNTS_CTX = { verifyAudit, sessions, createSession, getSession, json, parseBody, loadData, loadDataFull, importWorkspace, saveData, loginThrottled, serveStatic, withWorkspace,
   cookieSecure: COOKIE_SECURE, sessionTtl: SESSION_TTL, appHtml: path.join(__dirname, 'public', 'index.html'), get version() { return VERSION; }, audit, auditAll,
   listFiles: () => store.filesList(F().data, null, 10000).map(fileMeta) };   // [changed] T-0036: version; T-0057: audit; T-0064: files in the export
 accounts.check();                                                           // [new] refuse to start half-configured
@@ -700,7 +711,8 @@ process.on('unhandledRejection', e => { console.error('[warn] unhandled rejectio
 // notes for their agent + room into every prompt as context. Everything is audited.
 const MEMORY_MAX_NOTES = 50, MEMORY_MAX_CHARS = 500;
 function memoryFile() { return path.join(path.dirname(F().data), 'memory.json'); }
-function diffDir() { return path.join(path.dirname(F().data), 'diffs'); }                                  // T-0063
+function diffDir() { return path.join(path.dirname(F().data), 'diffs'); }
+const MAX_DIFF_VERSIONS = 10;                                                  // T-0189: versions of one ticket's change that are kept                                  // T-0063
 // T-0136: phone-AI settings live in their own small file. They used to ride on loadData()/saveData(), but the SQLite
 // store only persists users/rooms/messages, so a Save answered 200 and the settings were silently dropped.
 // ── Chat archives (T-0112) ─────────────────────────────────────────────────────────────────────────────
@@ -833,6 +845,280 @@ function mirrorOut(wsId, msg) {
   }
 }
 // T-0058: schedules fire as their creator (a commander), so the agent sees an ordinary request and answers in-thread.
+// T-0201: nobody waits silently for an approval. On the schedule tick, every workspace with reminders switched on gets, per proposed
+// ticket, at most ONE reminder (after remindMin) and ONE message to the backup approver (after escalateMin). Tickets due at the same
+// time for the same people go out together as one message, so switching this on in a busy workspace is not a flood. Posted in the
+// ticket's room by "chamber-reminder", an ai identity (so agents ignore it); the mentions push through each person's own quiet hours.
+// What was sent is kept in approval-reminders.json in the workspace, and forgotten once the ticket moves on.
+const REMINDER_BOT = 'chamber-reminder';
+function ticketRoomOf(t) { return ((String(t.body || '').match(/ in #([\w-]{1,40})\.\s*$/) || [])[1]) || 'general'; }
+function waitedText(ms) { return ms < 5400e3 ? `${Math.max(1, Math.round(ms / 6e4))} minutes` : ms < 1.5 * 864e5 ? `${Math.round(ms / 36e5)} hours` : `${Math.round(ms / 864e5)} days`; }
+function approvalReminders(now = new Date()) {
+  if (!accounts.enabled) return [];
+  const sent = [];
+  for (const { ws, cfg } of accounts.reminderWorkspaces()) {
+    withWorkspace(ws, () => {
+      const file = path.join(path.dirname(F().data), 'approval-reminders.json');
+      let done = {}; try { done = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* nothing sent yet */ }
+      const waiting = (loadTickets().tickets || []).filter(t => t.status === 'proposed' && !t.changes);
+      const open = new Set(waiting.map(t => t.id)); let dirty = false;
+      for (const id of Object.keys(done)) if (!open.has(id)) { delete done[id]; dirty = true; }
+      const data = loadData(), groups = new Map();
+      if (Object.hasOwn(data.users, REMINDER_BOT) && data.users[REMINDER_BOT].role !== 'ai') return;   // a person has that name: say nothing rather than speak as them
+      for (const t of waiting) {
+        const waited = now.getTime() - Date.parse(t.proposed_at || ''), d = done[t.id] || {};
+        if (!isFinite(waited)) continue;
+        let stage = null, to = [];
+        if (cfg.remindMin && !d.reminded && waited >= cfg.remindMin * 6e4) { stage = 'reminded'; to = accounts.remindTargets(ws, t); }
+        else if (cfg.escalateMin && cfg.backup && !d.escalated && waited >= cfg.escalateMin * 6e4) { stage = 'escalated'; to = [cfg.backup]; }
+        if (!stage) continue;
+        if (!to.length) { d[stage] = now.getTime(); done[t.id] = d; dirty = true; continue; }   // nobody to remind: note it so it is not retried every minute
+        const room = data.rooms[ticketRoomOf(t)] ? ticketRoomOf(t) : (data.rooms.general ? 'general' : Object.keys(data.rooms)[0]);
+        if (!room) continue;
+        const key = `${stage}|${room}|${to.slice().sort().join(',')}`;
+        if (!groups.has(key)) groups.set(key, { stage, room, to, items: [] });
+        groups.get(key).items.push({ t, waited });
+      }
+      for (const g of groups.values()) {
+        const list = g.items.slice(0, 10).map(({ t, waited }) => `${t.id} (${waitedText(waited)}): ${String(t.title).slice(0, 100)}`), more = g.items.length > 10 ? `\n…and ${g.items.length - 10} more on the Tickets tab.` : '';
+        const text = g.stage === 'reminded'
+          ? `${g.to.map(u => '@' + u).join(' ')} ${g.items.length === 1 ? 'This ticket is' : 'These tickets are'} waiting for approval:\n${list.join('\n')}${more}\n(One reminder from the approval rules.)`
+          : `@${g.to[0]} Nobody has decided on ${g.items.length === 1 ? 'this ticket' : 'these tickets'} yet, and you are the backup approver:\n${list.join('\n')}${more}`;
+        if (!Object.hasOwn(data.users, REMINDER_BOT)) data.users[REMINDER_BOT] = { username: REMINDER_BOT, role: 'ai', lastSeen: now.getTime() };
+        const made = postMessage(data, { username: REMINDER_BOT, text, room: g.room, source: 'reminder' });
+        if (!made.message) continue;
+        for (const { t } of g.items) { done[t.id] = { ...(done[t.id] || {}), [g.stage]: now.getTime() }; sent.push({ ws, ticket: t.id, stage: g.stage, to: g.to }); }
+        dirty = true;
+      }
+      if (dirty) { const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(done), { mode: 0o600 }); fs.renameSync(tmp, file); }
+    }, { rid: 'remind' });
+  }
+  if (sent.length) console.log(`[remind] ${sent.length} ticket(s): ${sent.map(s => s.ticket + ' ' + s.stage).join(', ')}`);
+  return sent;
+}
+// T-0202: the weekly report. Measured facts only: what was done, how long each took, how long approvals waited, who approved, what the
+// AI cost, what waits now. Never chat, code or estimates of "time saved". Weeks run Monday to Sunday in UTC.
+const mail = require('./mail');
+function weekStartOf(d) { const x = new Date(d); x.setUTCHours(0, 0, 0, 0); x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); return x; }
+const escH = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function weeklyReport(wsName, from, to, linkBase) {                            // call inside withWorkspace
+  const tickets = loadTickets().tickets || [], at = s => Date.parse(s || ''), inWeek = s => { const t = at(s); return t >= from.getTime() && t < to.getTime(); };
+  const done = tickets.filter(t => t.status === 'done' && inWeek(t.closed_at)).sort((a, b) => at(a.closed_at) - at(b.closed_at));
+  const approved = tickets.filter(t => inWeek(t.approved_at)), waits = approved.map(t => at(t.approved_at) - at(t.proposed_at)).filter(x => x >= 0);
+  const avgWait = waits.length ? waits.reduce((a, b) => a + b, 0) / waits.length : null;
+  const rejected = tickets.filter(t => t.status === 'rejected' && inWeek(t.rejected_at)), waiting = tickets.filter(t => t.status === 'proposed').sort((a, b) => at(a.proposed_at) - at(b.proposed_at)), working = tickets.filter(t => t.status === 'in_progress');
+  const requests = tickets.filter(t => /^\[request\]/i.test(t.title || '') && inWeek(t.proposed_at)).length;
+  let cents = 0, answers = 0, noCost = 0;
+  for (const m of store.runsSince(F().data, from.getTime())) { if (m.ts >= to.getTime() || !m.run || m.run.state === 'running') continue; answers++; if (typeof m.run.cost_cents === 'number' && isFinite(m.run.cost_cents)) cents += m.run.cost_cents; else noCost++; }
+  const result = t => { const c = (t.updates || []).filter(u => /^CLOSED\b/.test(u.note || '')).pop(); return c ? String(c.note).replace(/^CLOSED:?\s*/, '').split('\n')[0].slice(0, 240) : ''; };
+  const who = t => [...new Set((Array.isArray(t.approvals) && t.approvals.length ? t.approvals.map(a => a.by) : [t.approved_by]).filter(Boolean))].join(' and ') || 'nobody recorded';
+  const day = s => new Date(s).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }), last = new Date(to.getTime() - 864e5);
+  const span = `${day(from)} to ${last.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })}`;
+  const money = c => '$' + (c / 100).toFixed(2);
+  const summary = `${done.length} ticket${done.length === 1 ? '' : 's'} done, ${approved.length} approved${avgWait !== null ? ` (approval waited ${waitedText(avgWait)} on average)` : ''}, ${rejected.length} turned down, ${waiting.length} waiting for approval now, ${working.length} being worked on. AI: ${answers} answer${answers === 1 ? '' : 's'}, ${money(cents)}${noCost ? ` (${noCost} without a reported cost)` : ''}.${requests ? ` ${requests} request${requests === 1 ? '' : 's'} came in from clients or managers.` : ''}`;
+  const doneLines = done.map(t => `${t.id} ${t.title}: requested ${day(t.proposed_at)}, done ${day(t.closed_at)} (${waitedText(at(t.closed_at) - at(t.proposed_at))}), approved by ${who(t)}.${result(t) ? ' ' + result(t) : ''}`);
+  const waitLines = waiting.slice(0, 15).map(t => `${t.id} ${t.title}: waiting ${waitedText(Date.now() - at(t.proposed_at))}`), workLines = working.slice(0, 15).map(t => `${t.id} ${t.title}${t.assignee ? ` (${t.assignee})` : ''}`);
+  const text = `Weekly report for ${wsName}, ${span}\n\nIn short: ${summary}\n\nDone:\n${doneLines.length ? doneLines.map(l => '- ' + l).join('\n') : '- nothing closed this week'}\n\nWaiting for approval now:\n${waitLines.length ? waitLines.map(l => '- ' + l).join('\n') : '- nothing'}\n\nBeing worked on:\n${workLines.length ? workLines.map(l => '- ' + l).join('\n') : '- nothing'}\n\n`
+    + (linkBase ? `The same report as a page you can print: ${linkBase}\n\n` : '') + 'Only measured facts: no estimates of time saved. AI cost is as the AI tools report it (with a Claude subscription, the API-price equivalent).\nMade with Chamber, https://chamber.ghostporttechnologies.com\n';
+  const prev = new Date(from.getTime() - 7 * 864e5).toISOString().slice(0, 10), next = new Date(from.getTime() + 7 * 864e5);
+  const row = t => `<tr><td>${escH(t.id)}</td><td>${escH(t.title)}${result(t) ? `<div class="r">${escH(result(t))}</div>` : ''}</td><td>${escH(day(t.proposed_at))}</td><td>${escH(day(t.closed_at))}<div class="r">${escH(waitedText(at(t.closed_at) - at(t.proposed_at)))}</div></td><td>${escH(who(t))}</td></tr>`;
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Weekly report · ${escH(wsName)} · ${escH(span)}</title>
+<style>body{margin:0;background:#fff;color:#1b1f1d;font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:860px;margin:0 auto;padding:28px 18px 48px}h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:28px 0 8px;border-bottom:1px solid #d9dfdb;padding-bottom:4px}.dim,.r{color:#5b665f;font-size:13px}.box{background:#f3f6f4;border:1px solid #d9dfdb;border-radius:8px;padding:12px 14px}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;vertical-align:top;padding:7px 6px;border-bottom:1px solid #e6ebe8}th{font-size:12px;color:#5b665f;font-weight:600}td:first-child{white-space:nowrap;font-weight:600}ul{padding-left:20px}nav{font-size:13px;margin:6px 0 0}nav a{color:#0b6b43}@media print{nav{display:none}}@media(max-width:600px){table,tbody,tr,td{display:block}thead{display:none}tr{padding:8px 0;border-bottom:1px solid #e6ebe8}td{border:0;padding:2px 0}}</style></head>
+<body><main><h1>Weekly report: ${escH(wsName)}</h1><div class="dim">${escH(span)} (weeks run Monday to Sunday, UTC)</div>
+<nav><a href="?week=${prev}">Previous week</a>${next.getTime() <= Date.now() ? ` · <a href="?week=${next.toISOString().slice(0, 10)}">Next week</a>` : ''} · <a href="?week=this">This week so far</a> · <span style="color:#5b665f">print it from your browser</span></nav>
+<h2>In short</h2><div class="box">${escH(summary)}</div>
+<h2>Done this week</h2>${done.length ? `<table><thead><tr><th>Ticket</th><th>What, and the result</th><th>Asked</th><th>Done, and how long it took</th><th>Approved by</th></tr></thead><tbody>${done.map(row).join('')}</tbody></table>` : '<p class="dim">Nothing was closed this week.</p>'}
+<h2>Waiting for approval now</h2>${waitLines.length ? `<ul>${waitLines.map(l => `<li>${escH(l)}</li>`).join('')}</ul>` : '<p class="dim">Nothing is waiting.</p>'}
+<h2>Being worked on now</h2>${workLines.length ? `<ul>${workLines.map(l => `<li>${escH(l)}</li>`).join('')}</ul>` : '<p class="dim">Nothing right now.</p>'}
+<p class="dim" style="margin-top:28px">Only measured facts: no estimates of time saved. AI cost is as the AI tools report it; with a Claude subscription it is the API-price equivalent, not what is billed. This page is private to whoever has its link, and shows no chat and no code.<br>Made with <a href="https://chamber.ghostporttechnologies.com" style="color:#0b6b43">Chamber</a>.</p></main></body></html>`;
+  return { text, html, done: done.length, subject: `Weekly report for ${wsName}: ${done.length} done, ${waiting.length} waiting (${span})` };
+}
+function weeklyReportMail(now = new Date()) {                                   // Mondays from 08:00 UTC: last week's report to whoever the owner listed, once
+  if (!accounts.enabled || now.getUTCDay() !== 1 || now.getUTCHours() < 8) return [];
+  const to = weekStartOf(now), from = new Date(to.getTime() - 7 * 864e5), week = from.toISOString().slice(0, 10), sent = [];
+  for (const w of accounts.reportWorkspaces()) {
+    withWorkspace(w.ws, () => {
+      const file = path.join(path.dirname(F().data), 'report-sent.json'); let st = {}; try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* never sent */ }
+      if (st.week === week) return;
+      const r = weeklyReport(w.name, from, to, w.linkUrl ? `${w.linkUrl}?week=${week}` : null);
+      for (const addr of w.recipients) { if (TEST_HOOKS) console.log(`[report] mail to ${addr}: ${r.subject}`); if (mail.enabled) mail.send({ to: addr, subject: r.subject, text: r.text }).catch(e => console.error('[report] mail failed:', e.message)); }
+      const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify({ week, at: now.getTime(), to: w.recipients.length }), { mode: 0o600 }); fs.renameSync(tmp, file);
+      sent.push({ ws: w.ws, week, to: w.recipients, done: r.done, subject: r.subject });
+    }, { rid: 'report' });
+  }
+  return sent;
+}
+// T-0203: the AI budget. Spend this month (UTC) = what agents reported with their answers + what the ticket worker reported on tickets
+// (usage-log.jsonl). At 80 percent the owner and admins are told, at 100 percent agents finish what they are doing and take no new
+// tickets (claims answer 402; connector 3.21 also stops starting new answers). An agent that has reported no cost in the last 90 days
+// (a local model) is never blocked: money other agents spent is not a reason to stop it.
+function monthStartOf(d) { const x = new Date(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), 1)); }
+// ── T-0200: standing approvals ─────────────────────────────────────────────────────────────────────────────────────────────
+// Someone who may approve says once, in advance: "this kind of job, done by this agent, is fine within these limits, until this
+// date". A ticket that names one (the app's propose form, a "standing" field, or [standing:S-1] in its title) is approved by the
+// server at once, and its record says which standing approval covered it. The server checks every limit it can count: the
+// approval rules, the end date, the jobs per week, the agent that claims it, pull-request mode only, and (before anything is
+// pushed) the number of files, the folders and the files no standing approval ever covers. Whether a job really is the kind
+// described stays with the person who reviews and merges the pull request. Kept per workspace in standing.json next to the tickets.
+const STANDING_MAX_ACTIVE = 20, STANDING_MAX_DAYS = 90, STANDING_KEEP = 200;
+const STANDING_NEVER = ['*.key', '*.pub', '*.pem', '*.pfx', '*.p12', 'auth.json', '*tokens*', '*secret*', '*credential*', '*.env', '.env*', '*/.env*', 'backups/*', '*.db', '*.sqlite*',
+  '.github/*', '.gitlab-ci.yml', '.circleci/*', 'Jenkinsfile', 'azure-pipelines.yml', '.buildkite/*'];   // the worker's never-touch list, plus build pipelines: a pull request that changes those can run code with the repository's secrets
+const STANDING_NEVER_RE = STANDING_NEVER.map(p => new RegExp('^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i'));
+function standingPath() { return path.join(path.dirname(F().data), 'standing.json'); }
+function loadStanding() {
+  try { const d = JSON.parse(fs.readFileSync(standingPath(), 'utf8')); if (d && Array.isArray(d.items)) return { next: Number.isInteger(d.next) ? d.next : d.items.length + 1, items: d.items }; } catch {}
+  return { next: 1, items: [] };
+}
+function saveStanding(d) {                                                   // keeps every live one and the newest ended / withdrawn ones
+  const live = d.items.filter(s => ['active', 'waiting'].includes(standingState(s))), old = d.items.filter(s => !live.includes(s));
+  d.items = old.slice(-Math.max(0, STANDING_KEEP - live.length)).concat(live).sort((a, b) => parseInt(a.id.slice(2), 10) - parseInt(b.id.slice(2), 10));
+  const f = standingPath(), tmp = f + '.tmp'; fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify(d, null, 1), { mode: 0o600 }); fs.renameSync(tmp, f);
+}
+function standingState(s, now = Date.now()) {                                // active | waiting (for a second approver) | withdrawn | ended
+  if (s.withdrawn) return 'withdrawn';
+  if (now > Date.parse(s.until + 'T23:59:59Z')) return 'ended';
+  return s.needsConfirm && !s.confirmedBy ? 'waiting' : 'active';
+}
+function standingRulesFor(sess) { return accounts.enabled ? accounts.standingRules(accounts.workspaceOf(sess)) : { approvers: null, two: 'none', noSelf: false }; }
+function standingLive(s, sess) {                                             // why this standing approval cannot start work right now, or ''
+  const lc = x => String(x || '').toLowerCase(), st = standingState(s), rules = standingRulesFor(sess);
+  if (st === 'withdrawn') return `standing approval ${s.id} was withdrawn by ${s.withdrawn.by}`;
+  if (st === 'ended') return `standing approval ${s.id} ended on ${s.until}`;
+  if (st === 'waiting') return `standing approval ${s.id} still waits for a second approver to confirm it`;
+  if (rules.two === 'all' && !s.confirmedBy && (rules.approvers || []).length >= 2) return `the approval rules now need two people, so a second approver must confirm ${s.id} first`;
+  const may = rules.approvers || Object.entries(loadData().users).filter(([, u]) => u.role === 'human').map(([n]) => n);
+  if (!may.some(u => lc(u) === lc(s.by))) return `${s.by}, who set up ${s.id}, may no longer approve here`;
+  if (s.confirmedBy && !may.some(u => lc(u) === lc(s.confirmedBy))) return `${s.confirmedBy}, who confirmed ${s.id}, may no longer approve here`;
+  return '';
+}
+function standingUses(s, tickets, now = Date.now()) { return tickets.filter(t => t.standing && t.standing.id === s.id && Date.parse(t.approved_at || t.proposed_at) > now - 7 * 864e5).length; }
+function standingTicketFor(t) { return t.for === 'human' || t.for === 'agent' ? t.for : /\[agent\]/i.test(t.title || '') ? 'agent' : /\[human\]/i.test(t.title || '') ? 'human' : null; }
+function standingCovers(s, t, sess) {                                        // why this ticket is NOT covered, or ''
+  const lc = x => String(x || '').toLowerCase(), live = standingLive(s, sess); if (live) return live;
+  const rules = standingRulesFor(sess);
+  if (standingTicketFor(t) !== 'agent') return 'it is not a ticket for an agent';
+  if (rules.noSelf && [s.by, s.confirmedBy].some(u => u && lc(u) === lc(t.proposed_by))) return `${t.proposed_by} set up or confirmed ${s.id}, and here nobody approves their own ticket`;
+  if (rules.two === 'high' && ['high', 'critical'].includes(lc(t.priority))) return 'high and critical tickets need two people each time here';
+  const used = standingUses(s, loadTickets().tickets || []);
+  if (used >= s.perWeek) return `${s.id} allows ${s.perWeek} job${s.perWeek === 1 ? '' : 's'} a week and ${used} already started in the last 7 days`;
+  return '';
+}
+function standingCited(field, title) {                                       // 'S-1' | null (none named) | false (named, but not a standing approval's id)
+  const v = String(field == null ? '' : field).trim() || ((String(title || '').match(/\[standing:\s*(S-\d{1,5})\]/i) || [])[1] || '');
+  return !v ? null : /^S-\d{1,5}$/i.test(v) ? v.toUpperCase() : false;
+}
+async function standingApprove(id, sid, sess) {                               // a new ticket names a standing approval: approve it now, or say on the ticket why not
+  const s = loadStanding().items.find(x => x.id === sid), t = (loadTickets().tickets || []).find(x => x.id === id);
+  if (!t) return { ok: false, id: sid, why: 'the ticket was not found' };
+  const why = !s ? `there is no standing approval ${sid} here` : standingCovers(s, t, sess);
+  if (why) {
+    await runTicketsCLI(['update', id, '--by', sess.username, '--note', `STANDING APPROVAL ${sid} does not cover this: ${why}. It waits for a person to approve it.`]);
+    audit(sess, { action: 'standing-not-covered', ticket: id, standing: sid, reason: why.slice(0, 200) }, true); notify('tickets');
+    return { ok: false, id: sid, why };
+  }
+  const snap = { id: s.id, what: s.what, agent: s.agent, by: s.by, confirmedBy: s.confirmedBy || undefined, paths: s.paths, maxFiles: s.maxFiles, until: s.until };
+  const r = await runTicketsCLI(['approve', id, '--by', s.by, '--standing', JSON.stringify(snap)]);
+  if (!r.ok) return { ok: false, id: sid, why: r.stderr || 'could not approve it' };
+  audit(sess, { action: 'ticket-approve-standing', ticket: id, standing: s.id, set_by: s.by }, true); notify('tickets');
+  return { ok: true, id: s.id };
+}
+function standingBack(id, by, note) { return runTicketsCLI(['unstand', id, '--by', by, '--note', `WAITS FOR A PERSON: ${note}`]); }   // back to proposed: a person approves it by hand, or not
+async function standingClaimCheck(t, sess, body) {                           // '' = may claim; else why not. When no agent may do it under the standing approval any more, it goes back to a person.
+  const lc = x => String(x || '').toLowerCase(), s = loadStanding().items.find(x => x.id === t.standing.id);
+  const dead = !s ? `standing approval ${t.standing.id} no longer exists` : standingLive(s, sess);
+  if (dead) {
+    await standingBack(t.id, sess.username, `${dead}, before any work started.`);
+    audit(sess, { action: 'standing-outside', ticket: t.id, standing: t.standing.id, reason: dead.slice(0, 200) }, true); notify('tickets');
+    return `${dead}, so ${t.id} went back to waiting for a person`;
+  }
+  if (lc(sess.username) !== lc(s.agent)) return `${t.id} was approved in advance by standing approval ${s.id}, which covers jobs done by ${s.agent} only`;
+  if (body?.mode !== 'pr') {
+    const why = `standing approval ${s.id} allows pull-request mode only (nothing goes live until a person merges it), and ${s.agent} ${body?.mode === 'live' ? 'works in the live folder' : 'did not say it works in pull-request mode (ticket worker 1.8.0 or newer does)'}`;
+    await standingBack(t.id, sess.username, why + '.');
+    audit(sess, { action: 'standing-outside', ticket: t.id, standing: s.id, reason: why.slice(0, 200) }, true); notify('tickets');
+    return `${why}, so ${t.id} went back to waiting for a person`;
+  }
+  return '';
+}
+
+// ── T-0188: the agent asks, a person taps Allow or Deny ──────────────────────────────────────────────────────────────────────
+// A chat agent the owner switched this on for (Account, AI agents, "may ask") can ask mid-job to use a tool it was not given
+// outright: run one command, change one file. The question appears in the room (Allow once / Deny above the message box) for the
+// people who may approve tickets here; no answer in time means no. Each answer covers exactly that one use. Question, answer, who
+// gave it and the result all go on the activity record. On the agent's side Claude Code's permission prompt goes to a small
+// helper of the connector (--permission-prompt-tool), which holds no key and only talks to the connector.
+const ASK_KEEP = 500, ASK_MIN_WAIT = 60, ASK_MAX_WAIT = 1800, ASK_MAX_WAITING = 5, ASK_PER_HOUR = 60;
+function asksPath() { return path.join(path.dirname(F().data), 'asks.json'); }
+function loadAsks() {
+  try { const d = JSON.parse(fs.readFileSync(asksPath(), 'utf8')); if (d && Array.isArray(d.items)) return { next: Number.isInteger(d.next) ? d.next : d.items.length + 1, items: d.items }; } catch {}
+  return { next: 1, items: [] };
+}
+function saveAsks(d) { d.items = d.items.slice(-ASK_KEEP); const f = asksPath(), tmp = f + '.tmp.' + process.pid; fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(tmp, JSON.stringify(d), { mode: 0o600 }); fs.renameSync(tmp, f); }
+function askIsAgent(sess) { return !!(sess && (sess.agent || sess.role === 'ai')); }
+function askMayAsk(sess) {                                                   // the owner's switch for this agent (off by default)
+  if (!askIsAgent(sess)) return false;
+  return accounts.enabled ? !!sess.mayAsk : String(process.env.CHAMBER_ASK_AGENTS || '').split(',').map(s => s.trim().toLowerCase()).includes(String(sess.username || '').toLowerCase());
+}
+function askAnswerers(sess) { const r = standingRulesFor(sess); return r.approvers || Object.entries(loadData().users).filter(([, u]) => u.role === 'human').map(([n]) => n); }   // the same people who may approve tickets
+function askMayAnswer(sess) {
+  if (!sess?.username || askIsAgent(sess) || loadData().users[sess.username]?.role !== 'human') return false;
+  return askAnswerers(sess).some(u => u.toLowerCase() === sess.username.toLowerCase());
+}
+function askOutcome(a, text) {                                               // the question in the room gets its answer appended, so the chat history shows it too
+  if (!a.msgId) return;
+  try { const m = store.get(F().data, a.msgId); if (!m) return; const upd = store.update(F().data, a.msgId, { text: (m.text + '\n\n' + text).slice(0, MAX_TEXT) }); if (upd) notify('messages', { room: upd.room, change: upd }); }
+  catch (e) { console.error('[asks] could not add the answer to the question:', e.message); }
+}
+function askExpire(d) {                                                      // nobody answered in time: that is a no. Returns how many changed.
+  let n = 0; const now = Date.now();
+  for (const a of d.items) if (a.status === 'waiting' && now > a.expiresAt) {
+    a.status = 'expired'; a.answeredAt = new Date(now).toISOString(); n++;
+    askOutcome(a, 'No answer in time, so it was not allowed.'); audit({ username: a.agent, agent: true }, { action: 'ask-expired', ask: a.id });
+  }
+  return n;
+}
+
+function budgetState(wsId, now = new Date()) {                                 // call inside the workspace's scope
+  if (!accounts.enabled || !wsId) return null;
+  const b = accounts.budgetOf(wsId); if (!(b.monthlyCents > 0) && !Object.keys(b.perAgent).length) return null;
+  const from = monthStartOf(now).getTime(), byAgent = {}, costedRecently = new Set(), num = c => typeof c === 'number' && isFinite(c);
+  for (const m of store.runsSince(F().data, now.getTime() - 90 * 864e5)) {
+    if (!m.run || m.run.state === 'running') continue;
+    if (num(m.run.cost_cents)) costedRecently.add(m.username);
+    if (m.ts < from) continue;
+    const x = byAgent[m.username] || (byAgent[m.username] = { cents: 0, answers: 0, noCost: 0 }); x.answers++; if (num(m.run.cost_cents)) x.cents += m.run.cost_cents; else x.noCost++;
+  }
+  try { for (const line of fs.readFileSync(path.join(path.dirname(F().data), 'usage-log.jsonl'), 'utf8').split('\n')) { if (!line) continue; let r; try { r = JSON.parse(line); } catch { continue; } if (!num(r.cents) || !r.agent) continue; costedRecently.add(r.agent); if (r.ts >= from) { const x = byAgent[r.agent] || (byAgent[r.agent] = { cents: 0, answers: 0, noCost: 0 }); x.cents += r.cents; } } } catch { /* no worker runs yet */ }
+  const spent = Math.round(Object.values(byAgent).reduce((s, x) => s + x.cents, 0) * 100) / 100, over = b.monthlyCents > 0 && spent >= b.monthlyCents;
+  const agentOver = name => { if (!costedRecently.has(name)) return false; if (over) return true; const cap = b.perAgent[name]; return cap > 0 && (byAgent[name]?.cents || 0) >= cap; };
+  const money = c => '$' + (c / 100).toFixed(2), monthName = monthStartOf(now).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  return { monthlyCents: b.monthlyCents, perAgent: b.perAgent, spentCents: spent, leftCents: b.monthlyCents > 0 ? Math.max(0, Math.round((b.monthlyCents - spent) * 100) / 100) : null, pct: b.monthlyCents > 0 ? Math.round(spent / b.monthlyCents * 100) : null,
+           over, agentOver, byAgent, noCostAgents: Object.keys(byAgent).filter(a => !costedRecently.has(a)), month: monthStartOf(now).toISOString().slice(0, 7), monthName, money };
+}
+function budgetAlerts(now = new Date()) {
+  if (!accounts.enabled) return [];
+  const sent = [];
+  for (const w of accounts.budgetWorkspaces()) {
+    withWorkspace(w.ws, () => {
+      const bs = budgetState(w.ws, now); if (!bs || !(bs.monthlyCents > 0) || !w.admins.length) return;
+      const file = path.join(path.dirname(F().data), 'budget-alerts.json'); let st = {}; try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* none yet */ }
+      if (st.month !== bs.month) st = { month: bs.month };
+      const stage = bs.pct >= 100 && !st.a100 ? 'a100' : bs.pct >= 80 && !st.a80 ? 'a80' : null; if (!stage) return;
+      const data = loadData(); if (Object.hasOwn(data.users, REMINDER_BOT) && data.users[REMINDER_BOT].role !== 'ai') return;
+      const room = data.rooms.general ? 'general' : Object.keys(data.rooms)[0]; if (!room) return;
+      if (!Object.hasOwn(data.users, REMINDER_BOT)) data.users[REMINDER_BOT] = { username: REMINDER_BOT, role: 'ai', lastSeen: now.getTime() };
+      const text = `${w.admins.map(u => '@' + u).join(' ')} The AI budget for ${bs.monthName} is ${stage === 'a100' ? 'used up' : bs.pct + '% used'}: ${bs.money(bs.spentCents)} of ${bs.money(bs.monthlyCents)}. `
+        + (stage === 'a100' ? 'Agents finish what they are doing and take no new tickets until the owner raises the budget (Account page) or the month turns.' : 'At 100% agents finish what they are doing and take no new tickets.');
+      const made = postMessage(data, { username: REMINDER_BOT, text, room, source: 'budget' });
+      if (!made.message) return;
+      st[stage] = now.getTime(); if (stage === 'a100') st.a80 = st.a80 || now.getTime();
+      const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(st), { mode: 0o600 }); fs.renameSync(tmp, file);
+      sent.push({ ws: w.ws, stage, to: w.admins, pct: bs.pct });
+    }, { rid: 'budget' });
+  }
+  return sent;
+}
 function runSchedules(now = new Date()) {
   if (!accounts.enabled) return [];
   const fired = [];
@@ -847,7 +1133,7 @@ function runSchedules(now = new Date()) {
   if (fired.length) console.log(`[schedule] fired ${fired.length}: ${fired.map(f => f.ws + '/' + f.id).join(', ')}`);
   return fired;
 }
-setInterval(() => { try { runSchedules(); accounts.flushQuietHeld(); } catch (e) { console.error('[schedule]', e.message); } }, 30e3).unref();   // [changed] T-0078: deliver quiet-hours summaries
+setInterval(() => { try { runSchedules(); accounts.flushQuietHeld(); } catch (e) { console.error('[schedule]', e.message); } try { approvalReminders(); } catch (e) { console.error('[remind]', e.message); } try { weeklyReportMail(); } catch (e) { console.error('[report]', e.message); } try { budgetAlerts(); } catch (e) { console.error('[budget]', e.message); } }, 30e3).unref();   // T-0201: + approval reminders   // [changed] T-0078: deliver quiet-hours summaries
 const hookLimiter = makeLimiter(60);
 function summarizePayload(raw, headers = {}) {                                                // T-0058: make a webhook body readable in chat; T-0074: GitHub events by header
   let j; try { j = JSON.parse(raw); } catch { return String(raw).slice(0, 1500); }
@@ -889,6 +1175,18 @@ async function handleRequest(req, res, sess) {                              // [
     return res.end();
   }
 
+  const reportM = url.pathname.match(/^\/report\/([A-Za-z0-9_-]{16,64})$/);     // T-0202: the private weekly report page (no login; the link is the key)
+  if (accounts.enabled && reportM && method === 'GET') {
+    const found = accounts.reportByToken(reportM[1]);
+    if (!found) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('This report link is not valid any more. Ask whoever sent it for a new one.'); }
+    const wk = url.searchParams.get('week'); let from;
+    if (wk === 'this') from = weekStartOf(new Date());
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(wk || '')) { from = weekStartOf(new Date(wk + 'T00:00:00Z')); if (!(from.getTime() > Date.now() - 366 * 864e5) || from.getTime() > Date.now()) from = null; }
+    if (!from) from = new Date(weekStartOf(new Date()).getTime() - 7 * 864e5);
+    const to = new Date(from.getTime() + 7 * 864e5), out = withWorkspace(found.ws, () => weeklyReport(found.name, from, to, null), { rid: 'report-page' });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' });
+    return res.end(out.html);
+  }
   if (accounts.enabled && method === 'POST' && url.pathname.startsWith('/hooks/')) {       // [new] T-0058: inbound webhook -> message
     const token = url.pathname.slice('/hooks/'.length).replace(/\/+$/, '');
     const found = accounts.hookByToken(token);
@@ -972,12 +1270,19 @@ async function handleRequest(req, res, sess) {                              // [
     if (url.pathname === '/api/_test/throw') throw new Error('test: handler throw');
     if (url.pathname === '/api/_test/maintenance') return json(res, 200, maintenance());   // T-0037
     if (url.pathname === '/api/_test/trial-housekeeping') return json(res, 200, accounts.trialHousekeeping(ACCOUNTS_CTX, parseInt(url.searchParams.get('at')) || Date.now()));   // T-0175/T-0176
-    if (url.pathname === '/api/_test/tick') { const at = new Date(parseInt(url.searchParams.get('at')) || Date.now()); return json(res, 200, { fired: runSchedules(at), flushed: accounts.flushQuietHeld(at) }); }   // T-0058/T-0078
+    if (url.pathname === '/api/_test/tick') { const at = new Date(parseInt(url.searchParams.get('at')) || Date.now()); return json(res, 200, { fired: runSchedules(at), flushed: accounts.flushQuietHeld(at), reminded: approvalReminders(at), reports: weeklyReportMail(at), budget: budgetAlerts(at) }); }   // T-0058/T-0078; T-0201
     if (url.pathname === '/api/_test/reject') { Promise.reject(new Error('test: unhandled rejection')); return json(res, 200, { ok: true }); }
     if (url.pathname === '/api/_test/throw-async') { json(res, 200, { ok: true }); setImmediate(() => { throw new Error('test: uncaught exception'); }); return; }
   }
   if (url.pathname.startsWith('/api/') && AUTH_REQUIRED && (!sess || (accounts.enabled && !accounts.sessionEntitled(sess)))) {  // [changed] paid/admin only in accounts mode
     return json(res, 401, { error: 'authentication required' });
+  }
+  // T-0199: guest roles. A requester may only send and follow their own requests. A viewer may read but not change anything, except
+  // approving or rejecting a ticket, which the approval rules (T-0190) then allow only when the owner has named them as an approver.
+  if (url.pathname.startsWith('/api/') && accounts.enabled && sess && !sess.agent) {
+    const gr = accounts.sessionRole(sess);
+    if (gr === 'requester' && !/^\/api\/(requests|health)$/.test(url.pathname)) return json(res, 403, { error: 'You are a requester in this workspace: you can send requests and follow your own, nothing else.' });
+    if (gr === 'viewer' && method !== 'GET' && !/^\/api\/(ping|me\/prefs|tickets\/[A-Za-z0-9-]+\/(approve|reject|changes)|standing|standing\/S-\d{1,5}\/(withdraw|confirm)|asks\/A-\d{1,6}\/answer)$/.test(url.pathname)) return json(res, 403, { error: 'You are a viewer in this workspace: you can read, not change anything.' });
   }
   if (url.pathname.startsWith('/api/') && accounts.enabled && method !== 'GET' && url.pathname !== '/api/ping' && accounts.sessionReadOnly(sess)) {   // [new] T-0028
     return json(res, 402, { error: accounts.billingFor(sess)?.trialOver ? 'The free trial has ended. This workspace is read-only until its owner subscribes. Nothing was deleted.' : 'This workspace is read-only until its billing is fixed.', billing: 'readonly' });
@@ -992,10 +1297,15 @@ async function handleRequest(req, res, sess) {                              // [
     return json(res, 200, { username: sess.username, role: sess.role, email: sess.email || null, accounts: accounts.enabled,
                             billing: accounts.enabled ? accounts.billingFor(sess) : undefined,   // [new] T-0028: banner + read-only hint
                             commanders: accounts.enabled ? accounts.commandersFor(accounts.workspaceOf(sess)) : undefined,   // [new] T-0015; T-0148: people see it too (workspaceOf resolves a human session), so the app can say 'you are not a commander'
-                            latestAgentVersion: sess.agent ? LATEST_AGENT_VERSION : undefined,   // [new] T-0046: connectors compare and warn when stale
+                            mayAsk: sess.agent ? askMayAsk(sess) : undefined, latestAgentVersion: sess.agent ? LATEST_AGENT_VERSION : undefined,   // [new] T-0046: connectors compare and warn when stale
                             peers: sess.agent ? Object.values(loadData().users).filter(u => u.role === 'ai' && u.username !== sess.username).map(u => u.username) : undefined,   // [new] T-0060
                             serverConsole: !accounts.enabled || accounts.serverConsoleAllowed(sess) ? true : undefined,   // T-0181: only then does the app offer the "Chamber server" target
                             fleetLink: accounts.enabled && fleet.enabled ? true : undefined,   // T-0153: show the GhostPort routers menu entry
+                            canApprove: accounts.enabled ? accounts.canApprove(sess) : !sess.agent,   // T-0190: the app offers Approve only to people the rules allow
+                            budget: (() => { const bs = accounts.enabled ? budgetState(accounts.workspaceOf(sess)) : null; if (!bs) return undefined;   // T-0203
+                              const over = sess.agent ? bs.agentOver(sess.username) : bs.over;
+                              return { monthlyCents: bs.monthlyCents, spentCents: bs.spentCents, leftCents: bs.leftCents, pct: bs.pct, over, month: bs.month, noCostAgents: bs.noCostAgents,
+                                       reason: over ? `The AI budget for ${bs.monthName} is used up (${bs.money(bs.spentCents)}${bs.monthlyCents ? ' of ' + bs.money(bs.monthlyCents) : ''}).` : undefined }; })(),
                             repoUrl: REPO_URL, wsRole: accounts.enabled ? accounts.sessionRole(sess) : 'owner',   // [new] T-0071: the app shows Stop to owners/admins
                             prefs: loadData().users[sess.username]?.prefs || {} });                  // [new] T-0072: plain-language preference                                                  // [new] T-0047: for SHA links
   }
@@ -1585,10 +1895,21 @@ echo "${MARK}$__rc|$PWD"`;
     return json(res, 200, { tickets: tickets.map(x => withDiff.has(x.id) ? { ...x, hasDiff: true } : x) });
   }
   const diffMatch = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/diff$/);           // [new] T-0063: a proposal carries a patch
-  if (diffMatch && method === 'GET') {
-    const id = diffMatch[1];
-    try { const diff = fs.readFileSync(path.join(diffDir(), id + '.patch'), 'utf8'); let meta = {}; try { meta = JSON.parse(fs.readFileSync(path.join(diffDir(), id + '.json'), 'utf8')); } catch {}
-      return json(res, 200, { id, diff, meta }); } catch { return json(res, 404, { error: 'this ticket has no diff' }); }
+  if (diffMatch && method === 'GET') {                                          // T-0189: ?version=N reads an earlier version; versions lists them all
+    const id = diffMatch[1], rf = p => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } }, rj = p => { try { return JSON.parse(rf(p) || '{}'); } catch { return {}; } };
+    const diff = rf(path.join(diffDir(), id + '.patch'));
+    if (diff === null) return json(res, 404, { error: 'this ticket has no diff' });
+    const meta = rj(path.join(diffDir(), id + '.json')), cur = Number.isInteger(meta.version) ? meta.version : 1;
+    const versions = [];
+    for (let v = 1; v < cur; v++) { const m = rj(path.join(diffDir(), `${id}.v${v}.json`)); versions.push({ version: v, by: m.by, at: m.at, added: m.added, removed: m.removed }); }
+    versions.push({ version: cur, by: meta.by, at: meta.at, added: meta.added, removed: meta.removed, current: true });
+    const want = parseInt(url.searchParams.get('version'), 10);
+    if (Number.isInteger(want) && want !== cur) {
+      if (want < 1 || want > cur) return json(res, 404, { error: `no version ${want}` });
+      const old = rf(path.join(diffDir(), `${id}.v${want}.patch`)); if (old === null) return json(res, 404, { error: `version ${want} is no longer kept` });
+      return json(res, 200, { id, diff: old, meta: { ...rj(path.join(diffDir(), `${id}.v${want}.json`)), version: want }, versions, current: cur });
+    }
+    return json(res, 200, { id, diff, meta: { ...meta, version: cur }, versions, current: cur });
   }
   if (diffMatch && method === 'POST') {
     const id = diffMatch[1]; const t = (loadTickets().tickets || []).find(x => x.id === id);
@@ -1607,12 +1928,119 @@ echo "${MARK}$__rc|$PWD"`;
     const pl = body.plain && typeof body.plain === 'object' ? body.plain : null;                        // [new] T-0072: plain-words summary for people who do not read diffs
     if (pl) meta.plain = Object.fromEntries(['what', 'try', 'risk', 'undo', 'level'].filter(k => pl[k] != null && String(pl[k]).trim()).map(k => [k, String(pl[k]).trim().slice(0, k === 'level' ? 10 : 600)]));
     fs.mkdirSync(diffDir(), { recursive: true });
+    const curP = path.join(diffDir(), id + '.patch'), curM = path.join(diffDir(), id + '.json');   // T-0189: the earlier version is kept, numbered
+    let version = 1;
+    if (fs.existsSync(curP)) {
+      let old = {}; try { old = JSON.parse(fs.readFileSync(curM, 'utf8')); } catch {}
+      const ov = Number.isInteger(old.version) ? old.version : 1;
+      if (ov >= MAX_DIFF_VERSIONS) return json(res, 409, { error: `${id} already has ${MAX_DIFF_VERSIONS} versions of its change; propose a new ticket instead` });
+      fs.renameSync(curP, path.join(diffDir(), `${id}.v${ov}.patch`)); try { fs.renameSync(curM, path.join(diffDir(), `${id}.v${ov}.json`)); } catch {}
+      version = ov + 1;
+    }
+    meta.version = version;
     fs.writeFileSync(path.join(diffDir(), id + '.patch'), diff, { mode: 0o600 }); fs.writeFileSync(path.join(diffDir(), id + '.json'), JSON.stringify(meta), { mode: 0o600 });
-    audit(sess, { action: 'ticket-diff', ticket: id, files: files.length, added, removed }, true);
+    audit(sess, { action: 'ticket-diff', ticket: id, files: files.length, added, removed, version }, true);
+    if (version > 1 && TICKETS_WRITE_ENABLED) await runTicketsCLI(['revised', id, '--by', sess.username, '--version', String(version)]);   // T-0189: on the record; a request for changes is answered
     notify('tickets', { diff: id });
     return json(res, 201, { ok: true, id, meta });
   }
 
+  // T-0189: review that talks back. Comments on single lines of a ticket's proposed change; "Ask for changes", which records the
+  // request and tells the agent in chat (as the person who asked, so it is their instruction); and a named reviewer.
+  const lcU = s => String(s || '').toLowerCase();
+  const ticketRoom = t => ((String(t.body || '').match(/ in #([\w-]{1,40})\.\s*$/) || [])[1]) || 'general';
+  const readDiffMeta = id => { try { return JSON.parse(fs.readFileSync(path.join(diffDir(), id + '.json'), 'utf8')); } catch { return {}; } };
+  const commentsFile = id => path.join(diffDir(), id + '.comments.json');
+  const readComments = id => { try { const a = JSON.parse(fs.readFileSync(commentsFile(id), 'utf8')); return Array.isArray(a) ? a : []; } catch { return []; } };
+  const commentsMatch = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/comments$/);
+  if (commentsMatch) {
+    const id = commentsMatch[1];
+    if (method === 'GET') return json(res, 200, { comments: readComments(id) });
+    if (method !== 'POST') return json(res, 405, { error: 'GET or POST' });
+    if (!sess?.username) return json(res, 401, { error: 'login first' });
+    const t = (loadTickets().tickets || []).find(x => x.id === id); if (!t) return json(res, 404, { error: 'no such ticket' });
+    if (!fs.existsSync(path.join(diffDir(), id + '.patch'))) return json(res, 409, { error: 'this ticket has no proposed change to comment on' });
+    const meta = readDiffMeta(id), cur = Number.isInteger(meta.version) ? meta.version : 1;
+    const body = await parseBody(req, sess).catch(() => null);
+    const version = body?.version === undefined || body?.version === null || body?.version === '' ? cur : parseInt(body.version, 10);
+    if (!Number.isInteger(version) || version < 1 || version > cur) return json(res, 400, { error: `version must be between 1 and ${cur}` });
+    const text = String(body?.text || '').trim();
+    if (!text || text.length > 2000) return json(res, 400, { error: 'a comment is 1 to 2000 characters' });
+    let dt = ''; try { dt = fs.readFileSync(path.join(diffDir(), version === cur ? id + '.patch' : `${id}.v${version}.patch`), 'utf8'); } catch { return json(res, 404, { error: `version ${version} is no longer kept` }); }
+    const lines = dt.split('\n'), line = parseInt(body?.line, 10);
+    if (!Number.isInteger(line) || line < 1 || line > lines.length) return json(res, 400, { error: `line must be between 1 and ${lines.length} (the line numbers of the diff)` });
+    let file = ''; for (let i = line - 1; i >= 0; i--) { const m = lines[i].match(/^\+\+\+ (?:b\/)?(.+)$/); if (m) { file = m[1].trim(); break; } }
+    const list = readComments(id); if (list.length >= 500) return json(res, 409, { error: 'this ticket has 500 comments already' });
+    const c = { id: crypto.randomBytes(5).toString('hex'), version, line, file: file.slice(0, 200), code: lines[line - 1].slice(0, 300), text, by: sess.username, at: Date.now() };
+    list.push(c); fs.mkdirSync(diffDir(), { recursive: true }); fs.writeFileSync(commentsFile(id), JSON.stringify(list), { mode: 0o600 });
+    audit(sess, { action: 'ticket-comment', ticket: id, version, line }, true); notify('tickets', { diff: id });
+    return json(res, 201, { ok: true, comment: c, comments: list });
+  }
+  const changesMatch = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/(changes|reviewer)$/);
+  if (changesMatch && method === 'POST') {
+    if (!TICKETS_WRITE_ENABLED) return json(res, 501, { error: 'tickets integration not configured' });
+    const [, id, what] = changesMatch, t = (loadTickets().tickets || []).find(x => x.id === id);
+    if (!t) return json(res, 404, { error: 'no such ticket' });
+    const who = loadData().users[sess?.username];
+    if (sess?.agent || sess?.role === 'ai' || !who || who.role !== 'human') return json(res, 403, { error: `a person ${what === 'changes' ? 'asks for changes' : 'names a reviewer'}; an agent cannot` });
+    if (t.status !== 'proposed') return json(res, 409, { error: `only while ${id} is proposed (it is ${t.status})` });
+    const body = await parseBody(req, sess).catch(() => null);
+    const room = ticketRoom(t), data = loadData(), wsId = accounts.enabled ? accounts.workspaceOf(sess) : null;
+    if (what === 'reviewer') {
+      const name = String(body?.reviewer || '').trim().replace(/^@/, '');   // not 'username': parseBody pins that field to the signed-in person
+      if (name) {
+        const u = Object.values(data.users).find(x => lcU(x.username) === lcU(name));
+        if (!u || u.role !== 'human') return json(res, 400, { error: `${name} is not a person in this workspace` });
+        if (accounts.enabled && !accounts.approvalCheck(wsId, t, u.username, 'reject').ok) return json(res, 400, { error: `${u.username} may not approve tickets here (the owner's approval rules), so cannot be the reviewer` });
+        const r = await runTicketsCLI(['meta', id, '--by', sess.username, '--set', 'reviewer', '--json', JSON.stringify(u.username)]); if (!r.ok) return json(res, 400, { error: r.stderr || 'could not set the reviewer' });
+        if (data.rooms[room] && lcU(u.username) !== lcU(sess.username)) postMessage(data, { username: sess.username, text: `@${u.username} please review the proposed change on ${id} (Tickets tab).`, room });
+        audit(sess, { action: 'ticket-reviewer', ticket: id, reviewer: u.username }, true); notify('tickets');
+        return json(res, 200, { ok: true, reviewer: u.username });
+      }
+      const r = await runTicketsCLI(['meta', id, '--by', sess.username, '--set', 'reviewer', '--json', 'null']); if (!r.ok) return json(res, 400, { error: r.stderr || 'could not clear the reviewer' });
+      notify('tickets'); return json(res, 200, { ok: true, reviewer: null });
+    }
+    if (!fs.existsSync(path.join(diffDir(), id + '.patch'))) return json(res, 409, { error: 'this ticket has no proposed change; reject it or comment in chat instead' });
+    if (body?.withdraw) {
+      if (!t.changes) return json(res, 409, { error: `no request for changes on ${id} to withdraw` });
+      const role = accounts.enabled ? accounts.sessionRole(sess) : 'owner';
+      if (lcU(t.changes.by) !== lcU(sess.username) && role !== 'owner' && role !== 'admin') return json(res, 403, { error: 'only the person who asked, the owner or an admin can withdraw it' });
+      const r = await runTicketsCLI(['changes', id, '--by', sess.username, '--withdraw', 'yes'])   /* the ticket tool reads every option as a name and a value */; if (!r.ok) return json(res, 400, { error: r.stderr || 'withdraw failed' });
+      audit(sess, { action: 'ticket-changes-withdrawn', ticket: id }, true); notify('tickets');
+      return json(res, 200, { ok: true, message: r.stdout.trim() });
+    }
+    if (accounts.enabled) { const plan = accounts.approvalCheck(wsId, t, sess.username, 'reject'); if (!plan.ok) return json(res, plan.code || 403, { error: plan.error }); }   // the same people who may reject
+    const meta = readDiffMeta(id), cur = Number.isInteger(meta.version) ? meta.version : 1;
+    const note = String(body?.note || '').trim().slice(0, 2000), open = readComments(id).filter(c => c.version === cur);
+    if (!note && !open.length) return json(res, 400, { error: 'say what should change, or comment on a line of the change first' });
+    const r = await runTicketsCLI(['changes', id, '--by', sess.username, '--version', String(cur), '--note', note || `${open.length} comment${open.length === 1 ? '' : 's'} on lines of the change`]);
+    if (!r.ok) return json(res, 400, { error: r.stderr || 'could not record the request' });
+    const agent = [meta.by, t.proposed_by].find(n => n && data.users[n]?.role === 'ai') || null;
+    let posted = false;
+    if (agent && data.rooms[room]) {
+      const lines = open.slice(0, 25).map(c => `- ${c.file || 'the diff'} (diff line ${c.line}): ${c.text.replace(/\s+/g, ' ').slice(0, 300)}`);
+      const made = postMessage(data, { username: sess.username, room, text: `@${agent} Changes asked for on ${id} (version ${cur}) by ${sess.username}.${note ? '\n' + note : ''}${lines.length ? '\nComments on lines:\n' + lines.join('\n') : ''}\nSend a new version of the change for ${id}.` });
+      posted = !made.error;
+    }
+    audit(sess, { action: 'ticket-changes', ticket: id, version: cur, comments: open.length }, true); notify('tickets');
+    const cmd = accounts.enabled ? accounts.commandersFor(wsId).map(lcU) : [lcU(sess.username)];
+    return json(res, 200, { ok: true, message: r.stdout.trim(), agent, room, posted, agentWillAct: !!agent && posted && cmd.includes(lcU(sess.username)) });
+  }
+  const prMatch = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/pr$/);           // T-0191: the worker records a ticket's pull request (open, merged, closed)
+  if (prMatch && method === 'POST') {
+    if (!TICKETS_WRITE_ENABLED) return json(res, 501, { error: 'tickets integration not configured' });
+    const id = prMatch[1], t = (loadTickets().tickets || []).find(x => x.id === id);
+    if (!t) return json(res, 404, { error: 'no such ticket' });
+    const role = accounts.enabled ? accounts.sessionRole(sess) : 'owner';
+    if (!(sess?.agent && String(t.assignee || '').toLowerCase() === String(sess.username).toLowerCase()) && role !== 'owner' && role !== 'admin') return json(res, 403, { error: 'only the agent working the ticket, the owner or an admin can record its pull request' });
+    const body = await parseBody(req, sess).catch(() => null);
+    const pr = { url: String(body?.url || ''), number: Number(body?.number), state: String(body?.state || ''), branch: String(body?.branch || '').slice(0, 120), repo: String(body?.repo || '').slice(0, 120), at: Date.now() };
+    if (!/^https:\/\/[^\s"'<>]{4,300}$/.test(pr.url) || !Number.isInteger(pr.number) || pr.number < 1 || !['open', 'merged', 'closed'].includes(pr.state)) return json(res, 400, { error: 'pr: {url (https), number, state: open|merged|closed, branch, repo}' });
+    const r = await runTicketsCLI(['meta', id, '--by', sess.username, '--set', 'pr', '--json', JSON.stringify(pr)]);
+    if (!r.ok) return json(res, 400, { error: r.stderr || 'could not record the pull request' });
+    audit(sess, { action: 'ticket-pr', ticket: id, number: pr.number, state: pr.state }, true); notify('tickets');
+    return json(res, 200, { ok: true, pr });
+  }
   const appliedMatch = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/applied$/);       // [new] T-0072: the connector reports where an approved patch landed
   if (appliedMatch && method === 'POST') {
     if (!TICKETS_WRITE_ENABLED) return json(res, 501, { error: 'tickets integration not configured' });
@@ -1666,6 +2094,7 @@ echo "${MARK}$__rc|$PWD"`;
     const forTitle = ticketFor({ title: body.title });
     if (forV && forTitle && forTitle !== forV) return json(res, 400, { error: `the title says [${forTitle}] but for is ${forV}; pick one` });
     const forFinal = forV || forTitle || (sess?.agent ? 'agent' : '');   // '' = not said (API/CLI callers); the app's form requires the choice and the board shows WHO?
+    const sid = standingCited(body.standing, body.title); if (sid === false) return json(res, 400, { error: 'standing must name a standing approval, like S-1' });   // T-0200
     const dup = proposeDedupeHit(body.by, body.title);                       // [new] T-0116
     if (dup) return json(res, 201, { ok: true, duplicate: true, message: dup.message });
     if (typeof body.title !== 'string' || !body.title.trim()) return json(res, 400, { error: 'title must be text' });
@@ -1677,7 +2106,8 @@ echo "${MARK}$__rc|$PWD"`;
     if (!r.ok) return json(res, 400, { error: r.stderr || 'propose failed' });
     proposeDedupeRemember(body.by, body.title, r.stdout);                    // [new] T-0116
     audit(sess, { action: 'ticket-propose', title: String(body.title).slice(0, 120) }, true);    // [new] T-0015; T-0057: humans too
-    return json(res, 201, { ok: true, message: r.stdout });
+    const newId = (String(r.stdout).match(/T-\d{4}/) || [])[0], standing = sid && newId ? await standingApprove(newId, sid, sess) : undefined;   // T-0200
+    return json(res, 201, { ok: true, message: r.stdout, standing });
   }
 
   if (url.pathname === '/api/proposals' && method === 'POST') {             // [new] T-0047: structured proposal, mainly for agents
@@ -1691,12 +2121,272 @@ echo "${MARK}$__rc|$PWD"`;
     const full = `${text}${reason ? `\n\nWhy: ${reason}` : ''}\n\nProposed by ${sess.username}${body?.for ? ` for ${String(body.for).slice(0, 24)}` : ''}${body?.room ? ` in #${String(body.room).slice(0, 40)}` : ''}.`;
     const doesV = cleanFor(body?.does); if (doesV === false) return json(res, 400, { error: 'does must be "human" or "agent"' });   // T-0155: who does it (default: an agent, since agents file these)
     const does = doesV || ticketFor({ title }) || (sess.agent ? 'agent' : '');
+    const sid = standingCited(body?.standing, title); if (sid === false) return json(res, 400, { error: 'standing must name a standing approval, like S-1' });   // T-0200
     const r = await runTicketsCLI(['propose', '--by', sess.username, '--title', title.replace(/^(\[agent\]\s*)+/i, ''), '--for', does, '--body', full, '--type', ['task', 'bug', 'security', 'idea'].includes(body?.type) ? body.type : 'task', '--priority', ['low', 'medium', 'high'].includes(body?.priority) ? body.priority : 'medium']);
     if (!r.ok) return json(res, 400, { error: r.stderr || 'propose failed' });
     const id = (String(r.stdout).match(/T-\d{4}/) || [])[0] || null;
     audit(sess, { action: 'proposal', id, title: title.slice(0, 120) }, true);
     notify('tickets');
-    return json(res, 201, { ok: true, id, message: r.stdout.trim() });
+    const standing = sid && id ? await standingApprove(id, sid, sess) : undefined;   // T-0200
+    return json(res, 201, { ok: true, id, message: r.stdout.trim(), standing });
+  }
+  // T-0199: requests from the business side. A request becomes a proposed ticket on the team's board, titled [request] so it stands
+  // out, with who-does-it left open for the team to decide. Whoever sent it sees only their own requests: the status in plain words and
+  // the closing note or the reason, never the chat, the run log, the code or anyone else's tickets.
+  if (url.pathname === '/api/requests') {
+    if (!sess?.username) return json(res, 401, { error: 'login first' });
+    if (sess.agent) return json(res, 403, { error: 'agents propose tickets; requests are for people' });
+    const lc = s => String(s || '').toLowerCase(), plainTitle = s => String(s || '').replace(/^\[request\]\s*/i, '');
+    const STATUS = { proposed: 'Waiting for approval', approved: 'Approved, not started yet', in_progress: 'Being worked on', done: 'Done', rejected: 'Not going ahead' };
+    if (method === 'GET') {
+      const mine = (loadTickets().tickets || []).filter(t => lc(t.proposed_by) === lc(sess.username)).map(t => {
+        const closed = (t.updates || []).filter(u => /^CLOSED\b/.test(String(u.note || ''))).pop();
+        return { id: t.id, title: plainTitle(t.title), status: t.status, statusText: STATUS[t.status] || t.status, sent: t.proposed_at || null,
+                 finished: t.closed_at || t.rejected_at || null, result: t.status === 'done' && closed ? String(closed.note).replace(/^CLOSED:?\s*/, '').slice(0, 2000) : null,
+                 reason: t.status === 'rejected' ? String(t.reject_reason || '').slice(0, 1000) : null };
+      });
+      return json(res, 200, { requests: mine.reverse() });
+    }
+    if (method === 'POST') {
+      if (!TICKETS_WRITE_ENABLED) return json(res, 501, { error: 'tickets are not switched on in this Chamber' });
+      const body = await parseBody(req, sess).catch(() => null);
+      const title = String(body?.title || '').replace(/\s+/g, ' ').trim(), text = String(body?.body || '').trim();
+      if (title.length < 3 || title.length > 120) return json(res, 400, { error: 'Say what you need in 3 to 120 characters.' });
+      if (text.length > 4000) return json(res, 400, { error: 'Details: at most 4000 characters.' });
+      const r = await runTicketsCLI(['propose', '--by', sess.username, '--title', '[request] ' + plainTitle(title), '--body', text, '--type', 'request', '--priority', 'normal']);
+      if (!r.ok) return json(res, 400, { error: r.stderr || 'could not send the request' });
+      const id = (String(r.stdout).match(/T-\d+/) || [])[0] || null;
+      audit(sess, { action: 'request', ticket: id }, true);
+      return json(res, 200, { ok: true, id });
+    }
+    return json(res, 405, { error: 'GET or POST' });
+  }
+  if (url.pathname === '/api/usage' && method === 'GET') {                   // T-0194: what the agents' work cost and how long it took
+    if (!sess?.username) return json(res, 401, { error: 'login first' });
+    if (sess.agent) return json(res, 403, { error: 'for people' });
+    const days = Math.min(366, Math.max(1, parseInt(url.searchParams.get('days'), 10) || 28)), since = Date.now() - days * 864e5, data = loadData();
+    const zero = () => ({ answers: 0, cents: 0, ms: 0, tokens_in: 0, tokens_out: 0, no_cost: 0 });
+    const add = (map, k, r) => { const x = map[k] || (map[k] = zero()); x.answers++; if (typeof r.cost_cents === 'number' && isFinite(r.cost_cents)) x.cents += r.cost_cents; else x.no_cost++; x.ms += Number(r.ms) || 0; x.tokens_in += Number(r.tokens_in) || 0; x.tokens_out += Number(r.tokens_out) || 0; };
+    const weekOf = ts => { const d = new Date(ts); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+    const byAgent = {}, byWeek = {}, byTicket = {}, total = {};
+    for (const m of store.runsSince(F().data, since)) {                         // only rooms this person can see
+      if (!m.run || m.run.state === 'running' || !canSeeRoom(data, m.room, sess.username)) continue;
+      add(total, 'all', m.run); add(byAgent, m.username, m.run); add(byWeek, weekOf(m.ts), m.run);
+      for (const id of new Set(String(m.text || '').match(/T-\d{4}/g) || [])) add(byTicket, id, m.run);
+    }
+    const tickets = loadTickets().tickets || [], titles = Object.fromEntries(tickets.map(t => [t.id, t.title]));
+    for (const t of tickets) if (t.usage && t.usage.runs) { const x = byTicket[t.id] || (byTicket[t.id] = zero()); x.worker = t.usage; }   // the ticket worker reports its own runs on the ticket (all time)
+    const r2 = o => { for (const v of Object.values(o)) v.cents = Math.round(v.cents * 100) / 100; return o; };
+    const top = Object.entries(r2(byTicket)).sort((a, b) => ((b[1].cents + (b[1].worker?.cost_cents || 0)) - (a[1].cents + (a[1].worker?.cost_cents || 0)))).slice(0, 30).map(([id, v]) => ({ id, title: titles[id] || null, ...v }));
+    return json(res, 200, { days, since, total: r2(total).all || zero(), byAgent: r2(byAgent), byWeek: r2(byWeek), tickets: top,
+      note: 'Cost as the AI tool reports it. With a Claude subscription this is what the same work would cost at API prices, not what you are billed. Answers that report no cost (local models) are counted separately.' });
+  }
+  // T-0204: an evidence pack. For one ticket, or for the tickets closed in a date range: the request, who approved it and when, the
+  // plain-words summary, the change (every version for a single ticket), the comments, the run log, every command the agents ran in
+  // answers that name the ticket (with output and exit codes), the result, and the entries of the tamper-evident record (T-0194) about
+  // it. Sealed with a SHA-256 over the whole pack; tools/verify-pack.js checks the seal and, given a full record export, that every
+  // entry is in the workspace's record. A readable page (?format=html) and the data (?format=json). No claim of meeting any standard.
+  const evidenceM = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/evidence$/);
+  if ((evidenceM || url.pathname === '/api/evidence') && method === 'GET') {
+    if (!sess?.username) return json(res, 401, { error: 'login first' });
+    if (sess.agent) return json(res, 403, { error: 'evidence packs are for people' });
+    const all = loadTickets().tickets || [], at = s => Date.parse(s || ''); let pick, range = null;
+    if (evidenceM) { const t = all.find(x => x.id === evidenceM[1]); if (!t) return json(res, 404, { error: 'no such ticket' }); pick = [t]; }
+    else {
+      const f = url.searchParams.get('from'), tt = url.searchParams.get('to');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(f || '') || !/^\d{4}-\d{2}-\d{2}$/.test(tt || '')) return json(res, 400, { error: 'from and to are dates like 2026-11-01' });
+      const a = Date.parse(f + 'T00:00:00Z'), b = Date.parse(tt + 'T00:00:00Z') + 864e5;
+      if (!(b > a) || b - a > 367 * 864e5) return json(res, 400, { error: 'the range is 1 day to 1 year, from before to' });
+      range = { from: f, to: tt }; pick = all.filter(t => t.status === 'done' && at(t.closed_at) >= a && at(t.closed_at) < b).slice(0, 200);
+    }
+    const dir = path.dirname(F().data), data = loadData(), ids = new Set(pick.map(t => t.id)), single = !!evidenceM;
+    const record = auditAll(dir).filter(e => e.ticket && ids.has(e.ticket));
+    const earliest = Math.min(...pick.map(t => at(t.proposed_at)).filter(isFinite), Date.now());
+    const runs = store.runsSince(F().data, earliest - 864e5).filter(m => m.run && canSeeRoom(data, m.room, sess.username));
+    const rf = p => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } }, rj = p => { try { return JSON.parse(rf(p) || 'null'); } catch { return null; } };
+    const closeNote = t => { const c = (t.updates || []).filter(u => /^CLOSED\b/.test(u.note || '')).pop(); return c ? String(c.note).replace(/^CLOSED:?\s*/, '') : null; };
+    const tickets = pick.map(t => {
+      const meta = rj(path.join(diffDir(), t.id + '.json')), cur = meta && Number.isInteger(meta.version) ? meta.version : (meta ? 1 : 0), versions = [];
+      if (cur) for (let v = 1; v <= cur; v++) { if (!single && v < cur) continue; const m = v === cur ? meta : rj(path.join(diffDir(), `${t.id}.v${v}.json`)) || {}, d = rf(path.join(diffDir(), v === cur ? t.id + '.patch' : `${t.id}.v${v}.patch`)); versions.push({ version: v, by: m.by || null, at: m.at || null, files: m.files || [], added: m.added || 0, removed: m.removed || 0, plain: m.plain || null, diff: d }); }
+      const mine = runs.filter(m => String(m.text || '').includes(t.id)).slice(-50).map(m => ({ at: m.ts, agent: m.username, room: m.room, answer: String(m.text || '').slice(0, 2000), model: m.run.model || null, state: m.run.state, tokens_in: m.run.tokens_in ?? null, tokens_out: m.run.tokens_out ?? null, ms: m.run.ms ?? null, cost_cents: m.run.cost_cents ?? null, commands: (m.run.tools || []).map(x => ({ tool: x.tool, input: x.input, output: x.out ?? null, exit: x.exit ?? null, error: !!x.error })) }));
+      return { id: t.id, title: t.title, request: t.body || '', type: t.type, priority: t.priority, for: t.for || null, status: t.status,
+        proposed: { by: t.proposed_by, at: t.proposed_at }, approvals: Array.isArray(t.approvals) && t.approvals.length ? t.approvals : (t.approved_by ? [{ by: t.approved_by, at: t.approved_at }] : []), approved_at: t.approved_at || null,
+        rejected: t.rejected_by ? { by: t.rejected_by, at: t.rejected_at, reason: t.reject_reason } : null, reviewer: t.reviewer || null, standing: t.standing || null, standing_was: t.standing_was || null, worked_by: t.assignee || null, claimed_at: t.claimed_at || null,
+        closed: t.closed_by ? { by: t.closed_by, at: t.closed_at } : null, result: closeNote(t), applied: t.applied || null, reverts: t.reverts || null,
+        change: cur ? { current_version: cur, versions } : null, comments: (rj(path.join(diffDir(), t.id + '.comments.json')) || []).filter(c => single || c.version === cur),
+        history: t.updates || [], run_log: t.log || [], worker_usage: t.usage || null, agent_runs: mine, record: record.filter(e => e.ticket === t.id).slice(-500) };
+    });
+    const chk = verifyAudit(dir), pack = { kind: 'chamber-evidence', version: 1, workspace: accounts.enabled ? accounts.workspaceName(accounts.workspaceOf(sess)) : null, generated_at: new Date().toISOString(), generated_by: sess.username,
+      scope: single ? { ticket: evidenceM[1] } : range, record_check: { intact: chk.ok, entries_checked: chk.checked, newest_check_value: chk.head || null, problem: chk.ok ? null : chk.reason },
+      note: 'A record of what Chamber saw. It does not by itself show that anything meets a law or a standard.', tickets };
+    pack.seal = { sha256: crypto.createHash('sha256').update(JSON.stringify(pack)).digest('hex'), how: 'node tools/verify-pack.js <this file> [full record export] (in the Chamber source) checks it without the server' };
+    audit(sess, { action: 'evidence-pack', ticket: single ? evidenceM[1] : undefined, range: range ? `${range.from}..${range.to}` : undefined, tickets: tickets.length }, true);
+    const fname = `chamber-evidence-${single ? evidenceM[1] : `${range.from}_${range.to}`}`;
+    if (url.searchParams.get('format') === 'json') { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${fname}.json"`, 'Cache-Control': 'no-store' }); return res.end(JSON.stringify(pack, null, 1)); }
+    const E = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])), when = s => s ? new Date(typeof s === 'number' ? s : Date.parse(s)).toUTCString().replace(' GMT', ' UTC') : '';
+    const sec = t => `<section><h2>${E(t.id)}: ${E(t.title)}</h2><table>
+<tr><th>Status</th><td>${E(t.status)}</td></tr><tr><th>Asked for</th><td>by ${E(t.proposed.by)}, ${E(when(t.proposed.at))}</td></tr>
+<tr><th>Approved</th><td>${t.approvals.length ? t.approvals.map(a => `${E(a.by)}, ${E(when(a.at))}${a.standing ? `, in advance by standing approval ${E(a.standing)}${t.standing && t.standing.what ? ` (${E(t.standing.what)})` : ''}` : ''}`).join('<br>') : 'not approved'}</td></tr>
+${t.rejected ? `<tr><th>Turned down</th><td>by ${E(t.rejected.by)}, ${E(when(t.rejected.at))}: ${E(t.rejected.reason)}</td></tr>` : ''}<tr><th>Done by</th><td>${E(t.worked_by || '')}${t.closed ? `; closed by ${E(t.closed.by)}, ${E(when(t.closed.at))}` : ''}</td></tr>
+${t.applied ? `<tr><th>Applied</th><td>branch ${E(t.applied.branch)} ${E(t.applied.sha)} by ${E(t.applied.by)}</td></tr>` : ''}</table>
+<h3>The request</h3><pre>${E(t.request)}</pre>${t.result ? `<h3>The result</h3><pre>${E(t.result)}</pre>` : ''}
+${t.change ? `<h3>The change (version ${t.change.current_version})</h3>${t.change.versions.map(v => `<div class="v"><b>Version ${v.version}</b> by ${E(v.by)} ${E(when(v.at))}: ${v.files.map(E).join(', ')} (+${v.added} -${v.removed})${v.plain ? `<div>In plain words: ${E(v.plain.what || '')} ${v.plain.risk ? 'Risk: ' + E(v.plain.risk) : ''}</div>` : ''}<pre>${E(v.diff || '')}</pre></div>`).join('')}` : ''}
+${t.comments.length ? `<h3>Review comments</h3><ul>${t.comments.map(c => `<li>${E(c.by)} on version ${c.version}, line ${c.line}${c.file ? ' of ' + E(c.file) : ''}: ${E(c.text)}</li>`).join('')}</ul>` : ''}
+${t.agent_runs.length ? `<h3>What the agents ran (${t.agent_runs.length} answer${t.agent_runs.length === 1 ? '' : 's'} naming ${E(t.id)})</h3>${t.agent_runs.map(r => `<div class="v"><b>${E(r.agent)}</b> ${E(when(r.at))}${r.model ? ', ' + E(r.model) : ''}${r.cost_cents != null ? `, $${(r.cost_cents / 100).toFixed(2)}` : ''}${r.commands.length ? r.commands.map(c => `<pre>$ ${E(c.tool)}: ${E(c.input)}${c.exit != null ? `   (exit ${E(c.exit)})` : ''}\n${E(c.output || '')}</pre>`).join('') : '<div class="dim">no commands recorded</div>'}</div>`).join('')}` : ''}
+${t.run_log.length ? `<h3>Run log</h3><pre>${t.run_log.map(l => `${when(l.at)}  ${l.by}: ${l.line}`).map(E).join('\n')}</pre>` : ''}
+<h3>History</h3><pre>${t.history.map(u => `${when(u.at)}  ${u.by}: ${u.note}`).map(E).join('\n')}</pre>
+<h3>Entries in the activity record</h3><pre>${t.record.map(e => `#${e.n ?? '-'} ${when(e.ts)} ${e.actor || e.agent} ${e.action}${e.h ? '  check ' + e.h.slice(0, 16) : ''}`).map(E).join('\n') || 'none'}</pre></section>`;
+    const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Evidence pack · ${E(single ? evidenceM[1] : range.from + ' to ' + range.to)}</title>
+<style>body{margin:0;background:#fff;color:#1b1f1d;font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:900px;margin:0 auto;padding:24px 16px 48px}h1{font-size:20px;margin:0}h2{font-size:17px;margin:30px 0 8px;border-top:2px solid #1b1f1d;padding-top:10px}h3{font-size:14px;margin:16px 0 4px}table{border-collapse:collapse;width:100%}th,td{text-align:left;vertical-align:top;padding:4px 6px;border-bottom:1px solid #e3e8e5}th{width:120px;color:#5b665f;font-weight:600}pre{background:#f4f6f5;border:1px solid #e3e8e5;padding:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.v{margin:8px 0}.dim{color:#5b665f}</style></head><body><main>
+<h1>Evidence pack: ${E(single ? evidenceM[1] : `tickets closed ${range.from} to ${range.to}`)}</h1><div class="dim">${E(pack.workspace || '')} · made ${E(when(pack.generated_at))} by ${E(pack.generated_by)} · ${tickets.length} ticket${tickets.length === 1 ? '' : 's'}</div>
+<p class="dim">Activity record: ${chk.ok ? `intact (${chk.checked} entries checked)` : 'NOT intact: ' + E(chk.reason)}. ${E(pack.note)}</p>
+${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
+<h2>Seal</h2><p>SHA-256 of the data version of this pack: <code>${E(pack.seal.sha256)}</code>. Download the data version (?format=json) and run <code>node tools/verify-pack.js</code> on it to check that nothing in it was changed.</p></main></body></html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' }); return res.end(html);
+  }
+  // T-0188: asks. The agent's permission helper asks (through its connector); people who may approve answer; the agent records the result.
+  if (url.pathname === '/api/asks' && method === 'POST') {
+    const body = await parseBody(req, sess).catch(() => null);
+    if (!askIsAgent(sess)) return json(res, 403, { error: 'agents ask; people answer' });
+    if (!askMayAsk(sess)) return json(res, 403, { error: 'Asking is switched off for this agent. The workspace owner can switch it on: Account, AI agents, "may ask".' });
+    const data = loadData(), room = String(body?.room || 'general');
+    if (!data.rooms[room] || !canSeeRoom(data, room, sess.username)) return json(res, 404, { error: 'no such room' });
+    const tool = String(body?.tool || ''), summary = String(body?.summary || '').trim().slice(0, 2000);
+    if (!/^[A-Za-z][\w.-]{0,39}$/.test(tool) || summary.length < 3) return json(res, 400, { error: 'tool and summary (what the agent wants to do, in plain words) are required' });
+    const wait = Math.max(process.env.CHAMBER_TEST_HOOKS === '1' ? 1 : ASK_MIN_WAIT, Math.min(ASK_MAX_WAIT, parseInt(body?.waitSec, 10) || 300));
+    const d = loadAsks(); askExpire(d);
+    const mine = d.items.filter(a => a.agent === sess.username);
+    if (mine.filter(a => a.status === 'waiting').length >= ASK_MAX_WAITING) { saveAsks(d); return json(res, 429, { error: `${ASK_MAX_WAITING} questions from this agent are already waiting` }); }
+    if (mine.filter(a => Date.parse(a.at) > Date.now() - 3600e3).length >= ASK_PER_HOUR) { saveAsks(d); return json(res, 429, { error: `at most ${ASK_PER_HOUR} questions an hour` }); }
+    const who = askAnswerers(sess); if (!who.length) { saveAsks(d); return json(res, 409, { error: 'nobody in this workspace may answer' }); }
+    const forU = String(body?.for || '').slice(0, 40), asker = who.find(u => u.toLowerCase() === forU.toLowerCase()), to = asker ? [asker] : who.slice(0, 5);
+    const a = { id: 'A-' + d.next, agent: sess.username, room, tool, summary, detail: String(body?.detail || '').slice(0, 4000) || undefined, for: forU || undefined,
+                status: 'waiting', at: new Date().toISOString(), expiresAt: Date.now() + wait * 1000, waitSec: wait };
+    d.next++;
+    const mins = wait >= 120 ? `${Math.round(wait / 60)} minutes` : `${wait} seconds`;
+    const what = tool === 'Bash' ? 'run this command?\n```\n' + summary.replace(/^run this command: /, '') + '\n```' : summary + '?';
+    const text = `${to.map(u => '@' + u).join(' ')} May I ${what}\nAllow once or Deny, above the message box (question ${a.id}). No answer within ${mins} means no.`;
+    let made = postMessage(data, { username: sess.username, text, room, reply_to: body?.msg ? String(body.msg) : undefined, source: 'ask:' + a.id });
+    if (made.error) made = postMessage(data, { username: sess.username, text, room, source: 'ask:' + a.id });
+    a.msgId = made.message?.id; d.items.push(a); saveAsks(d);
+    audit(sess, { action: 'ask', ask: a.id, tool, what: summary.slice(0, 300), room, for: a.for, waitSec: wait });
+    notify('asks', { room });
+    return json(res, 201, { ok: true, id: a.id, expiresAt: a.expiresAt, answerers: to });
+  }
+  if (url.pathname === '/api/asks' && method === 'GET') {
+    const d = loadAsks(); if (askExpire(d)) saveAsks(d);
+    const status = url.searchParams.get('status'), can = askMayAnswer(sess);
+    let items = d.items.slice().reverse();
+    if (status) items = items.filter(a => a.status === status);
+    if (askIsAgent(sess)) items = items.filter(a => a.agent === sess.username);             // an agent sees only its own questions
+    return json(res, 200, { asks: items.slice(0, 100).map(a => ({ ...a, canAnswer: can && a.status === 'waiting' })), canAnswer: can });
+  }
+  const askM = url.pathname.match(/^\/api\/asks\/(A-\d{1,6})(?:\/(answer|result|cancel))?$/);
+  if (askM && method === 'GET' && !askM[2]) {
+    const d = loadAsks(); if (askExpire(d)) saveAsks(d);
+    const a = d.items.find(x => x.id === askM[1]); if (!a) return json(res, 404, { error: 'no such question' });
+    if (askIsAgent(sess) && a.agent !== sess.username) return json(res, 403, { error: 'that question belongs to another agent' });
+    return json(res, 200, { ...a, canAnswer: askMayAnswer(sess) && a.status === 'waiting' });
+  }
+  if (askM && method === 'POST' && askM[2]) {
+    const body = await parseBody(req, sess).catch(() => null), d = loadAsks(); askExpire(d);
+    const a = d.items.find(x => x.id === askM[1]); if (!a) { saveAsks(d); return json(res, 404, { error: 'no such question' }); }
+    if (askM[2] === 'answer') {
+      if (!askMayAnswer(sess)) { saveAsks(d); audit(sess, { action: 'ask-answer-refused', ask: a.id }, true); return json(res, 403, { error: 'Only people who may approve tickets here can answer (the owner\'s approval rules).' }); }
+      if (a.status !== 'waiting') { saveAsks(d); return json(res, 409, { error: a.status === 'expired' ? `${a.id} was not answered in time, so it was not allowed. The agent can ask again.` : `${a.id} is already ${a.status}${a.answeredBy ? ' by ' + a.answeredBy : ''}` }); }
+      const dec = body?.decision; if (dec !== 'allow' && dec !== 'deny') { saveAsks(d); return json(res, 400, { error: 'decision: allow or deny' }); }
+      a.status = dec === 'allow' ? 'allowed' : 'denied'; a.answeredBy = sess.username; a.answeredAt = new Date().toISOString(); saveAsks(d);
+      askOutcome(a, dec === 'allow' ? `Allowed once by ${sess.username}.` : `${sess.username} said no.`);
+      audit(sess, { action: dec === 'allow' ? 'ask-allow' : 'ask-deny', ask: a.id, agent: a.agent, tool: a.tool, what: a.summary.slice(0, 300) }, true); notify('asks', { room: a.room });
+      return json(res, 200, { ok: true, status: a.status });
+    }
+    if (!askIsAgent(sess) || a.agent !== sess.username) { saveAsks(d); return json(res, 403, { error: 'only the agent that asked' }); }
+    if (askM[2] === 'cancel') {
+      if (a.status !== 'waiting') { saveAsks(d); return json(res, 409, { error: `${a.id} is ${a.status}` }); }
+      a.status = 'cancelled'; a.answeredAt = new Date().toISOString(); saveAsks(d);
+      askOutcome(a, 'The agent stopped before anyone answered.'); audit(sess, { action: 'ask-cancel', ask: a.id }); notify('asks', { room: a.room });
+      return json(res, 200, { ok: true });
+    }
+    if (a.status !== 'allowed' || a.result) { saveAsks(d); return json(res, 409, { error: 'a result is recorded once, and only for a question that was allowed' }); }
+    a.result = { ok: body?.ok !== false, output: String(body?.output || '').slice(0, 2000), at: new Date().toISOString() }; saveAsks(d);
+    audit(sess, { action: 'ask-result', ask: a.id, ok: a.result.ok, output: a.result.output.slice(0, 500) });
+    return json(res, 200, { ok: true });
+  }
+  // T-0200: standing approvals. Read: everyone in the workspace (agents too, so they can name one). Set up, confirm, withdraw: people who may approve.
+  if (url.pathname === '/api/standing' && method === 'GET') {
+    const tickets = loadTickets().tickets || [], now = Date.now(), person = !sess?.agent && sess?.role !== 'ai';
+    const items = loadStanding().items.slice().reverse().map(s => ({ ...s, state: standingState(s, now), usedThisWeek: standingUses(s, tickets, now), usedTotal: tickets.filter(t => t.standing && t.standing.id === s.id).length }));
+    return json(res, 200, { standing: items, canManage: person && (accounts.enabled ? accounts.canApprove(sess) : true), agents: Object.entries(loadData().users).filter(([n, u]) => u.role === 'ai' && n !== REMINDER_BOT).map(([n]) => n).sort(), never: STANDING_NEVER, maxDays: STANDING_MAX_DAYS });
+  }
+  const standingActM = url.pathname.match(/^\/api\/standing(?:\/(S-\d{1,5})\/(withdraw|confirm))?$/i);
+  if (standingActM && method === 'POST') {
+    const body = await parseBody(req, sess).catch(() => null);
+    if (!sess?.username) return json(res, 401, { error: 'login first' });
+    if (sess.agent || sess.role === 'ai' || loadData().users[sess.username]?.role !== 'human') return json(res, 403, { error: 'a person decides standing approvals; an agent cannot' });
+    if (accounts.enabled && !accounts.canApprove(sess)) return json(res, 403, { error: 'Only people who may approve tickets here can set up, confirm or withdraw a standing approval (the owner\'s approval rules).' });
+    const d = loadStanding(), lc = x => String(x || '').toLowerCase();
+    if (!standingActM[1]) {                                                    // set one up
+      const users = loadData().users, what = String(body?.what || '').trim().replace(/\s+/g, ' ');
+      if (what.length < 5 || what.length > 200) return json(res, 400, { error: 'Say in a few words what kind of job this covers (5 to 200 characters), for example: fix failing tests.' });
+      const agent = Object.keys(users).find(n => lc(n) === lc(String(body?.agent || '').trim().replace(/^@/, '')));
+      if (!agent || users[agent].role !== 'ai' || agent === REMINDER_BOT) return json(res, 400, { error: 'Pick the AI agent that does these jobs (your ticket worker).' });
+      let paths = Array.isArray(body?.paths) ? body.paths : String(body?.paths || '').split(/[,\n]/);
+      paths = [...new Set(paths.map(p => String(p).trim().replace(/^(\.\/)+/, '').replace(/^\/+/, '')).filter(Boolean))];
+      if (paths.length > 10 || paths.some(p => p.length > 120 || p.split('/').includes('..') || /[*?[\]\\]/.test(p))) return json(res, 400, { error: 'Folders are plain paths inside the repository, like tests/ or src/utils/ (no .. and no wildcards), at most 10.' });
+      const num = (v, def, min, max) => v === undefined || v === null || v === '' ? def : (Number.isInteger(Number(v)) && Number(v) >= min && Number(v) <= max ? Number(v) : NaN);
+      const maxFiles = num(body?.maxFiles, 5, 1, 50), perWeek = num(body?.perWeek, 10, 1, 100);
+      if (Number.isNaN(maxFiles) || Number.isNaN(perWeek)) return json(res, 400, { error: 'Files per job: 1 to 50. Jobs a week: 1 to 100.' });
+      const until = String(body?.until || '').trim(), today = new Date().toISOString().slice(0, 10), last = new Date(Date.now() + STANDING_MAX_DAYS * 864e5).toISOString().slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(until) || Number.isNaN(Date.parse(until)) || until < today || until > last) return json(res, 400, { error: `Pick an end date from today to ${last}: at most ${STANDING_MAX_DAYS} days ahead, so every standing approval gets looked at again.` });
+      if (d.items.filter(s => ['active', 'waiting'].includes(standingState(s))).length >= STANDING_MAX_ACTIVE) return json(res, 400, { error: `At most ${STANDING_MAX_ACTIVE} standing approvals at once. Withdraw one first.` });
+      const rules = standingRulesFor(sess);
+      const s = { id: 'S-' + d.next, what, agent, paths, maxFiles, perWeek, until, by: sess.username, at: new Date().toISOString(), needsConfirm: rules.two === 'all' && (rules.approvers || []).length >= 2 };
+      d.next++; d.items.push(s); saveStanding(d);
+      audit(sess, { action: 'standing-create', standing: s.id, what: what.slice(0, 120), agent, maxFiles, perWeek, until, paths: paths.join(',').slice(0, 200) || undefined }, true); notify('tickets');
+      return json(res, 201, { ok: true, standing: { ...s, state: standingState(s) }, message: s.needsConfirm ? `${s.id} is set up. The approval rules here need two people, so it starts once a second approver confirms it.` : `${s.id} is active until ${until}. Tickets that name it start without waiting.` });
+    }
+    const s = d.items.find(x => x.id === standingActM[1].toUpperCase()); if (!s) return json(res, 404, { error: 'no such standing approval' });
+    const st = standingState(s);
+    if (standingActM[2].toLowerCase() === 'confirm') {
+      if (st !== 'waiting') return json(res, 409, { error: `${s.id} is ${st}; only one that waits for a second approver can be confirmed` });
+      if (lc(s.by) === lc(sess.username)) return json(res, 403, { error: `A different approver must confirm ${s.id}: that is what the two-person rule is for.` });
+      s.confirmedBy = sess.username; s.confirmedAt = new Date().toISOString(); saveStanding(d);
+      audit(sess, { action: 'standing-confirm', standing: s.id }, true); notify('tickets');
+      return json(res, 200, { ok: true, message: `${s.id} is active until ${s.until}.` });
+    }
+    if (s.withdrawn) return json(res, 409, { error: `${s.id} was already withdrawn` });
+    s.withdrawn = { by: sess.username, at: new Date().toISOString() }; saveStanding(d);
+    let back = 0;
+    for (const t of (loadTickets().tickets || []).filter(x => x.status === 'approved' && x.standing && x.standing.id === s.id)) if ((await standingBack(t.id, sess.username, `standing approval ${s.id} was withdrawn by ${sess.username} before any work started.`)).ok) back++;
+    audit(sess, { action: 'standing-withdraw', standing: s.id, back }, true); notify('tickets');
+    return json(res, 200, { ok: true, back, message: `${s.id} is withdrawn. ${back ? `${back} ticket${back === 1 ? '' : 's'} it had approved went back to waiting for a person.` : 'No ticket was waiting under it.'} Work already started under it stops before anything is pushed.` });
+  }
+  const standingCheckM = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/standing-check$/);
+  if (standingCheckM && method === 'POST') {                                 // T-0200: the worker asks before it pushes anything: is this change inside the limits?
+    const id = standingCheckM[1], body = await parseBody(req, sess).catch(() => null), t = (loadTickets().tickets || []).find(x => x.id === id);
+    if (!t) return json(res, 404, { error: 'no such ticket' });
+    if (!sess?.username || String(t.assignee || '').toLowerCase() !== String(sess.username).toLowerCase()) return json(res, 403, { error: 'only the agent working on this ticket can ask' });
+    if (!t.standing || t.status !== 'in_progress') return json(res, 409, { ok: false, error: `${id} is not being worked under a standing approval` });
+    const files = Array.isArray(body?.files) ? [...new Set(body.files.map(f => String(f).trim().replace(/^(\.\/)+/, '')).filter(Boolean))] : null;
+    if (!files || !files.length || files.length > 2000) return json(res, 400, { error: 'files: the list of changed paths, relative to the repository' });
+    const s = loadStanding().items.find(x => x.id === t.standing.id);
+    let why = !s ? `standing approval ${t.standing.id} no longer exists` : standingLive(s, sess);
+    if (!why) {
+      const bad = files.filter(f => f.startsWith('/') || f.split('/').includes('..') || STANDING_NEVER_RE.some(re => re.test(f)));
+      const inside = f => !s.paths.length || s.paths.some(p => { const q = p.replace(/\/+$/, ''); return f === q || f.startsWith(q + '/'); });
+      const out = files.filter(f => !inside(f));
+      if (files.length > s.maxFiles) why = `the change touches ${files.length} files and ${s.id} allows at most ${s.maxFiles}`;
+      else if (bad.length) why = `the change touches files no standing approval covers: ${bad.slice(0, 5).join(', ')}`;
+      else if (out.length) why = `the change touches files outside ${s.paths.join(', ')}: ${out.slice(0, 5).join(', ')}`;
+    }
+    if (why) {
+      await standingBack(id, sess.username, `${why} (checked by Chamber before anything was pushed). A person can look at it and approve it by hand.`);
+      audit(sess, { action: 'standing-outside', ticket: id, standing: t.standing.id, reason: why.slice(0, 200) }, true); notify('tickets');
+      return json(res, 200, { ok: false, why });
+    }
+    await runTicketsCLI(['log', id, '--by', sess.username, '--line', `standing approval ${s.id}: Chamber checked the ${files.length} changed file${files.length === 1 ? '' : 's'} against its limits; inside them`]);
+    audit(sess, { action: 'standing-check', ticket: id, standing: s.id, files: files.length }, true);
+    return json(res, 200, { ok: true });
   }
   const ticketActionMatch = url.pathname.match(/^\/api\/tickets\/([A-Za-z0-9-]+)\/(approve|reject|claim|update|close|edit|release|cancel|log|for)$/);   // T-0143: + release, cancel, log; T-0155: + for
   if (ticketActionMatch && method === 'POST') {
@@ -1708,10 +2398,26 @@ echo "${MARK}$__rc|$PWD"`;
     if (action === 'approve' || action === 'reject') {                                                      // 2026-11-13 (security): the decision is a person's. Before this an agent's key could approve its own proposal.
       const who = loadData().users[String(body.by)];
       if (sess?.agent || sess?.role === 'ai' || !who || who.role !== 'human') { audit(sess, { action: 'ticket-' + action + '-refused', ticket: ticketId }, true); return json(res, 403, { error: `only a person can ${action} a ticket; an agent cannot` }); }
+      if (accounts.enabled) {                                                                                 // T-0190: the owner's approval rules
+        const cur = (loadTickets().tickets || []).find(x => x.id === ticketId);
+        if (cur) {
+          const plan = accounts.approvalCheck(accounts.workspaceOf(sess), cur, sess.username, action);
+          if (!plan.ok) { audit(sess, { action: 'ticket-' + action + '-refused', ticket: ticketId, reason: 'approval rules' }, true); return json(res, plan.code || 403, { error: plan.error }); }
+          if (action === 'approve') { args.push('--needs', String(plan.needs || 1)); if (plan.note) args.push('--note', plan.note); }
+        }
+      }
+    }
+    if (action === 'claim' && accounts.enabled && (sess?.agent || sess?.role === 'ai')) {                   // T-0203: no new tickets once the AI budget is used up
+      const bs = budgetState(accounts.workspaceOf(sess));
+      if (bs && bs.agentOver(sess.username)) { audit(sess, { action: 'ticket-claim-refused', ticket: ticketId, reason: 'ai budget' }, true); return json(res, 402, { error: `The AI budget for ${bs.monthName} is used up (${bs.money(bs.spentCents)}${bs.monthlyCents ? ' of ' + bs.money(bs.monthlyCents) : ''}${bs.perAgent[sess.username] ? `; this agent's own limit is ${bs.money(bs.perAgent[sess.username])}` : ''}). New tickets wait until the owner raises it or the month turns.` }); }
     }
     if (action === 'claim' && (sess?.agent || sess?.role === 'ai')) {                                           // T-0145: agents never claim [human] work
       const found = (loadTickets().tickets || []).find(x => x.id === ticketId);
       if (found && ticketFor(found) === 'human') return json(res, 409, { error: `${ticketId} is for a person: only a person may claim it` });   // T-0155
+    }
+    if (action === 'claim') {                                                                                 // T-0200: a ticket approved in advance by a standing approval
+      const cur = (loadTickets().tickets || []).find(x => x.id === ticketId);
+      if (cur && cur.standing && cur.status === 'approved') { const no = await standingClaimCheck(cur, sess, body); if (no) return json(res, 409, { error: no }); }
     }
     if (action === 'for') {                                                                                 // T-0155: a person decides who does the ticket
       if (sess?.agent || sess?.role === 'ai') return json(res, 403, { error: 'people decide who does a ticket; an agent cannot change it' });
@@ -1728,8 +2434,15 @@ echo "${MARK}$__rc|$PWD"`;
       if (!body.reason) return json(res, 400, { error: 'reason required for cancel' });
       args.push('--reason', String(body.reason).slice(0, 1000));
     }
-    if (action === 'log') {                                                                                  // T-0143: run-log line and/or model
-      if (!body.line && !body.model) return json(res, 400, { error: 'line or model required for log' });
+    if (action === 'log') {                                                                                  // T-0143: run-log line and/or model; T-0194: + usage
+      if (body.usage !== undefined) {
+        const u = body.usage, num = (v, max) => v === undefined || v === null ? undefined : (typeof v === 'number' && isFinite(v) && v >= 0 && v <= max ? v : NaN);
+        const clean = u && typeof u === 'object' ? { cost_cents: num(u.cost_cents, 1e7), tokens_in: num(u.tokens_in, 1e10), tokens_out: num(u.tokens_out, 1e10), ms: num(u.ms, 864e5) } : null;
+        if (!clean || Object.values(clean).some(v => Number.isNaN(v))) return json(res, 400, { error: 'usage: {cost_cents, tokens_in, tokens_out, ms}, numbers, none negative' });
+        args.push('--usage', JSON.stringify(Object.fromEntries(Object.entries(clean).filter(([, v]) => v !== undefined))));
+        if (typeof clean.cost_cents === 'number') { try { fs.appendFileSync(path.join(path.dirname(F().data), 'usage-log.jsonl'), JSON.stringify({ ts: Date.now(), agent: sess.username, ticket: ticketId, cents: clean.cost_cents }) + '\n', { mode: 0o600 }); } catch (e) { console.error('[usage] log failed:', e.message); } }   // T-0203: counts toward this month's budget
+      }
+      if (!body.line && !body.model && body.usage === undefined) return json(res, 400, { error: 'line, model or usage required for log' });
       if (body.line) args.push('--line', String(body.line).slice(0, 300));
       if (body.model) args.push('--model', String(body.model).slice(0, 60));
     }

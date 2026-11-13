@@ -33,8 +33,10 @@ Triage (1.3.0): before claiming, the worker checks the ticket is for THIS repo a
 title, file paths that do or do not exist here), then one tool-less question to a cheap model. A ticket that is not for
 this worker is never claimed: a run-log line says why, and if no other worker is online the approver is told in the room.
 A ticket that fails after claiming is RELEASED (back to approved, unassigned) with the reason, never left in progress.
+Standing approvals (1.8.0, T-0200): a ticket a person approved in advance (ticket.standing) is taken only by the agent it names
+and only in pull-request mode; before pushing, Chamber checks the changed files against its limits. A refused claim stops the work.
 """
-import os, re, sys, json, time, shutil, subprocess, urllib.request, urllib.error, urllib.parse, fnmatch
+import os, re, sys, json, time, shutil, subprocess, urllib.request, urllib.error, urllib.parse, fnmatch, base64, threading
 
 URL = os.environ.get("CHAMBER_URL", "https://chamber.ghostporttechnologies.com").rstrip("/")
 TOKEN = os.environ.get("CHAMBER_TOKEN", "")
@@ -57,9 +59,25 @@ DENY = ["*.key", "*.pub", "*.pem", "auth.json", "*tokens*", "*secret*", "*creden
 TOOLS = ["Read", "Edit", "Write", "Grep", "Glob", "Bash(python3 -m pytest:*)", "Bash(python3 -m py_compile:*)",
          "Bash(git diff:*)", "Bash(git status:*)", "Bash(git log:*)"]
 
+# 1.7.0 (T-0191, T-0192): pull-request mode. WORKER_MODE=pr: an approved ticket becomes a branch and a GitHub pull request; nothing
+# is deployed and nothing is restarted, so no WORKER_SERVICE and no sudo right are needed. Merging the pull request closes the
+# ticket; closing it unmerged hands the ticket back. Only in this mode the worker may run up to WORKER_PARALLEL (1..5) tickets at
+# once, each in its own worktree. Live mode stays one at a time on purpose: two jobs changing a running server at once is how
+# things break.
+MODE = os.environ.get("WORKER_MODE", "live").strip().lower()
+GH_TOKEN = os.environ.get("WORKER_GITHUB_TOKEN", "").strip()            # needs: Contents read/write + Pull requests read/write on that repo
+GH_API = os.environ.get("WORKER_GITHUB_API", "https://api.github.com").rstrip("/")
+GH_REPO = os.environ.get("WORKER_GITHUB_REPO", "").strip()              # owner/name; empty = read from the repo's origin
+BASE = os.environ.get("WORKER_BASE", "").strip()                        # branch pull requests go into; empty = the repo's current branch
+try: PARALLEL = max(1, min(5, int(os.environ.get("WORKER_PARALLEL", "1")))) if MODE == "pr" else 1
+except ValueError: PARALLEL = 1
+REPO_LOCK, STATE_LOCK = threading.Lock(), threading.Lock()              # repo-wide git steps (worktree add/remove, fetch, push) one at a time
+
 if not TOKEN:
     sys.exit("CHAMBER_TOKEN is required")
-_missing = [n for n, v in (("WORKER_REPO", REPO), ("WORKER_SERVICE", SERVICE), ("WORKER_APPROVERS", APPROVERS)) if not v]
+if MODE not in ("live", "pr"):
+    sys.exit("WORKER_MODE must be live (deploy into the live folder) or pr (pull requests)")
+_missing = [n for n, v in (("WORKER_REPO", REPO), ("WORKER_APPROVERS", APPROVERS)) + ((("WORKER_SERVICE", SERVICE),) if MODE == "live" else (("WORKER_GITHUB_TOKEN", GH_TOKEN),)) if not v]
 if _missing:
     sys.exit(", ".join(_missing) + " must be set (the installer writes them to /etc/chamber-worker.env); there are no built-in defaults")
 
@@ -83,6 +101,17 @@ def ticket(verb, tid, **kw):
     except Exception as e: log(f"ticket {verb} {tid} failed: {e}"); return False
 
 
+def claim(tid):
+    """1.8.0: claim a ticket, telling Chamber this worker's mode; (True, '') or (False, why Chamber said no). Before 1.8.0 a
+    refused claim (the AI budget used up, for example) was only logged and the work went ahead anyway."""
+    try: api("POST", f"/api/tickets/{tid}/claim", {"by": ME, "mode": MODE}); return True, ""
+    except urllib.error.HTTPError as e:
+        try: why = json.loads(e.read().decode("utf-8", "replace") or "{}").get("error") or str(e)
+        except Exception: why = str(e)
+        return False, f"{e.code}: {why}"
+    except Exception as e: return False, str(e)
+
+
 def log(msg): print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
@@ -104,6 +133,8 @@ def run(cmd, cwd=None, timeout=600, env=None):
 def git(*a, cwd=REPO): return run(["git", *a], cwd=cwd)
 
 
+JUNK = (":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc", ":(exclude,glob)**/.pytest_cache/**")   # 1.8.0: what py_compile and pytest leave behind is never part of a change
+def junk(p): parts = p.rstrip("/").split("/"); return "__pycache__" in parts or ".pytest_cache" in parts or p.endswith(".pyc")
 def denied(path): return any(fnmatch.fnmatch(path, pat) for pat in DENY) or path.startswith("/")
 
 
@@ -120,7 +151,7 @@ def health_ok():
     return False
 
 
-WORKER_VERSION = "worker-1.5.1"
+WORKER_VERSION = "worker-1.8.0"
 
 
 def wlog(tid, line, model=None):
@@ -128,6 +159,22 @@ def wlog(tid, line, model=None):
     kw = {"line": line}
     if model: kw["model"] = model
     ticket("log", tid, **kw)
+
+
+def parse_claude_json(out):
+    """1.6.0 (T-0194): `claude -p --output-format json` prints one JSON object with the closing text and what the run cost.
+    Returns (text, usage or None); an older CLI that printed plain text gives (that text, None)."""
+    s = (out or "").strip()
+    o = None
+    for cand in (s, s.splitlines()[-1] if s else ""):
+        try: o = json.loads(cand); break
+        except ValueError: continue
+    if not isinstance(o, dict): return out or "", None
+    u = o.get("usage") or {}
+    usage = {"tokens_in": int((u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)),
+             "tokens_out": int(u.get("output_tokens") or 0), "ms": int(o.get("duration_ms") or 0)}
+    if isinstance(o.get("total_cost_usd"), (int, float)): usage["cost_cents"] = round(o["total_cost_usd"] * 100, 2)
+    return str(o.get("result") or ""), usage
 
 
 def tail_summary(text, limit=900):
@@ -282,7 +329,8 @@ def presence(state, tid=None):
 def work(t):
     tid, title, body = t["id"], t.get("title", ""), t.get("body", "")
     wt = os.path.join(WORK, tid); branch = f"chamber/{tid}"
-    ticket("claim", tid)
+    ok_c, why_c = claim(tid)                            # 1.8.0: a refused claim stops here; nothing is changed
+    if not ok_c: return False, f"claim refused: {why_c}"
     log(f"starting {tid}: {title}")                    # 1.5.0 (T-0164): no chat message; presence shows it working and the run log has the steps
     presence("working", tid); wlog(tid, "claimed; creating worktree and starting the model session")
     rc, out = git("worktree", "add", "-B", branch, wt, "HEAD")
@@ -297,16 +345,20 @@ def work(t):
                   f"This worktree is the repository at {REPO}. If the ticket asks for a change to code "
                   "that is not in this repo (for example another project, or something on another machine), change "
                   "nothing and reply with exactly one line: CANNOT: <where the code actually lives and why you cannot do it here>.")
-        env = {k: v for k, v in os.environ.items() if k != "CHAMBER_TOKEN"}
+        env = {k: v for k, v in os.environ.items() if k not in ("CHAMBER_TOKEN", "WORKER_GITHUB_TOKEN")}   # 1.7.0: the model never sees the GitHub key
         env["HOME"] = HOME
         base = sorted({x.split("(")[0] for x in TOOLS})
-        cmd = [CLAUDE, "-p", prompt, "--output-format", "text", "--tools", *base, "--allowedTools", *TOOLS,
+        cmd = [CLAUDE, "-p", prompt, "--output-format", "json", "--tools", *base, "--allowedTools", *TOOLS,
                "--permission-mode", "dontAsk", "--max-turns", "60"]
-        try: rc, summary = run(cmd, cwd=wt, timeout=TIMEOUT, env=env)
+        try:
+            p = subprocess.run(cmd, cwd=wt, capture_output=True, text=True, timeout=TIMEOUT, env=env); rc = p.returncode
+            summary, usage = parse_claude_json(p.stdout)                 # 1.6.0 (T-0194): the closing text and what the run cost
+            if rc and not summary.strip(): summary = (p.stdout + p.stderr)[-4000:]
         except subprocess.TimeoutExpired: return False, f"model session exceeded {TIMEOUT}s; nothing deployed"
+        if usage: ticket("log", tid, usage=usage)                       # the usage page counts it on this ticket
         if rc: return False, f"model session failed (rc={rc}): {summary[-800:]}"
         rc, changed = git("status", "--porcelain", cwd=wt)
-        files = [l[3:].strip() for l in changed.splitlines() if l.strip()]
+        files = [l[3:].strip() for l in changed.splitlines() if l.strip() and not junk(l[3:].strip())]
         tail = tail_summary(summary, 600)                  # T-0151: never discard the model's own explanation
         wlog(tid, f"model session finished (rc={rc}); {len(files)} file(s) changed: {', '.join(files[:8])}. Model said: {tail}", model=model_used(wt))
         if not files:
@@ -329,7 +381,7 @@ def work(t):
             # rc 5 = pytest collected no tests (some repos keep their test_*.py as plain scripts run by hand). Not a failure.
             if rc not in (0, 5): return False, f"tests failed; nothing deployed:\n{out[-900:]}"
         wlog(tid, "py_compile and tests passed; committing to branch " + branch)
-        git("add", "-A", cwd=wt)
+        git("add", "-A", "--", ".", *JUNK, cwd=wt)
         git("-c", "user.name=chamber-worker", "-c", "user.email=chamber-worker@localhost", "commit", "-q", "-m",
             f"{title[:72]}\n\nChamber {tid}, approved by {t.get('approved_by')}. Made by {ME}.", cwd=wt)
         _, sha = git("rev-parse", "--short", "HEAD", cwd=wt)
@@ -367,17 +419,187 @@ def work(t):
         git("worktree", "remove", "--force", wt)
 
 
+def gh_slug(url):
+    """1.7.0: owner/name from a GitHub remote URL (https or ssh), else None."""
+    m = re.match(r"^(?:https://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", (url or "").strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def gh(method, path, body=None):
+    """1.7.0: one GitHub REST call with the worker's key. Returns (status, json)."""
+    req = urllib.request.Request(GH_API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+                                          "User-Agent": "chamber-worker", **({"Content-Type": "application/json"} if body is not None else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r: return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try: return e.code, json.loads(e.read() or b"{}")
+        except ValueError: return e.code, {}
+    except (urllib.error.URLError, OSError) as e: return 0, {"message": str(e)}
+
+
+def git_env():
+    """1.7.0: git's environment for fetch and push. For an https GitHub remote the key goes in as an extra header through the
+    environment, never on the command line (where other users of the machine could see it), and git never prompts."""
+    env = {k: v for k, v in os.environ.items() if k != "CHAMBER_TOKEN"}; env["GIT_TERMINAL_PROMPT"] = "0"
+    _, url = git("remote", "get-url", "origin")
+    if GH_TOKEN and url.strip().startswith("https://github.com/"):
+        env.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+                    "GIT_CONFIG_VALUE_0": "AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{GH_TOKEN}".encode()).decode()})
+    return env
+
+
+def base_branch():
+    if BASE: return BASE
+    _, b = git("rev-parse", "--abbrev-ref", "HEAD")
+    return (b.strip().splitlines() or ["main"])[-1] or "main"
+
+
+def work_pr(t):
+    """1.7.0 (T-0191): make the change on branch chamber/<ticket> from the newest base, test it, push it and open a pull request.
+    Nothing is deployed and nothing is restarted. Returns (ok, message, pr_info); the ticket stays in progress while the pull
+    request is open, and poll_prs() closes or hands it back."""
+    tid, title, body = t["id"], t.get("title", ""), t.get("body", "")
+    wt = os.path.join(WORK, tid); branch = f"chamber/{tid}"; base = base_branch()
+    ok_c, why_c = claim(tid)                                             # 1.8.0: a refused claim stops here; nothing is changed or pushed
+    if not ok_c: return False, f"claim refused: {why_c}", None
+    presence("working", tid)
+    wlog(tid, f"claimed; pull-request mode: branch {branch} from {base}, then a pull request. Nothing is deployed.")
+    os.makedirs(WORK, exist_ok=True)
+    with REPO_LOCK:
+        rc_f, _ = run(["git", "fetch", "-q", "origin", base], cwd=REPO, env=git_env(), timeout=120)
+        start = f"origin/{base}" if rc_f == 0 else base
+        rc, out = run(["git", "worktree", "add", "-B", branch, wt, start], cwd=REPO)
+    if rc: return False, f"could not create a worktree from {start}: {out[-300:]}", None
+    try:
+        prompt = (f"You are chamber-worker making the change described by Chamber ticket {tid}.\n"
+                  f"TITLE: {title}\n\nBODY:\n{body}\n\n"
+                  "Rules: work only inside the current directory (a git worktree of the repository). Make the smallest "
+                  "correct change. Never touch keys, password or token files, databases or anything under backups/. "
+                  "Run python3 -m py_compile on every .py you change and python3 -m pytest -q if tests exist. "
+                  "Your change becomes a pull request that a person reviews and merges; do not deploy anything. "
+                  "Finish with a 3-line summary: what changed, how you tested it, what a reviewer should look at.\n"
+                  "If the ticket asks for a change to code that is not in this repo, change nothing and reply with exactly one line: "
+                  "CANNOT: <where the code actually lives and why you cannot do it here>.")
+        env = {k: v for k, v in os.environ.items() if k not in ("CHAMBER_TOKEN", "WORKER_GITHUB_TOKEN")}; env["HOME"] = HOME
+        tools = sorted({x.split("(")[0] for x in TOOLS})
+        cmd = [CLAUDE, "-p", prompt, "--output-format", "json", "--tools", *tools, "--allowedTools", *TOOLS, "--permission-mode", "dontAsk", "--max-turns", "60"]
+        try:
+            p = subprocess.run(cmd, cwd=wt, capture_output=True, text=True, timeout=TIMEOUT, env=env); rc = p.returncode
+            summary, usage = parse_claude_json(p.stdout)
+            if rc and not summary.strip(): summary = (p.stdout + p.stderr)[-4000:]
+        except subprocess.TimeoutExpired: return False, f"model session exceeded {TIMEOUT}s; no pull request", None
+        if usage: ticket("log", tid, usage=usage)
+        if rc: return False, f"model session failed (rc={rc}): {summary[-800:]}", None
+        _, changed = git("status", "--porcelain", cwd=wt)
+        files = [l[3:].strip() for l in changed.splitlines() if l.strip() and not junk(l[3:].strip())]
+        tail = tail_summary(summary, 600)
+        wlog(tid, f"model session finished; {len(files)} file(s) changed: {', '.join(files[:8])}. Model said: {tail}", model=model_used(wt))
+        if not files:
+            if "CANNOT:" in summary:
+                return False, f"out of scope for this worker: {summary.split('CANNOT:', 1)[1].strip().splitlines()[0][:400]}", None
+            return False, f"model made no file changes; no pull request. Model said: {tail}", None
+        bad = [f for f in files if denied(f)]
+        if bad: return False, f"refused: change touches protected paths {bad}; no pull request", None
+        for f in files:
+            if f.endswith(".py"):
+                rc, out = run(["python3", "-m", "py_compile", f], cwd=wt)
+                if rc: return False, f"py_compile failed on {f}: {out[-600:]}; no pull request", None
+        if any(fn.startswith("test_") for fn in os.listdir(wt)):
+            rc, out = run(["python3", "-m", "pytest", "-q", "-x"], cwd=wt, timeout=600)
+            if rc not in (0, 5): return False, f"tests failed; no pull request:\n{out[-900:]}", None
+        git("add", "-A", "--", ".", *JUNK, cwd=wt)
+        sd = t.get("standing") or {}
+        if sd:                                                           # 1.8.0 (T-0200): Chamber checks the change against the standing approval's limits before anything is pushed
+            _, names = git("diff", "--cached", "--name-only", "--no-renames", cwd=wt)
+            changed_files = [n.strip() for n in names.splitlines() if n.strip()]
+            try: chk = api("POST", f"/api/tickets/{tid}/standing-check", {"by": ME, "files": changed_files})
+            except Exception as e: return False, f"blocked: could not ask Chamber to check the limits of standing approval {sd.get('id')} ({e}); nothing was pushed", None
+            if not chk.get("ok"): return False, f"standing: {chk.get('why') or 'outside standing approval ' + str(sd.get('id'))}", None
+        approved = f"approved in advance by standing approval {sd.get('id')} (set up by {sd.get('by')}: {sd.get('what')})" if sd else f"approved by {t.get('approved_by')}"
+        git("-c", "user.name=chamber-worker", "-c", "user.email=chamber-worker@localhost", "commit", "-q", "-m",
+            f"{title[:72]}\n\nChamber {tid}, {approved}. Made by {ME}.", cwd=wt)
+        _, sha = git("rev-parse", "--short", "HEAD", cwd=wt)
+        with REPO_LOCK: rc, out = run(["git", "push", "-q", "-f", "origin", f"{branch}:refs/heads/{branch}"], cwd=wt, env=git_env(), timeout=180)
+        if rc: return False, f"could not push branch {branch}: {out[-300:]}", None
+        _, url = git("remote", "get-url", "origin"); slug = GH_REPO or gh_slug(url)
+        if not slug: return False, "pushed the branch, but cannot tell which GitHub repository this is: set WORKER_GITHUB_REPO=owner/name", None
+        desc = (f"Chamber ticket {tid}, {approved}. Made by {ME}; tests passed before this was opened.\n\n{tail}\n\n"
+                f"Merging this pull request closes {tid} in Chamber. Closing it without merging hands the ticket back.")
+        code, pr = gh("POST", f"/repos/{slug}/pulls", {"title": f"{title[:200]} ({tid})", "head": branch, "base": base, "body": desc, "maintainer_can_modify": True})
+        if code == 422:                                                  # one already open for this branch: the new commit is on it now
+            _, found = gh("GET", f"/repos/{slug}/pulls?head={urllib.parse.quote(slug.split('/')[0] + ':' + branch)}&state=open")
+            if isinstance(found, list) and found: code, pr = 200, found[0]
+        if code not in (200, 201) or not isinstance(pr, dict) or not pr.get("html_url"):
+            return False, f"pushed branch {branch}, but GitHub did not open the pull request ({code}: {str((pr or {}).get('message', ''))[:200]})", None
+        info = {"url": pr["html_url"], "number": int(pr.get("number") or 0), "branch": branch, "repo": slug, "state": "open"}
+        try: api("POST", f"/api/tickets/{tid}/pr", info)
+        except Exception as e: log(f"could not record the pull request on {tid}: {e}")
+        wlog(tid, f"pull request #{info['number']} opened: {info['url']} ({sha.strip()})")
+        return True, f"Pull request #{info['number']} is open for review: {info['url']}. Tests passed; nothing was deployed. Merging it closes {tid}. Model summary: {tail}", info
+    finally:
+        with REPO_LOCK: run(["git", "worktree", "remove", "--force", wt], cwd=REPO)
+
+
+def poll_prs(st):
+    """1.7.0: once a minute, each open pull request: merged closes the ticket; closed without merging hands it back."""
+    for tid, info in list((st.get("prs") or {}).items()):
+        code, pr = gh("GET", f"/repos/{info['repo']}/pulls/{info['number']}")
+        if code != 200 or not isinstance(pr, dict): continue
+        if pr.get("merged") or pr.get("merged_at"):
+            by = (pr.get("merged_by") or {}).get("login") or "someone"
+            try: api("POST", f"/api/tickets/{tid}/pr", {**info, "state": "merged"})
+            except Exception as e: log(f"could not mark #{info['number']} merged on {tid}: {e}")
+            ticket("close", tid, note=f"Merged on GitHub by {by}: pull request #{info['number']} ({info['url']}).")
+            say(f"Done {tid}: pull request #{info['number']} was merged by {by}.")
+            with STATE_LOCK: st["prs"].pop(tid, None); st["done"][tid] = "merged"; save_state(st)
+        elif pr.get("state") == "closed":
+            try: api("POST", f"/api/tickets/{tid}/pr", {**info, "state": "closed"})
+            except Exception as e: log(f"could not mark #{info['number']} closed on {tid}: {e}")
+            ticket("release", tid, note=f"Pull request #{info['number']} was closed without merging, so {tid} is back to approved. Add a note to the ticket if I should try again.")
+            with STATE_LOCK: st["prs"].pop(tid, None); st["done"][tid] = "pr closed"; save_state(st)
+
+
+def run_one_pr(t, key, st):
+    """1.7.0 (T-0192): one ticket in pull-request mode, in its own thread."""
+    tid = t["id"]
+    try: ok, msg, info = work_pr(t)
+    except Exception as e: ok, msg, info = False, f"worker crashed: {e!r}", None
+    with STATE_LOCK:
+        if ok: st.setdefault("prs", {})[tid] = info
+        elif not msg.startswith(("standing:", "claim refused")): st["done"][key] = "failed"   # 1.8.0: those are not failures of this worker
+        save_state(st)
+    if ok: say(f"Ready for review: {tid}, pull request #{info['number']} {info['url']}"); presence("idle"); return
+    if msg.startswith("standing:"):                                      # 1.8.0 (T-0200): Chamber put it back to waiting for a person; nothing was pushed
+        say(f"{tid} went outside its standing approval ({msg[9:].strip()[:400]}), so nothing was pushed. It waits for a person to approve it."); presence("idle"); return
+    if msg.startswith("claim refused"):                                  # 1.8.0: Chamber said no (budget used up, standing-approval limits): nothing was done; look again later
+        with STATE_LOCK: st.setdefault("later", {})[tid] = time.time() + 1800; save_state(st)
+        if "standing approval" in msg: say(f"{tid}: {msg[15:].strip()[:400]}")
+        log(f"{tid}: {msg[:300]}"); presence("idle"); return
+    tag = "DECLINED: " if msg.startswith("out of scope") else ("BLOCKED: " if msg.startswith("blocked") else "FAILED: ")
+    if not ticket("release", tid, note=tag + msg[:900]): ticket("update", tid, note=tag + msg)
+    if not tag.startswith("DECLINED"): say(tag.title().strip(": ") + " " + tid + ": " + msg)
+    presence("idle")
+
+
 def main():
-    st = load_state()
-    log(f"chamber-worker up: repo={REPO} service={SERVICE} approvers={sorted(APPROVERS)}")
+    st = load_state(); st.setdefault("prs", {})
+    log(f"chamber-worker up: mode={MODE} repo={REPO} service={SERVICE or '-'} approvers={sorted(APPROVERS)}" + (f" parallel={PARALLEL}" if MODE == "pr" else ""))
+    running = {}                                                         # 1.7.0: tickets being worked in pull-request mode, by id
     while True:
         try:
-            presence("idle")   # without this Chamber shows the worker offline between deploys
+            if not running or all(not th.is_alive() for th in running.values()): presence("idle")   # without this Chamber shows the worker offline between deploys
+            if MODE == "pr": poll_prs(st)
+            running = {k: th for k, th in running.items() if th.is_alive()}; waiting = 0
             ts = api("GET", "/api/tickets?status=approved&for=agent").get("tickets", [])   # T-0145: the server hides [human] tickets from agents
             roles = user_roles() if ts else {}                                              # 1.3.3: only people's notes re-arm a ticket
             for t in ts:
                 tid = t.get("id", ""); key = retry_key(t, roles)                        # 1.3.1: a note from a person re-arms a declined/failed ticket
-                if tid in st["done"] or key in st["done"] or ticket_for(t) != "agent": continue   # 1.4.0: the ticket's own 'for' field decides
+                if tid in st["done"] or key in st["done"] or ticket_for(t) != "agent": continue
+                if tid in running or tid in (st.get("prs") or {}): continue                  # 1.7.0: already being worked / waiting for its pull request   # 1.4.0: the ticket's own 'for' field decides
+                if time.time() < (st.get("later") or {}).get(tid, 0): continue                # 1.8.0: Chamber refused the claim a moment ago
+                sd = t.get("standing") or {}
+                if sd and str(sd.get("agent", "")).lower() != ME.lower(): continue            # 1.8.0 (T-0200): a standing approval names the one agent that may do the job
                 if "[human]" in t.get("title", "").lower(): st["done"][tid] = "skipped: tagged [human]"; save_state(st); continue   # T-0145 interim: never claim a human ticket
                 if t.get("approved_by") not in APPROVERS:
                     st["done"][tid] = "skipped: approver not allowed"; save_state(st); continue
@@ -391,8 +613,16 @@ def main():
                              "If it is for a person, open the ticket and switch it to 'A person'; if it is for code on another machine, add a worker there (gear menu > Add an agent); if it is a duplicate, cancel it.")
                     continue
                 wlog(tid, f"triage by {ME}: in scope ({why})")
+                if MODE == "pr":                                               # 1.7.0 (T-0192): up to PARALLEL at once, each in its own thread and worktree
+                    if tid in running: continue
+                    if len(running) >= PARALLEL: waiting += 1; continue
+                    th = threading.Thread(target=run_one_pr, args=(t, key, st), daemon=True); th.start(); running[tid] = th; continue
                 try: ok, msg = work(t)
                 except Exception as e: ok, msg = False, f"worker crashed: {e!r}"  # still post FAILED + record state instead of a silent loop error [patch 2026-11-10]
+                if not ok and msg.startswith("claim refused"):                  # 1.8.0: Chamber said no (budget used up, standing-approval limits): nothing was done; look again later
+                    st.setdefault("later", {})[tid] = time.time() + 1800; save_state(st); log(f"{tid}: {msg[:300]}")
+                    if "standing approval" in msg: say(f"{tid}: {msg[15:].strip()[:400]}")
+                    continue
                 st["done"][tid if ok else key] = "ok" if ok else "failed"; save_state(st)
                 tag = "DECLINED: " if msg.startswith("out of scope") else ("BLOCKED: " if msg.startswith("blocked") else "FAILED: ")
                 if ok: ticket("close", tid, note=msg)
@@ -400,6 +630,9 @@ def main():
                     ticket("update", tid, note=tag + msg)                        # (older Chamber refuses an agent release: at least record why)
                 if ok or not tag.startswith("DECLINED"): say(("Done " if ok else tag.title().strip(": ") + " ") + tid + ": " + msg)
                 else: log(f"{tid} handed back quietly (reason is on the ticket): {msg[:200]}")   # 1.5.0 (T-0164): a ticket that was never its job is not chat news
+            if waiting and not st.get("queue_note"):                    # 1.7.0 (T-0192): say once when work queues up behind the limit
+                say(f"{waiting} approved ticket{'s' if waiting != 1 else ''} wait{'s' if waiting == 1 else ''} for a free slot: I work on {PARALLEL} at a time (WORKER_PARALLEL)."); st["queue_note"] = True
+            elif not waiting and st.get("queue_note"): st["queue_note"] = False
         except Exception as e:
             log(f"loop error: {e}")
         time.sleep(60)

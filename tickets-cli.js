@@ -12,6 +12,8 @@
 //   close   <id> --by <n> --note <note>   (note: min 20 chars, each item + result)
 //   edit    <id> --by <n> [--title][--body][--type][--priority]   (proposed-only)
 //   meta    <id> --by <n> --set <applied|apply_by|reverts|reverted_by> --json <value>   (T-0072: server-managed fields)
+//   approve <id> --by <n> --standing <json>   (T-0200: approved in advance by a standing approval the server checked)
+//   unstand <id> --by <n> --note <note>   (T-0200: back to proposed, waiting for a person)
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 GhostPort Technologies
@@ -126,6 +128,26 @@ switch (verb) {                                                               //
     const t = findTicket(pos[1] || fail('approve requires a ticket id'));     // [new] id is the second positional
     if (!flags.by) fail('approve requires --by');                             // [new] record who approved
     if (t.status !== 'proposed') fail(`only proposed tickets can be approved (${t.id} is ${t.status})`); // [new] no approving twice or after reject
+    if (t.changes) fail(`changes were asked for on ${t.id} by ${t.changes.by}; it waits for a new version of the change, or that request can be withdrawn`);   // T-0189
+    if (flags.standing) {                                                     // T-0200: approved in advance by a standing approval the server checked; the person who set it up is the approver on record
+      let s; try { s = JSON.parse(flags.standing); } catch { fail('--standing must be JSON'); }
+      if (!s || !/^S-\d+$/.test(String(s.id))) fail('--standing needs the standing approval');
+      t.updates = Array.isArray(t.updates) ? t.updates : [];
+      t.approvals = [{ by: flags.by, at: nowISO(), standing: s.id }]; t.standing = s; delete t.standing_was;
+      t.updates.push({ at: nowISO(), by: flags.by, note: `APPROVED IN ADVANCE by standing approval ${s.id} (set up by ${s.by}${s.confirmedBy ? ', confirmed by ' + s.confirmedBy : ''}): "${s.what}". Limits: done by ${s.agent} only, as a pull request a person merges, at most ${s.maxFiles} file${s.maxFiles === 1 ? '' : 's'}${Array.isArray(s.paths) && s.paths.length ? ', only in ' + s.paths.join(', ') : ''}.` });
+      t.status = 'approved'; t.approved_by = flags.by; t.approved_at = nowISO();
+      save(data); console.log(`Approved ${t.id} in advance by standing approval ${s.id}`); break;
+    }
+    const needs = Math.min(3, Math.max(1, parseInt(flags.needs, 10) || 1));       // T-0190: how many different people must approve (the server works it out)
+    t.approvals = Array.isArray(t.approvals) ? t.approvals : []; t.updates = Array.isArray(t.updates) ? t.updates : [];
+    if (t.approvals.some(a => String(a.by).toLowerCase() === String(flags.by).toLowerCase())) fail(`${flags.by} has already approved ${t.id}; it waits for a different person`);
+    t.approvals.push({ by: flags.by, at: nowISO() });
+    if (flags.note) t.updates.push({ at: nowISO(), by: flags.by, note: `APPROVAL RULES: ${flags.note}` });
+    if (needs > 1) t.approvals_needed = needs;
+    if (t.approvals.length < needs) {                                         // T-0190: recorded, but it waits for another person
+      t.updates.push({ at: nowISO(), by: flags.by, note: `APPROVED ${t.approvals.length} of ${needs}: waits for another person to approve` });
+      save(data); console.log(`Approved ${t.id} (${t.approvals.length} of ${needs}): waits for another person to approve`); break;
+    }
     t.status = 'approved'; t.approved_by = flags.by; t.approved_at = nowISO(); // [new] state change + audit fields
     save(data); console.log(`Approved ${t.id}`); break;                       // [new] persist and report
   }
@@ -183,6 +205,10 @@ switch (verb) {                                                               //
     }
     if (typeof flags.for === 'string') { if (!['human', 'agent'].includes(flags.for)) fail('--for must be human or agent'); t.for = flags.for; changed = true; }   // T-0155
     if (!changed) fail('edit requires at least one of --title/--body/--type/--priority/--for'); // [new] nothing to do: say so
+    if (Array.isArray(t.approvals) && t.approvals.length) {                  // T-0190: what was approved is not what is there now
+      (t.updates = Array.isArray(t.updates) ? t.updates : []).push({ at: nowISO(), by: flags.by, note: `EDITED after ${t.approvals.map(a => a.by).join(', ')} approved: that approval was cleared, so the new version must be approved again` });
+      t.approvals = [];
+    }
     save(data); console.log(`Edited ${t.id}`); break;                         // [new] persist and report
   }
   case 'for': {                                                              // T-0155: a person decides who does the ticket; allowed until work starts
@@ -197,11 +223,47 @@ switch (verb) {                                                               //
   case 'meta': {                                                              // T-0072: one server-managed field; the server decides who may call this
     const t = findTicket(pos[1] || fail('meta requires a ticket id'));
     if (!flags.by) fail('meta requires --by');
-    const allowed = ['applied', 'apply_by', 'reverts', 'reverted_by'];
+    const allowed = ['applied', 'apply_by', 'reverts', 'reverted_by', 'reviewer', 'pr'];   // T-0189: + reviewer; T-0191: + pr
     if (!allowed.includes(flags.set)) fail(`meta --set must be one of ${allowed.join(', ')}`);
     let value; try { value = JSON.parse(flags.json); } catch { fail('meta requires --json <value>'); }
     t[flags.set] = value;
     save(data); console.log(`Set ${flags.set} on ${t.id}`); break;
+  }
+  case 'changes': {                                                           // T-0189: a reviewer asks for changes to the proposed change (or withdraws that)
+    const t = findTicket(pos[1] || fail('changes requires a ticket id'));
+    if (!flags.by) fail('changes requires --by');
+    if (t.status !== 'proposed') fail(`changes can only be asked for while ${t.id} is proposed (it is ${t.status})`);
+    t.updates = Array.isArray(t.updates) ? t.updates : [];
+    if (flags.withdraw) {
+      if (!t.changes) fail(`no request for changes on ${t.id} to withdraw`);
+      t.updates.push({ at: nowISO(), by: flags.by, note: `WITHDRAWN: the request for changes made by ${t.changes.by} was withdrawn; the current version can be approved` });
+      delete t.changes; save(data); console.log(`Withdrew the request for changes on ${t.id}`); break;
+    }
+    const v = Math.max(1, parseInt(flags.version, 10) || 1), note = String(flags.note || '').slice(0, 2000), had = Array.isArray(t.approvals) ? t.approvals.length : 0;
+    t.changes = { by: flags.by, at: nowISO(), version: v, note };
+    t.approvals = [];
+    t.updates.push({ at: nowISO(), by: flags.by, note: `CHANGES REQUESTED on version ${v}${note ? ': ' + note : ''}${had ? ' (the earlier approval was cleared)' : ''}` });
+    save(data); console.log(`Changes requested on ${t.id} (version ${v})`); break;
+  }
+  case 'revised': {                                                           // T-0189: a new version of the change was attached
+    const t = findTicket(pos[1] || fail('revised requires a ticket id'));
+    if (!flags.by) fail('revised requires --by');
+    const v = Math.max(2, parseInt(flags.version, 10) || 2), was = t.changes, had = Array.isArray(t.approvals) ? t.approvals.length : 0;
+    t.updates = Array.isArray(t.updates) ? t.updates : [];
+    t.updates.push({ at: nowISO(), by: flags.by, note: `NEW VERSION ${v} of the change attached${was ? ` after the changes ${was.by} asked for` : ''}${had ? '; the earlier approval was cleared' : ''}` });
+    delete t.changes; t.approvals = [];
+    save(data); console.log(`Version ${v} recorded on ${t.id}`); break;
+  }
+  case 'unstand': {                                                           // T-0200: a ticket approved by a standing approval goes back to waiting for a person (a limit was crossed, or it was withdrawn)
+    const t = findTicket(pos[1] || fail('unstand requires a ticket id'));
+    if (!flags.by) fail('unstand requires --by');
+    if (!t.standing) fail(`${t.id} was not approved by a standing approval`);
+    if (t.status !== 'approved' && t.status !== 'in_progress') fail(`only approved or in-progress tickets can go back to waiting (${t.id} is ${t.status})`);
+    t.standing_was = t.standing; delete t.standing;
+    t.status = 'proposed'; t.approvals = []; t.approved_by = null; t.approved_at = null; t.assignee = null; t.claimed_at = null;
+    t.updates = Array.isArray(t.updates) ? t.updates : [];
+    t.updates.push({ at: nowISO(), by: flags.by, note: String(flags.note || `WAITS FOR A PERSON: back from standing approval ${t.standing_was.id}`).slice(0, 2000) });
+    save(data); console.log(`${t.id} waits for a person again`); break;
   }
   case 'release': {                                                           // T-0143: in_progress -> approved. A human un-claims a stuck ticket so the agent retries or someone else takes it.
     const t = findTicket(pos[1] || fail('release requires a ticket id'));
@@ -225,7 +287,13 @@ switch (verb) {                                                               //
   case 'log': {                                                               // T-0143: one run-log line (and/or the model name) from whoever works the ticket. Capped at 200 lines.
     const t = findTicket(pos[1] || fail('log requires a ticket id'));
     if (!flags.by) fail('log requires --by');
-    if (!flags.line && !flags.model) fail('log requires --line and/or --model');
+    if (!flags.line && !flags.model && !flags.usage) fail('log requires --line, --model and/or --usage');
+    if (flags.usage) {                                                        // T-0194: the worker reports what a run cost; totals are kept on the ticket
+      let u; try { u = JSON.parse(flags.usage); } catch { fail('--usage must be JSON'); }
+      const tot = t.usage && typeof t.usage === 'object' ? t.usage : { runs: 0, cost_cents: 0, tokens_in: 0, tokens_out: 0, ms: 0 };
+      tot.runs = (tot.runs || 0) + 1; for (const k of ['cost_cents', 'tokens_in', 'tokens_out', 'ms']) if (typeof u[k] === 'number') tot[k] = Math.round(((tot[k] || 0) + u[k]) * 100) / 100;
+      t.usage = tot;
+    }
     t.log = Array.isArray(t.log) ? t.log : [];
     if (flags.line) { t.log.push({ at: nowISO(), by: flags.by, line: String(flags.line).slice(0, 300) }); if (t.log.length > 200) t.log = t.log.slice(-200); }
     if (flags.model) t.model = String(flags.model).slice(0, 60);

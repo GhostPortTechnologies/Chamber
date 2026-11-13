@@ -70,7 +70,10 @@ const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/;
 const USER_RE = /^[a-zA-Z0-9_-]{2,24}$/;
 const WS_RE = /^[a-f0-9]{16}$/;
 const MIN_PASSWORD = 10;
-const MAX_MEMBERS = parseInt(process.env.CHAMBER_MAX_MEMBERS, 10) || 25;   // T-0033: seats per workspace (owner included)
+const MAX_MEMBERS = parseInt(process.env.CHAMBER_MAX_MEMBERS, 10) || 25;
+// T-0199: guest seats for the business side. A viewer reads everything (and approves when the owner names them, T-0190); a requester
+// only sends requests and follows their own. Guests do not use one of the MAX_MEMBERS seats; they have their own limit.
+const MAX_GUESTS = parseInt(process.env.CHAMBER_MAX_GUESTS, 10) || 25, GUEST_ROLES = ['viewer', 'requester'];   // T-0033: seats per workspace (owner included)
 const TEST_HOOKS = process.env.CHAMBER_TEST_HOOKS === '1';
 // T-0032: email verification. Enforced when we can actually send mail (or in the test harness, which reads the link from the log).
 // Unverified accounts can log in and use a workspace they were invited to, but cannot start checkout, rotate the invite link
@@ -206,11 +209,103 @@ function createWorkspace(store, owner, name) {
   return store.workspaces[id];
 }
 function members(store, wsId) { return Object.values(store.accounts).filter(a => a.workspace === wsId); }
+// T-0199: one place that says what role someone has in their workspace. owner | admin | member (full seats) | viewer | requester (guests).
+function wsRoleOf(a, ws) { if (!a || !ws) return null; if (ws.owner === a.email) return 'owner'; return ['admin', 'viewer', 'requester'].includes(a.wsRole) ? a.wsRole : 'member'; }
+function fullMembers(store, wsId) { const ws = store.workspaces[wsId]; return members(store, wsId).filter(a => !GUEST_ROLES.includes(wsRoleOf(a, ws))); }
+function guestMembers(store, wsId) { const ws = store.workspaces[wsId]; return members(store, wsId).filter(a => GUEST_ROLES.includes(wsRoleOf(a, ws))); }
+function inviteRole(ws, code) {                                    // which role an invite code gives in this workspace, or null
+  if (ws.invite && same(ws.invite, code)) return 'member';
+  for (const r of GUEST_ROLES) if (ws.invites && ws.invites[r] && same(ws.invites[r], code)) return r;
+  return null;
+}
+function findInvite(store, code) { for (const ws of Object.values(store.workspaces)) { const role = inviteRole(ws, code); if (role) return { ws, role }; } return null; }
+// T-0190: approval rules, set by the owner. With none set nothing changes: any person in a full seat may approve and one approval
+// is enough. noSelf: the proposer may not approve their own ticket. two: 'high' (high and critical priority) or 'all' tickets need two
+// different people. approvers: only these people may approve or reject (the owner always may); a viewer named here may approve.
+function approvalRules(ws) {
+  const r = (ws && ws.approval) || {};
+  return { noSelf: !!r.noSelf, two: ['high', 'all'].includes(r.two) ? r.two : 'none', approvers: Array.isArray(r.approvers) ? r.approvers.filter(x => typeof x === 'string').slice(0, 50) : [],
+           remindMin: Number.isInteger(r.remindMin) ? r.remindMin : 0, escalateMin: Number.isInteger(r.escalateMin) ? r.escalateMin : 0, backup: typeof r.backup === 'string' ? r.backup : '' };   // T-0201
+}
+function approverNames(store, ws) {                                // usernames that may approve or reject in this workspace right now
+  const rules = approvalRules(ws), named = new Set(rules.approvers.map(s => s.toLowerCase()));
+  return members(store, ws.id).filter(a => (a.chatRole || 'human') === 'human').filter(a => {
+    const role = wsRoleOf(a, ws);
+    if (role === 'requester') return false;
+    if (role === 'owner') return true;
+    return named.size ? named.has(a.username.toLowerCase()) : role !== 'viewer';
+  }).map(a => a.username);
+}
+function approvalCheck(wsId, ticket, actor, action) {              // server.js asks before every approve / reject. -> { ok, code, error, needs, note }
+  if (!ENABLED || !wsId) return { ok: true, needs: 1 };
+  const store = load(), ws = store.workspaces[wsId];
+  if (!ws) return { ok: true, needs: 1 };
+  const lc = s => String(s || '').toLowerCase(), rules = approvalRules(ws), eligible = approverNames(store, ws);
+  if (!eligible.some(u => lc(u) === lc(actor))) return { ok: false, code: 403, error: rules.approvers.length
+    ? `In this workspace only ${eligible.join(', ')} may approve or reject tickets (the owner's approval rules).`
+    : 'Only people in a full seat may approve or reject tickets here. A viewer can approve when the owner names them in the approval rules.' };
+  if (action !== 'approve') return { ok: true };
+  const notes = [], others = eligible.filter(u => lc(u) !== lc(ticket.proposed_by));
+  if (rules.noSelf && lc(ticket.proposed_by) === lc(actor)) {
+    if (others.length) return { ok: false, code: 403, error: `You proposed ${ticket.id}, and in this workspace nobody approves their own ticket. ${others.slice(0, 3).join(', ')} can approve it.` };
+    notes.push('the rule that nobody approves their own ticket could not be met: nobody else here may approve');
+  }
+  let needs = (rules.two === 'all' || (rules.two === 'high' && ['high', 'critical'].includes(lc(ticket.priority)))) ? 2 : 1;
+  if (needs === 2 && (rules.noSelf ? others : eligible).length < 2) { needs = 1; notes.push('the rule for two approvers could not be met: fewer than two people here may approve it'); }
+  return { ok: true, needs, note: notes.join('; ') };
+}
+// T-0201: approval reminders. Which workspaces have them switched on, and who a waiting ticket should remind: its named reviewer
+// if it has one who may approve, else everyone who may approve, never the person who proposed it or who already approved it.
+function reminderWorkspaces() {
+  if (!ENABLED) return [];
+  const store = load();
+  return Object.values(store.workspaces).map(ws => ({ ws: ws.id, cfg: approvalRules(ws) })).filter(x => x.cfg.remindMin > 0 || (x.cfg.escalateMin > 0 && x.cfg.backup));
+}
+function remindTargets(wsId, ticket) {
+  const store = load(), ws = store.workspaces[wsId]; if (!ws) return [];
+  const lc = s => String(s || '').toLowerCase(), may = approverNames(store, ws), done = new Set((ticket.approvals || []).map(a => lc(a.by)));
+  if (ticket.reviewer && may.some(u => lc(u) === lc(ticket.reviewer))) return [may.find(u => lc(u) === lc(ticket.reviewer))];
+  return may.filter(u => lc(u) !== lc(ticket.proposed_by) && !done.has(lc(u)));
+}
+// T-0202: the weekly report. ws.report = { enabled, recipients: [emails], token }. The token makes a private link (no login).
+function reportView(ws) { const r = (ws && ws.report) || {}; return { enabled: !!r.enabled, recipients: Array.isArray(r.recipients) ? r.recipients : [], linkUrl: r.token ? `${PUBLIC_URL}/report/${r.token}` : null }; }
+function reportByToken(token) {
+  if (!ENABLED || !token) return null;
+  for (const ws of Object.values(load().workspaces)) if (ws.report && ws.report.token && same(ws.report.token, token)) return { ws: ws.id, name: ws.name, token: ws.report.token };
+  return null;
+}
+function reportWorkspaces() {
+  if (!ENABLED) return [];
+  return Object.values(load().workspaces).filter(ws => ws.report && ws.report.enabled && Array.isArray(ws.report.recipients) && ws.report.recipients.length)
+    .map(ws => ({ ws: ws.id, name: ws.name, recipients: ws.report.recipients.slice(0, 10), linkUrl: ws.report.token ? `${PUBLIC_URL}/report/${ws.report.token}` : null }));
+}
+// T-0203: the monthly AI budget, set by the owner. ws.budget = { monthlyCents, perAgent: { agentName: cents } }. server.js adds up
+// the spend; these only store and hand out the settings.
+function budgetOf(wsId) { const ws = ENABLED && wsId ? load().workspaces[wsId] : null; const b = (ws && ws.budget) || {}; return { monthlyCents: Number.isInteger(b.monthlyCents) ? b.monthlyCents : 0, perAgent: b.perAgent && typeof b.perAgent === 'object' ? b.perAgent : {} }; }
+function budgetWorkspaces() {
+  if (!ENABLED) return [];
+  const store = load();
+  return Object.values(store.workspaces).filter(ws => ws.budget && (ws.budget.monthlyCents > 0 || Object.keys(ws.budget.perAgent || {}).length))
+    .map(ws => ({ ws: ws.id, admins: members(store, ws.id).filter(a => ['owner', 'admin'].includes(wsRoleOf(a, ws)) && (a.chatRole || 'human') === 'human').map(a => a.username) }));
+}
+function workspaceName(wsId) { const ws = ENABLED && wsId ? load().workspaces[wsId] : null; return ws ? ws.name : null; }   // T-0204
+function canApprove(sess) {                                        // for /api/me: should the app offer Approve to this person?
+  if (!ENABLED) return true;
+  if (!sess || sess.agent || !sess.email) return false;
+  const store = load(), a = store.accounts[sess.email], ws = a && store.workspaces[a.workspace];
+  return !!ws && approverNames(store, ws).some(u => u.toLowerCase() === a.username.toLowerCase());
+}
+function standingRules(wsId) {                                    // T-0200: what a standing approval must respect: who may approve right now, and the two rules
+  const none = { approvers: null, two: 'none', noSelf: false };
+  if (!ENABLED || !wsId) return none;
+  const store = load(), ws = store.workspaces[wsId]; if (!ws) return none;
+  const r = approvalRules(ws); return { approvers: approverNames(store, ws), two: r.two, noSelf: r.noSelf };
+}
 function commandersFor(wsId) {                                   // T-0015: usernames whose instructions agents in this workspace obey
   const store = load(); const ws = store.workspaces[wsId]; if (!ws) return [];
   const owner = store.accounts[ws.owner];
   if ((ws.agentPolicy || 'owner') === 'owner') return owner ? [owner.username] : [];
-  return members(store, wsId).filter(a => (a.chatRole || 'human') === 'human').map(a => a.username);
+  return members(store, wsId).filter(a => (a.chatRole || 'human') === 'human' && !GUEST_ROLES.includes(wsRoleOf(a, ws))).map(a => a.username);   // T-0199: viewers and requesters never instruct agents
 }
 
 // ── Agent API tokens (T-0007) ─────────────────────────────────────────────
@@ -228,7 +323,7 @@ function tokenSession(token) {
     if (!t) continue;
     if (!same(t.hash, sha(m[2]))) return null;
     if (Date.now() - (t.lastUsed || 0) > 300000) { t.lastUsed = Date.now(); save(store); }   // at most one write per 5 min
-    return { token, username: t.username, role: 'ai', agent: true, ws: ws.id, expires: Infinity };
+    return { token, username: t.username, role: 'ai', agent: true, ws: ws.id, expires: Infinity, mayAsk: !!t.mayAsk };   // T-0188
   }
   return null;
 }
@@ -297,7 +392,7 @@ function publicView(acct, store) {
            hasCustomer: !!acct.stripeCustomer, price: SELF_HOSTED ? 'self-hosted (no subscription)' : PRICE_LABEL, selfHosted: SELF_HOSTED, billing: billingView(acct, store), storage: storageView(acct, store),   // T-0028/T-0061
            emailVerified: verified(acct), verifyRequired: VERIFY_REQUIRED(), logins: (acct.logins || []).slice(-5).map(l => ({ ip: l.ip, at: l.at, device: l.ua })),   // T-0032
            totp: !!acct.totp, needsTotp: !acct.totp && ws.owner === acct.email && Object.keys(ws.tokens || {}).length > 0,   // T-0040: owners who hold agent tokens should have 2FA
-           workspace: { id: ws.id, name: ws.name, role: acct.wsRole || 'member', owner: owner ? owner.username : null,
+           workspace: { id: ws.id, name: ws.name, role: wsRoleOf(acct, ws) || 'member', owner: owner ? owner.username : null,
                         ownerSubscribed: !!owner && (owner.role === 'admin' || subscribed(owner)) } };
 }
 
@@ -481,7 +576,12 @@ async function handle(req, res, url, ctx0) {
   if (m === 'GET' && ['/terms', '/privacy', '/refunds'].includes(p)) {       // T-0018: legal pages
     return ctx.serveStatic(res, path.join(__dirname, 'public', 'legal', p.slice(1) + '.html'), req), true;
   }
-  if (m === 'GET' && p === '/demo') return ctx.serveStatic(res, path.join(__dirname, 'public', 'demo.html'), req), true;   // T-0161: public demo, sample data only, no API behind it
+  if (m === 'GET' && p === '/demo') return ctx.serveStatic(res, path.join(__dirname, 'public', 'demo.html'), req), true;
+  if (m === 'GET' && p === '/requests') {                                   // T-0199: send requests and follow your own (requesters; anyone signed in may use it)
+    if (!me) return redirect(res, '/login'), true;
+    return ctx.serveStatic(res, path.join(__dirname, 'public', 'requests.html'), req), true;
+  }
+  if (m === 'GET' && p === '/compare') return ctx.serveStatic(res, path.join(__dirname, 'public', 'compare.html'), req), true;   // T-0195: public, honest comparison with other tools   // T-0161: public demo, sample data only, no API behind it
   if (m === 'GET' && p === '/help') return ctx.serveStatic(res, path.join(__dirname, 'public', 'help.html'), req), true;   // T-0036
   if (m === 'GET' && (p === '/help/api' || p === '/api/docs')) return ctx.serveStatic(res, path.join(__dirname, 'public', 'api.html'), req), true;   // T-0051
   if (m === 'GET' && p === '/changelog') {                                   // T-0036: from git, cached 5 minutes, no secrets (commit subjects only)
@@ -499,6 +599,7 @@ async function handle(req, res, url, ctx0) {
   if (m === 'GET' && (p === '/app' || p === '/app/')) {
     if (!me) return redirect(res, '/login'), true;
     if (!entitled(me, store)) return redirect(res, '/billing'), true;
+    if (wsRoleOf(me, myWs) === 'requester') return redirect(res, '/requests'), true;   // T-0199: a requester's place is their requests page
     return ctx.serveStatic(res, ctx.appHtml, req), true;
   }
 
@@ -595,9 +696,9 @@ async function handle(req, res, url, ctx0) {
   }
   const inviteMatch = p.match(/^\/account\/invite\/([A-Za-z0-9_-]{8,})$/);
   if (inviteMatch && m === 'GET') {                              // what an invite link joins (name only; nothing private)
-    const ws = Object.values(store.workspaces).find(w => same(w.invite, inviteMatch[1]));
-    if (!ws) return ctx.json(res, 404, { error: 'This invite link is not valid any more.' }), true;
-    return ctx.json(res, 200, { workspace: ws.name, owner: store.accounts[ws.owner]?.username || null }), true;
+    const found = findInvite(store, inviteMatch[1]);                                              // T-0199: member, viewer or requester link
+    if (!found) return ctx.json(res, 404, { error: 'This invite link is not valid any more.' }), true;
+    return ctx.json(res, 200, { workspace: found.ws.name, owner: store.accounts[found.ws.owner]?.username || null, role: found.role }), true;
   }
 
   // Account API
@@ -607,9 +708,10 @@ async function handle(req, res, url, ctx0) {
     const email = String(b?.email || '').trim().toLowerCase();
     const username = String(b?.username || '').trim();
     const password = String(b?.password || '');
-    const joinWs = b?.join ? Object.values(store.workspaces).find(w => same(w.invite, String(b.join))) : null;
+    const joined = b?.join ? findInvite(store, String(b.join)) : null, joinWs = joined ? joined.ws : null, joinRole = joined ? joined.role : 'member';   // T-0199: the link decides the role
     if (b?.join && !joinWs) return ctx.json(res, 400, { error: 'This invite link is not valid any more.' }), true;
-    if (joinWs && members(store, joinWs.id).length >= MAX_MEMBERS) return ctx.json(res, 403, { error: `This workspace is full (${MAX_MEMBERS} members). Ask the owner to free a seat.` }), true;   // T-0033
+    if (joinWs && joinRole === 'member' && fullMembers(store, joinWs.id).length >= MAX_MEMBERS) return ctx.json(res, 403, { error: `This workspace is full (${MAX_MEMBERS} members). Ask the owner to free a seat.` }), true;   // T-0033
+    if (joinWs && joinRole !== 'member' && guestMembers(store, joinWs.id).length >= MAX_GUESTS) return ctx.json(res, 403, { error: `This workspace has no free places for viewers and requesters (${MAX_GUESTS}). Ask the owner.` }), true;   // T-0199
     const trialSignup = !joinWs && TRIAL_ON();                                             // T-0159: a new workspace on the free trial
     if (trialSignup) { const day = (trialSignups.get(clientIp(req)) || []).filter(t => Date.now() - t < 86400e3);
       if (day.length >= TRIAL_SIGNUPS_PER_IP_DAY) return ctx.json(res, 429, { error: 'Too many new accounts from this network today. Try again tomorrow, or write to us from the Contact form.' }), true; }
@@ -624,7 +726,7 @@ async function handle(req, res, url, ctx0) {
     const salt = crypto.randomBytes(16).toString('hex');
     const acct = { email, username, salt, hash: hash(password, salt), role: 'member', chatRole: b?.role === 'ai' ? 'ai' : 'human',
                    createdAt: Date.now(), stripeCustomer: null, subscription: null, subStatus: null, periodEnd: null };
-    if (joinWs) { acct.workspace = joinWs.id; acct.wsRole = 'member'; } else createWorkspace(store, acct);
+    if (joinWs) { acct.workspace = joinWs.id; acct.wsRole = joinRole; } else createWorkspace(store, acct);
     if (trialSignup) { const used = (store.trials ||= {}), h = sha('trial:' + email);       // T-0159 review: one trial per email address, also after deleting the account and signing up again
       acct.trialEndsAt = used[h] || Date.now() + TRIAL_MS; used[h] = acct.trialEndsAt; const ip = clientIp(req); trialSignups.set(ip, [...(trialSignups.get(ip) || []).filter(t => Date.now() - t < 86400e3), Date.now()]);
       if (trialSignups.size > 5000) for (const [k, v] of trialSignups) if (!v.some(t => Date.now() - t < 86400e3)) trialSignups.delete(k); }
@@ -949,18 +1051,27 @@ async function handle(req, res, url, ctx0) {
   // Workspace: members and invite link (T-0003 / T-0006). Everyone in the workspace can see members; only the owner manages.
   if (p.startsWith('/account/workspace')) {
     if (!me || !myWs) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    if (wsRoleOf(me, myWs) === 'requester') return ctx.json(res, 403, { error: 'A requester sees only their own requests, not the workspace.' }), true;   // T-0199
     if (p === '/account/workspace' && m === 'GET') {
       const seen = ctx.withWorkspace(myWs.id, () => ctx.loadData().users) || {};                                   // T-0034: last activity per member
-      const roleOf = (a) => a.email === myWs.owner ? 'owner' : (a.wsRole === 'admin' ? 'admin' : 'member');
+      const roleOf = (a) => wsRoleOf(a, myWs);                                                                   // T-0199
       return ctx.json(res, 200, {
         id: myWs.id, name: myWs.name, role: roleOf(me), canManage: amAdmin, owner: store.accounts[myWs.owner]?.username || null,
         members: members(store, myWs.id).map(a => ({ username: a.username, role: roleOf(a), email: amAdmin ? a.email : undefined, chatRole: a.chatRole || 'human',
                                                       lastSeen: seen[a.username]?.lastSeen || null, joinedAt: a.createdAt || null })),
         inviteUrl: amAdmin ? `${PUBLIC_URL}/join/${myWs.invite}` : null,
+        inviteUrls: amAdmin ? Object.fromEntries(GUEST_ROLES.map(r => [r, myWs.invites && myWs.invites[r] ? `${PUBLIC_URL}/join/${myWs.invites[r]}` : null])) : null,   // T-0199
+        seats: { full: fullMembers(store, myWs.id).length, maxFull: MAX_MEMBERS, guests: guestMembers(store, myWs.id).length, maxGuests: MAX_GUESTS },   // T-0199
+        approval: approvalRules(myWs),                                           // T-0190
+        report: amAdmin ? reportView(myWs) : null,                               // T-0202
+        budget: budgetOf(myWs.id),                                               // T-0203
         fleet: myWs.fleet ? { linked: true, tenant: myWs.fleet.tenant || '', by: myWs.fleet.by, at: myWs.fleet.at, state: myWs.fleet.state || 'ok', lastError: myWs.fleet.lastError || null } : { linked: false },   // T-0153: never the key
         agentPolicy: myWs.agentPolicy || 'owner',
         retentionDays: myWs.retentionDays || 0,                                  // T-0037: 0 = keep forever
       }), true;
+    }
+    if (p === '/account/workspace/audit/verify' && m === 'GET') {             // T-0194: is the record intact?
+      return ctx.json(res, 200, ctx.verifyAudit(path.join(DATA_DIR, 'ws', myWs.id))), true;
     }
     if (p === '/account/workspace/audit' && m === 'GET') {        // T-0015/T-0057: who did what (members may look; owner/admin may export everything)
       const dir = path.join(DATA_DIR, 'ws', myWs.id);
@@ -970,9 +1081,10 @@ async function handle(req, res, url, ctx0) {
       if (format === 'csv' || format === 'json') {
         if (!amAdmin) return ctx.json(res, 403, { error: 'Only the workspace owner or an admin can export the audit log.' }), true;
         const all = ctx.auditAll(dir).filter(match);
+        const filtered = !!(q || actor || action || since || until !== Infinity), ch = filtered ? null : ctx.verifyAudit(dir);   // T-0194: before the export adds its own entry
         ctx.audit(sess, { action: 'audit-export', format, entries: all.length }, true);
         const name = `chamber-audit-${myWs.name.replace(/[^A-Za-z0-9_-]+/g, '_')}-${new Date().toISOString().slice(0, 10)}.${format}`;
-        if (format === 'json') { res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="${name}"` }); res.end(JSON.stringify({ workspace: myWs.name, exported_at: new Date().toISOString(), entries: all })); return true; }
+        if (format === 'json') { res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="${name}"` }); res.end(JSON.stringify({ workspace: myWs.name, exported_at: new Date().toISOString(), chain: ch ? { ok: ch.ok, n: ch.n, head: ch.head, how: 'node tools/verify-audit.js <this file> checks it without the server' } : { partial: true, how: 'This export is filtered, so it cannot be checked as a whole. Export without a filter to check it.' }, entries: all })); return true; }
         const cols = ['ts', 'time_utc', 'actor', 'kind', 'action', 'target', 'details', 'request_id', 'ip'];
         const cell = (v) => { const s = v === undefined || v === null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
         const rows = all.map(r => { const { ts, actor: a, agent, kind, action: act, rid, ip, ...rest } = r; const target = rest.ticket || rest.id || rest.room || rest.review || rest.username || rest.target || ''; return [ts, new Date(ts).toISOString(), a || agent || '', kind || (agent ? 'agent' : 'human'), act || '', target, JSON.stringify(rest), rid || '', ip || ''].map(cell).join(','); });
@@ -1002,12 +1114,31 @@ async function handle(req, res, url, ctx0) {
       ctx.audit(sess, { action: 'fleet-link', tenant: tried.data.tenant, routers: tried.data.count }, true);
       return ctx.json(res, 200, { ok: true, linked: true, tenant: tried.data.tenant, routers: tried.data.count, online: tried.data.online }), true;
     }
+    if (p === '/account/workspace/report' && m === 'POST') {    // T-0202: owner or admin: who gets the Monday email, and the private link
+      myWs.report = myWs.report || {};
+      if (b?.recipients !== undefined) {
+        const list = [...new Set((Array.isArray(b.recipients) ? b.recipients : String(b.recipients).split(/[,\s]+/)).map(s => String(s).trim().toLowerCase()).filter(Boolean))];
+        if (list.length > 10) return ctx.json(res, 400, { error: 'At most 10 people get the report by email.' }), true;
+        const bad = list.filter(e => !EMAIL_RE.test(e)); if (bad.length) return ctx.json(res, 400, { error: `Not an email address: ${bad.slice(0, 3).join(', ')}` }), true;
+        myWs.report.recipients = list;
+      }
+      if (b?.enabled !== undefined) myWs.report.enabled = !!b.enabled;
+      if (myWs.report.enabled && !(myWs.report.recipients || []).length) return ctx.json(res, 400, { error: 'Add at least one email address before switching the email on.' }), true;
+      if (b?.link === 'make') myWs.report.token = crypto.randomBytes(18).toString('base64url');
+      if (b?.link === 'off') delete myWs.report.token;
+      save(store); ctx.audit(sess, { action: 'report-settings', enabled: !!myWs.report.enabled, recipients: (myWs.report.recipients || []).length, link: b?.link || undefined }, true);
+      return ctx.json(res, 200, { ok: true, report: reportView(myWs) }), true;
+    }
     if (p === '/account/workspace/role' && m === 'POST') {       // T-0034: owner promotes/demotes a member
       if (!amOwner) return ownerOnly(), true;
       const target = Object.values(store.accounts).find(a => a.username.toLowerCase() === String(b?.username || '').toLowerCase() && a.workspace === myWs.id);
       if (!target) return ctx.json(res, 404, { error: 'No such member in your workspace.' }), true;
       if (target.email === myWs.owner) return ctx.json(res, 400, { error: 'The owner already has every permission. Use Transfer to hand the workspace over.' }), true;
-      if (!['admin', 'member'].includes(b?.role)) return ctx.json(res, 400, { error: 'role must be admin or member' }), true;
+      if (!['admin', 'member', 'viewer', 'requester'].includes(b?.role)) return ctx.json(res, 400, { error: 'role must be admin, member, viewer or requester' }), true;   // T-0199
+      const toGuest = GUEST_ROLES.includes(b.role), wasGuest = GUEST_ROLES.includes(wsRoleOf(target, myWs));
+      if (toGuest && (target.chatRole || 'human') !== 'human') return ctx.json(res, 400, { error: 'An AI account cannot be a viewer or requester.' }), true;
+      if (!toGuest && wasGuest && fullMembers(store, myWs.id).length >= MAX_MEMBERS) return ctx.json(res, 409, { error: `No free seat: this workspace already has ${MAX_MEMBERS} members. Remove someone, or make someone a viewer, first.` }), true;
+      if (toGuest && !wasGuest && guestMembers(store, myWs.id).length >= MAX_GUESTS) return ctx.json(res, 409, { error: `No free place for viewers and requesters (${MAX_GUESTS}).` }), true;
       target.wsRole = b.role; save(store);
       console.log(`[accounts] ${me.username} made ${target.username} ${b.role} in ${myWs.id}`); ctx.audit(sess, { action: 'member-role', username: target.username, role: b.role }, true);   // T-0057
       return ctx.json(res, 200, { ok: true, username: target.username, role: b.role }), true;
@@ -1018,6 +1149,7 @@ async function handle(req, res, url, ctx0) {
       const target = Object.values(store.accounts).find(a => a.username.toLowerCase() === String(b?.username || '').toLowerCase() && a.workspace === myWs.id);
       if (!target) return ctx.json(res, 404, { error: 'No such member in your workspace.' }), true;
       if (target.email === me.email) return ctx.json(res, 400, { error: 'You already own this workspace.' }), true;
+      if (GUEST_ROLES.includes(wsRoleOf(target, myWs))) return ctx.json(res, 400, { error: 'Make them a member first: a viewer or requester cannot own the workspace.' }), true;   // T-0199
       if ((target.chatRole || 'human') !== 'human') return ctx.json(res, 400, { error: 'Ownership can only go to a human member.' }), true;
       if (!verified(target)) return ctx.json(res, 400, { error: `${target.username} has not confirmed their email address yet.` }), true;
       // The subscription pays for the workspace, so it moves with it. Stripe is told about the new owner so receipts and the billing portal follow.
@@ -1031,6 +1163,41 @@ async function handle(req, res, url, ctx0) {
       return ctx.json(res, 200, { ok: true, owner: target.username, subscriptionMoved: !!(moved.subStatus || moved.subscription || moved.stripeCustomer) }), true;
     }
     if (p === '/account/workspace' && m === 'POST') {           // rename and/or agent policy
+      let approvalWarning;
+      if (b?.budget !== undefined) {                                                                                 // T-0203: the owner's monthly AI budget
+        if (!amOwner) return ownerOnly(), true;
+        const bu = b.budget && typeof b.budget === 'object' ? b.budget : {}, cents = v => v === undefined || v === null || v === '' ? 0 : (Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 1e7 ? Number(v) : NaN);
+        const monthlyCents = cents(bu.monthlyCents); if (Number.isNaN(monthlyCents)) return ctx.json(res, 400, { error: 'The budget is whole cents from 0 to 100,000 dollars.' }), true;
+        let pa = bu.perAgent || {};
+        if (typeof pa === 'string') { const o = {}; for (const line of pa.split('\n').map(s => s.trim()).filter(Boolean)) { const m2 = line.match(/^@?([A-Za-z0-9_-]{2,24})\s*[:=]?\s*\$?\s*(\d+(?:\.\d{1,2})?)$/); if (!m2) return ctx.json(res, 400, { error: `Write each limit as: agent-name dollars (this line is not: ${line.slice(0, 40)})` }), true; o[m2[1]] = Math.round(Number(m2[2]) * 100); } pa = o; }
+        if (typeof pa !== 'object' || Array.isArray(pa) || Object.keys(pa).length > 20) return ctx.json(res, 400, { error: 'At most 20 limits for single agents.' }), true;
+        const clean = {}; for (const [k, v] of Object.entries(pa)) { const c = cents(v); if (!USER_RE.test(k) || Number.isNaN(c)) return ctx.json(res, 400, { error: `Not a valid limit for ${String(k).slice(0, 24)}.` }), true; if (c > 0) clean[k] = c; }
+        myWs.budget = { monthlyCents, perAgent: clean };
+        ctx.audit(sess, { action: 'ai-budget', monthlyCents, agents: Object.keys(clean).length }, true);
+      }
+      if (b?.approval !== undefined) {                                                                               // T-0190: the owner's approval rules
+        if (!amOwner) return ownerOnly(), true;
+        const ap = b.approval && typeof b.approval === 'object' ? b.approval : {}, two = ap.two === undefined ? 'none' : ap.two;
+        if (!['none', 'high', 'all'].includes(two)) return ctx.json(res, 400, { error: 'two must be none, high or all' }), true;
+        let names = Array.isArray(ap.approvers) ? ap.approvers : typeof ap.approvers === 'string' ? ap.approvers.split(',') : [];
+        names = [...new Set(names.map(s => String(s).trim()).filter(Boolean))];
+        if (names.length > 50) return ctx.json(res, 400, { error: 'Name at most 50 approvers.' }), true;
+        const byName = new Map(members(store, myWs.id).map(a => [a.username.toLowerCase(), a]));
+        const bad = names.filter(n => { const a = byName.get(n.toLowerCase()); return !a || (a.chatRole || 'human') !== 'human' || wsRoleOf(a, myWs) === 'requester'; });
+        if (bad.length) return ctx.json(res, 400, { error: `Not a person in this workspace who may approve: ${bad.slice(0, 5).join(', ')}. Requesters and AI agents cannot approve.` }), true;
+        const mins = (v, max) => v === undefined || v === null || v === '' ? 0 : Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= max ? Number(v) : NaN;   // T-0201
+        const remindMin = mins(ap.remindMin, 10080), escalateMin = mins(ap.escalateMin, 20160), backupName = String(ap.backup || '').trim().replace(/^@/, '');
+        if (Number.isNaN(remindMin) || Number.isNaN(escalateMin)) return ctx.json(res, 400, { error: 'reminder times are whole minutes: up to a week for the reminder, two weeks for the backup' }), true;
+        if (escalateMin && !backupName) return ctx.json(res, 400, { error: 'Name the backup approver who should be told.' }), true;
+        if (escalateMin && remindMin && escalateMin <= remindMin) return ctx.json(res, 400, { error: 'The backup is told after the reminder, so give it a longer time.' }), true;
+        const backupAcct = backupName ? byName.get(backupName.toLowerCase()) : null;
+        if (backupName && (!backupAcct || (backupAcct.chatRole || 'human') !== 'human' || wsRoleOf(backupAcct, myWs) === 'requester')) return ctx.json(res, 400, { error: `${backupName} is not a person in this workspace who may approve.` }), true;
+        myWs.approval = { noSelf: !!ap.noSelf, two, approvers: names.map(n => byName.get(n.toLowerCase()).username), remindMin, escalateMin, backup: backupAcct ? backupAcct.username : '' };
+        if (backupAcct && !approverNames(store, myWs).includes(backupAcct.username)) { delete myWs.approval; return ctx.json(res, 400, { error: `${backupAcct.username} may not approve under these rules; add them to the approvers or pick someone else as the backup.` }), true; }
+        ctx.audit(sess, { action: 'approval-rules', noSelf: !!ap.noSelf, two, approvers: myWs.approval.approvers.join(',') }, true);
+        const n = approverNames(store, myWs).length;
+        if (n < 2 && (two !== 'none' || ap.noSelf)) approvalWarning = 'Only one person may approve right now, so these rules cannot fully apply yet: tickets are not blocked, and each one notes that a rule could not be met. They apply fully once a second approver exists.';
+      }
       if (b?.agentPolicy !== undefined) {
         if (!amOwner) return ownerOnly(), true;                                                                        // T-0034: policy is the owner's call
         if (!['owner', 'members'].includes(b.agentPolicy)) return ctx.json(res, 400, { error: 'agentPolicy must be owner or members' }), true;
@@ -1048,15 +1215,20 @@ async function handle(req, res, url, ctx0) {
         myWs.name = name; ctx.audit(sess, { action: 'workspace-rename', name }, true);   // T-0057
       }
       save(store);
-      return ctx.json(res, 200, { ok: true, name: myWs.name, agentPolicy: myWs.agentPolicy || 'owner', retentionDays: myWs.retentionDays || 0 }), true;
+      return ctx.json(res, 200, { ok: true, name: myWs.name, agentPolicy: myWs.agentPolicy || 'owner', retentionDays: myWs.retentionDays || 0, approval: approvalRules(myWs), approvalWarning, budget: budgetOf(myWs.id) }), true;
     }
     if (p === '/account/workspace/invite-reset' && m === 'POST') {
       if (!verified(me)) return ctx.json(res, 403, { error: 'Confirm your email address first (account page).', needsVerification: true }), true;   // T-0032
-      myWs.invite = newInvite(); save(store); ctx.audit(sess, { action: 'invite-rotate' }, true);   // T-0057
-      return ctx.json(res, 200, { ok: true, inviteUrl: `${PUBLIC_URL}/join/${myWs.invite}` }), true;
+      const role = b?.role === undefined ? 'member' : b.role;                                    // T-0199: member, viewer or requester link
+      if (!['member', ...GUEST_ROLES].includes(role)) return ctx.json(res, 400, { error: 'role must be member, viewer or requester' }), true;
+      if (role === 'member') { myWs.invite = newInvite(); save(store); ctx.audit(sess, { action: 'invite-rotate' }, true); return ctx.json(res, 200, { ok: true, inviteUrl: `${PUBLIC_URL}/join/${myWs.invite}` }), true; }   // T-0057
+      myWs.invites = myWs.invites || {};
+      if (b?.off) { delete myWs.invites[role]; save(store); ctx.audit(sess, { action: 'invite-off', role }, true); return ctx.json(res, 200, { ok: true, inviteUrl: null }), true; }
+      myWs.invites[role] = newInvite(); save(store); ctx.audit(sess, { action: 'invite-rotate', role }, true);
+      return ctx.json(res, 200, { ok: true, role, inviteUrl: `${PUBLIC_URL}/join/${myWs.invites[role]}` }), true;
     }
     if (p === '/account/workspace/tokens' && m === 'GET') {
-      return ctx.json(res, 200, { tokens: Object.values(myWs.tokens || {}).map(t => ({ id: t.id, name: t.name, username: t.username, createdAt: t.createdAt, lastUsed: t.lastUsed || null })) }), true;
+      return ctx.json(res, 200, { tokens: Object.values(myWs.tokens || {}).map(t => ({ id: t.id, name: t.name, username: t.username, createdAt: t.createdAt, lastUsed: t.lastUsed || null, mayAsk: !!t.mayAsk })) }), true;
     }
     if (p === '/account/workspace/tokens' && m === 'POST') {    // create: returns the token ONCE
       if (!verified(me)) return ctx.json(res, 403, { error: 'Confirm your email address first (account page).', needsVerification: true }), true;   // T-0032
@@ -1147,6 +1319,13 @@ async function handle(req, res, url, ctx0) {
       save(store);
       console.log(`[accounts] ${me.username} paired device ${code} as ${made.username} in ${myWs.id}`); ctx.audit(sess, { action: 'token-pair', username: made.username, tokenId: made.id }, true);   // T-0057
       return ctx.json(res, 200, { ok: true, username: made.username, id: made.id, message: `Paired: ${made.username} is collecting its token now. Nothing to copy.` }), true;
+    }
+    if (p === '/account/workspace/tokens/ask' && m === 'POST') {   // T-0188: may this agent ask a person to allow a tool use mid-job? Off by default; the owner decides per agent
+      if (!amOwner) return ctx.json(res, 403, { error: 'Only the workspace owner can do that.' }), true;
+      const t = myWs.tokens?.[String(b?.id || '')];
+      if (!t) return ctx.json(res, 404, { error: 'No such token.' }), true;
+      t.mayAsk = !!b?.on; save(store); ctx.audit(sess, { action: 'agent-may-ask', username: t.username, on: t.mayAsk }, true);
+      return ctx.json(res, 200, { ok: true, mayAsk: t.mayAsk }), true;
     }
     if (p === '/account/workspace/tokens/revoke' && m === 'POST') {
       const t = myWs.tokens?.[String(b?.id || '')];
@@ -1421,7 +1600,7 @@ function sessionRole(sess) {                                       // T-0059: 'a
   if (sess.agent) return 'agent';
   const store = load(); const a = sess.email ? store.accounts[sess.email] : null; if (!a) return null;
   const ws = store.workspaces[a.workspace]; if (!ws) return null;
-  return ws.owner === a.email ? 'owner' : (a.wsRole === 'admin' ? 'admin' : 'member');
+  return wsRoleOf(a, ws);                                          // T-0199: + viewer | requester
 }
 function mirrorsFor(wsId, room) {                                   // T-0062: enabled mirrors of one room
   if (!ENABLED || !wsId) return [];
@@ -1439,4 +1618,4 @@ function retentionSettings() {                                    // T-0037: [{ 
 function fleetLinkOf(wsId) { return (load().workspaces[wsId] || {}).fleet || null; }                       // T-0153: the stored link record (sealed key + status), or null
 function fleetMark(wsId, patch) { const store = load(); const f = (store.workspaces[wsId] || {}).fleet; if (!f) return; Object.assign(f, patch); save(store); }
 const fleetDir = () => path.dirname(FILE);                                                                  // where fleet-link.key lives (beside accounts.json)
-module.exports = { enabled: ENABLED, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };
+module.exports = { enabled: ENABLED, standingRules, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };

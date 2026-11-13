@@ -103,6 +103,99 @@ check("1.5.1: the worker refuses to start without WORKER_SERVICE: there are no b
 os.environ["WORKER_DENY"] = "private/*, *.pfx"; WX = load(); del os.environ["WORKER_DENY"]
 check("1.5.1: WORKER_DENY adds never-deploy patterns to the built-in ones", WX.denied("private/x.txt") and WX.denied("a.pfx") and WX.denied("auth.json") and WX.denied("data.db") and not WX.denied("app.py") and not W.denied("private/x.txt"))
 check("1.5.1: nothing from our own servers is left in the worker (paths, file names, account names)", not any(s in src for s in ("/opt/ghost", "Ghost" + "Admin", "fleet" + ".db", "control-plane")))
+print("cost reporting (1.6.0, T-0194)")
+txt, use = W.parse_claude_json('{"type":"result","result":"Changed app.py.\\nTested.","total_cost_usd":0.0421,"duration_ms":5120,"usage":{"input_tokens":10,"cache_read_input_tokens":2000,"output_tokens":300}}')
+check("the closing text and the cost come out of the JSON answer", txt.startswith("Changed app.py") and use == {"tokens_in": 2010, "tokens_out": 300, "ms": 5120, "cost_cents": 4.21}, (txt, use))
+check("an older plain-text answer is kept as it is, with no cost", W.parse_claude_json("Changed it.\nCANNOT: not here") == ("Changed it.\nCANNOT: not here", None))
+print("pull-request mode (1.7.0, T-0191 and T-0192)")
+import http.server, json, re, threading, time
+PRT = tempfile.mkdtemp(prefix="chamber-worker-pr-")
+ORIGIN, CLONE, SEED = os.path.join(PRT, "origin.git"), os.path.join(PRT, "clone"), os.path.join(PRT, "seed")
+subprocess.run(["git", "init", "-q", "--bare", "-b", "main", ORIGIN], check=True)
+subprocess.run(["git", "init", "-q", "-b", "main", SEED], check=True); open(os.path.join(SEED, "app.py"), "w").write("x = 1\n")
+subprocess.run(["git", "-C", SEED, "add", "-A"], check=True)
+subprocess.run(["git", "-C", SEED, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], check=True)
+subprocess.run(["git", "-C", SEED, "push", "-q", ORIGIN, "main"], check=True)
+subprocess.run(["git", "clone", "-q", ORIGIN, CLONE], check=True)
+GH = {"posts": [], "state": {}}
+class GHH(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj):
+        b = json.dumps(obj).encode(); self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        GH["posts"].append((self.path, body, self.headers.get("Authorization"))); n = len(GH["posts"]); GH["state"][n] = {"state": "open", "merged": False}
+        self._send(201, {"html_url": "https://github.com/o/r/pull/%d" % n, "number": n})
+    def do_GET(self):
+        m = re.match(r"^/repos/o/r/pulls/(\d+)$", self.path)
+        if m and int(m.group(1)) in GH["state"]: self._send(200, dict(number=int(m.group(1)), **GH["state"][int(m.group(1))]))
+        else: self._send(404, {})
+ghs = http.server.ThreadingHTTPServer(("127.0.0.1", 0), GHH); threading.Thread(target=ghs.serve_forever, daemon=True).start()
+fake = os.path.join(PRT, "fakeclaude")
+open(fake, "w").write("#!/usr/bin/env python3\nimport json, os, time\ntime.sleep(float(os.environ.get('FAKE_SLEEP', '0')))\n"
+                      "open(os.environ['FAKE_ENV_OUT'], 'w').write('\\n'.join(sorted(os.environ)))\n"
+                      "open('app.py', 'w').write('x = 2\\n')\nprint(json.dumps({'type': 'result', 'result': 'Changed app.py.\\nTested.\\nLook at x.', 'total_cost_usd': 0.01}))\n")
+os.chmod(fake, 0o755)
+os.environ.update({"WORKER_MODE": "pr", "WORKER_GITHUB_TOKEN": "gh-test-key", "WORKER_GITHUB_API": "http://127.0.0.1:%d" % ghs.server_address[1], "WORKER_GITHUB_REPO": "o/r",
+                   "WORKER_REPO": CLONE, "WORKER_CLAUDE": fake, "WORKER_HOME": os.path.join(PRT, "home"), "WORKER_PARALLEL": "9", "FAKE_ENV_OUT": os.path.join(PRT, "env.txt")})
+os.environ.pop("WORKER_SERVICE", None)
+WP = load(); calls = []
+WP.api = lambda m, p, b=None: (calls.append((m, p, b)), {})[1]
+WP.ticket = lambda verb, tid, **kw: (calls.append(("ticket", verb, tid, kw)), True)[1]
+WP.say = lambda text: calls.append(("say", text)); WP.presence = lambda *a, **k: None
+check("pull-request mode starts without WORKER_SERVICE; parallel is capped at 5; live mode stays one at a time", WP.MODE == "pr" and WP.PARALLEL == 5 and W.PARALLEL == 1)
+check("GitHub remotes are read as owner/name", WP.gh_slug("https://github.com/o/r.git") == "o/r" and WP.gh_slug("git@github.com:o/r.git") == "o/r" and WP.gh_slug("/srv/x.git") is None)
+ok, msg, info = WP.work_pr({"id": "T-0042", "title": "Set x to 2", "body": "x should be 2", "approved_by": "alice"})
+pushed = subprocess.run(["git", "-C", ORIGIN, "show", "chamber/T-0042:app.py"], capture_output=True, text=True).stdout
+post = GH["posts"][0] if GH["posts"] else ("", {}, "")
+check("an approved ticket becomes a pushed branch and a pull request into main, and the ticket records it", ok and pushed == "x = 2\n" and post[0] == "/repos/o/r/pulls" and post[1].get("head") == "chamber/T-0042" and post[1].get("base") == "main" and post[2] == "Bearer gh-test-key" and ("POST", "/api/tickets/T-0042/pr", info) in calls and info and info["state"] == "open", (ok, msg[:200], post[:2]))
+check("nothing is deployed: the clone's own checkout is unchanged", open(os.path.join(CLONE, "app.py")).read() == "x = 1\n")
+check("the GitHub key never reaches the AI's environment", "WORKER_GITHUB_TOKEN" not in open(os.environ["FAKE_ENV_OUT"]).read().split("\n"))
+st = {"done": {}, "prs": {"T-0042": info}}
+WP.poll_prs(st); still = "T-0042" in st["prs"]
+GH["state"][1] = {"state": "closed", "merged": True, "merged_at": "2026-11-13T00:00:00Z", "merged_by": {"login": "bob"}}
+WP.poll_prs(st)
+check("an open pull request is left alone; merging it closes the ticket with a note", still and "T-0042" not in st["prs"] and st["done"].get("T-0042") == "merged" and any(c[0] == "ticket" and c[1] == "close" and c[2] == "T-0042" and "bob" in c[3].get("note", "") for c in calls))
+ok2, msg2, info2 = WP.work_pr({"id": "T-0043", "title": "Another", "body": "x", "approved_by": "alice"}); st["prs"]["T-0043"] = info2
+GH["state"][info2["number"]] = {"state": "closed", "merged": False}; WP.poll_prs(st)
+check("closing the pull request without merging hands the ticket back", ok2 and st["done"].get("T-0043") == "pr closed" and any(c[0] == "ticket" and c[1] == "release" and c[2] == "T-0043" for c in calls))
+os.environ["FAKE_SLEEP"] = "1.5"; t0 = time.time()
+ths = [threading.Thread(target=WP.run_one_pr, args=({"id": "T-005%d" % i, "title": "job %d" % i, "body": "x", "approved_by": "alice"}, "T-005%d@0" % i, st)) for i in range(3)]
+for th in ths: th.start()
+for th in ths: th.join()
+took = time.time() - t0
+check("three tickets run side by side, each with its own branch and pull request", took < 4.2 and all("T-005%d" % i in st["prs"] for i in range(3)) and len(set(st["prs"]["T-005%d" % i]["number"] for i in range(3))) == 3, (round(took, 2), list(st["prs"])))
+print("standing approvals and refused claims (1.8.0, T-0200)")
+os.environ["FAKE_SLEEP"] = "0"
+import io, urllib.error
+GH["posts"].clear(); del calls[:]
+def api_refuse(m, p, b=None):
+    calls.append((m, p, b))
+    if p.endswith("/claim"): raise urllib.error.HTTPError("https://chamber.invalid" + p, 402, "Payment Required", {}, io.BytesIO(b'{"error":"The AI budget for November is used up"}'))
+    return {}
+WP.api = api_refuse; st2 = {"done": {}, "prs": {}}
+WP.run_one_pr({"id": "T-0061", "title": "job", "body": "x", "approved_by": "alice"}, "T-0061@0", st2)
+check("1.8.0: when Chamber refuses the claim (budget used up) nothing is worked or pushed, nothing is marked done, and it is looked at again later", not GH["posts"] and "T-0061@0" not in st2["done"] and st2.get("later", {}).get("T-0061", 0) > time.time() and not any(c[0] == "ticket" and c[1] == "release" for c in calls) and ("POST", "/api/tickets/T-0061/claim", {"by": "chamber-worker", "mode": "pr"}) in calls, (GH["posts"], st2))
+sent = {}
+def api_standing(verdict):
+    def f(m, p, b=None):
+        calls.append((m, p, b))
+        if p.endswith("/standing-check"): sent["files"] = b.get("files"); return verdict
+        return {}
+    return f
+SD = {"id": "S-1", "what": "fix failing tests", "agent": "chamber-worker", "by": "alice", "maxFiles": 5, "paths": ["tests/"]}
+WP.api = api_standing({"ok": False, "why": "the change touches files outside tests/: app.py"}); del calls[:]
+WP.run_one_pr({"id": "T-0062", "title": "Fix tests", "body": "x", "approved_by": "alice", "standing": SD}, "T-0062@0", st2)
+nopush = subprocess.run(["git", "-C", ORIGIN, "rev-parse", "--verify", "-q", "refs/heads/chamber/T-0062"], capture_output=True).returncode != 0
+check("1.8.0: a ticket started by a standing approval is checked by Chamber before anything is pushed; outside the limits nothing is pushed, the room is told, and it is not marked done", nopush and not GH["posts"] and sent.get("files") == ["app.py"] and not any("__pycache__" in f for f in sent.get("files")) and "T-0062@0" not in st2["done"] and any(c[0] == "say" and "went outside" in c[1] for c in calls), (nopush, sent, st2))
+WP.api = api_standing({"ok": True}); GH["posts"].clear(); del calls[:]
+ok3, msg3, info3 = WP.work_pr({"id": "T-0063", "title": "Fix tests", "body": "x", "approved_by": "alice", "standing": SD})
+check("1.8.0: inside the limits the pull request opens and says which standing approval started it", ok3 and GH["posts"] and "standing approval S-1" in GH["posts"][0][1].get("body", ""), (ok3, msg3[:200]))
+check("1.8.0: the worker tells Chamber its mode when it claims", any(c[0] == "POST" and c[1] == "/api/tickets/T-0063/claim" and (c[2] or {}).get("mode") == "pr" for c in calls))
+check("1.8.0: the live-folder loop also stops on a refused claim and skips standing tickets meant for another agent", 'msg.startswith("claim refused")' in src and 'sd.get("agent", "")).lower() != ME.lower()' in src)
+del os.environ["FAKE_SLEEP"]; ghs.shutdown()
+for k in ("WORKER_MODE", "WORKER_GITHUB_TOKEN", "WORKER_GITHUB_API", "WORKER_GITHUB_REPO", "WORKER_PARALLEL", "FAKE_ENV_OUT"): os.environ.pop(k, None)
+
 print("version")
 check("worker reports a worker-* version line", W.WORKER_VERSION.startswith("worker-") and W.WORKER_VERSION >= "worker-1.3.0", W.WORKER_VERSION)
 

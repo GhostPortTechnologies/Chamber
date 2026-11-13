@@ -1230,7 +1230,8 @@ function markPaid(...emails) {                                   // simulate a p
       check('front page has the contact form, a Contact link and the ask-for-an-invite link on sign-up', /id="contact-form"/.test(lp) && /id="nav-contact"/.test(lp) && /Ask us for one/.test(lp)); }
     console.log('front page and demo (T-0158, T-0161)');
     { const lp = (await call('GET', '/')).text; const dm = await call('GET', '/demo'); const og = await fetch(BASE + '/og.png');
-      check('front page leads with approve-from-your-phone, links the demo and has link-preview tags', /Approve it from your phone/.test(lp) && /href="\/demo"/.test(lp) && /property="og:image"/.test(lp) && /summary_large_image/.test(lp) && /id="how"/.test(lp));
+      { const cp = await call('GET', '/compare'); check('T-0195: the comparison page is public, names each tool with a link to its own site, and says what Chamber does not do yet', cp.status === 200 && /Chamber compared/.test(cp.text) && /code\.claude\.com\/docs\/en\/remote-control/.test(cp.text) && /github\.com\/slopus\/happy/.test(cp.text) && /What Chamber does not do yet/.test(cp.text) && /href="\/compare"/.test(lp)); }
+      check('T-0195: the front page leads with AI speed for developers and approvals and a record for the business, not with the phone; links the demo and has link-preview tags', /<h1>Your developers move at AI speed\./.test(lp) && /Vet, log and review the work your AI agents do/.test(lp) && !/<h1>[^<]*phone/i.test(lp) && !/<title>[^<]*phone/i.test(lp) && !/og:title" content="[^"]*phone/i.test(lp) && /Works on your phone too/.test(lp) && /href="\/demo"/.test(lp) && /property="og:image"/.test(lp) && /summary_large_image/.test(lp) && /id="how"/.test(lp));
       check('the preview picture is served as a PNG', og.status === 200 && /image\/png/.test(og.headers.get('content-type') || ''));
       check('demo page is public and says it is sample data', dm.status === 200 && /Demo with sample data/.test(dm.text));
       check('demo page talks to no API and has no form or input (nothing a visitor types can be sent)', !/fetch\(|XMLHttpRequest|EventSource|WebSocket|sendBeacon|<form|<input|<textarea|localStorage|document\.cookie/.test(dm.text)); }
@@ -1303,6 +1304,495 @@ function markPaid(...emails) {                                   // simulate a p
         const ml = await c5('POST', '/account/delete', { token: M.token, body: { password: PW, confirm: 'memb' } });
         check('the same limit guards the other password-confirmed actions (change email, delete account)', mw.every(s => s === 403) && ml.status === 429 && (await c5('GET', '/account/me', { token: M.token })).status === 200, JSON.stringify(mw) + ml.text);
       } finally { srv5.kill(); fake.close(); try { fs.rmSync(dir5, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('approval rules and business roles (T-0190, T-0199)');
+    { const port6 = 61950 + Math.floor(Math.random() * 1500), B6 = `http://127.0.0.1:${port6}`; const dir6 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-roles-'));
+      const env6 = { ...env, CHAMBER_PUBLIC_URL: B6, CHAMBER_PORT: String(port6), CHAMBER_MAX_GUESTS: '3', CHAMBER_DATA: path.join(dir6, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir6, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir6, 'tickets.json') };
+      const srv6 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env6, stdio: ['ignore', 'pipe', 'pipe'] }); let log6 = ''; srv6.stdout.on('data', d => log6 += d); srv6.stderr.on('data', d => log6 += d);
+      const c6 = async (method, p, { token, body, redirect } = {}) => { const r = await fetch(B6 + p, { method, redirect: redirect || 'follow', signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text, headers: r.headers }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c6('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', f6 = path.join(dir6, 'accounts.json');
+        const ed6 = fn => { const s = JSON.parse(fs.readFileSync(f6, 'utf8')); fn(s); fs.writeFileSync(f6, JSON.stringify(s)); };
+        const su6 = async (u, extra = {}) => (await c6('POST', '/account/signup', { body: { email: `${u}@test.invalid`, username: u, password: PW, ...extra } })).json || {};
+        const owner6 = async u => { const a = await su6(u, { invite: INVITE }); const l = (log6.match(new RegExp(`\\[accounts\\] verify link for ${u}: (\\S+)`)) || [])[1]; if (l) await fetch(l, { redirect: 'manual' });
+          ed6(s => Object.assign(s.accounts[`${u}@test.invalid`], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 })); return a; };
+        const O = await owner6('own6');
+        const memberCode = ((await c6('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
+        const M1 = await su6('mem1', { join: memberCode }), M2 = await su6('mem2', { join: memberCode });
+        const full = await c6('POST', '/account/signup', { body: { email: 'mem3@test.invalid', username: 'mem3', password: PW, join: memberCode } });
+        check('T-0199: full seats still run out at the limit (3 here)', !!M1.token && !!M2.token && full.status === 403 && /full/.test(full.json?.error || ''), full.text);
+        check('T-0199: a member cannot make viewer or requester links', (await c6('POST', '/account/workspace/invite-reset', { token: M1.token, body: { role: 'viewer' } })).status === 403);
+        const vl = await c6('POST', '/account/workspace/invite-reset', { token: O.token, body: { role: 'viewer' } }), rl = await c6('POST', '/account/workspace/invite-reset', { token: O.token, body: { role: 'requester' } });
+        const vCode = (vl.json?.inviteUrl || '').split('/join/')[1], rCode = (rl.json?.inviteUrl || '').split('/join/')[1], vi = await c6('GET', `/account/invite/${vCode}`);
+        check('T-0199: the owner makes a viewer link and a requester link, and the link says which role it gives', vl.status === 200 && rl.status === 200 && !!vCode && !!rCode && vCode !== memberCode && vi.json?.role === 'viewer', vl.text + rl.text + vi.text);
+        const V = await su6('view6', { join: vCode }), R = await su6('req6', { join: rCode });
+        const ws1 = (await c6('GET', '/account/workspace', { token: O.token })).json || {}, roleOfU = u => (ws1.members || []).find(x => x.username === u)?.role;
+        check('T-0199: guests join although every full seat is taken, with the role their link gives, and use no seat', !!V.token && !!R.token && roleOfU('view6') === 'viewer' && roleOfU('req6') === 'requester' && ws1.seats?.full === 3 && ws1.seats?.guests === 2, JSON.stringify(ws1.seats) + JSON.stringify((ws1.members || []).map(m => m.username + ':' + m.role)));
+        const vMsgs = await c6('GET', '/api/messages', { token: V.token }), vPost = await c6('POST', '/api/messages', { token: V.token, body: { text: 'viewer says hi' } }), vTix = await c6('POST', '/api/tickets', { token: V.token, body: { title: 'from a viewer', for: 'human', by: 'x' } });
+        check('T-0199: a viewer can read chat and the board but cannot post or propose', vMsgs.status === 200 && vPost.status === 403 && vTix.status === 403 && (await c6('GET', '/api/tickets', { token: V.token })).status === 200 && (await c6('GET', '/account/workspace', { token: V.token })).status === 200, [vMsgs.status, vPost.status, vTix.status].join());
+        const rBlocked = []; for (const p of ['/api/messages', '/api/tickets', '/api/events', '/api/rooms', '/api/presence', '/account/workspace', '/account/workspace/audit']) rBlocked.push(p + '=' + (await c6('GET', p, { token: R.token })).status);
+        check('T-0199: a requester cannot read chat, the board, the live stream, rooms, who is online, the member list or the record', rBlocked.every(x => x.endsWith('=403')), rBlocked.join(' '));
+        const rq1 = await c6('POST', '/api/requests', { token: R.token, body: { title: 'Add a contact form to the shop page', body: 'By Friday if possible.' } });
+        const rq2 = await c6('POST', '/api/requests', { token: M1.token, body: { title: 'A member request' } });
+        const mine = await c6('GET', '/api/requests', { token: R.token }), q = mine.json?.requests?.[0] || {};
+        check('T-0199: a requester sends a request and sees only their own, in plain words, without the internals', rq1.status === 200 && /^T-\d+$/.test(rq1.json?.id || '') && rq2.status === 200 && mine.status === 200 && mine.json.requests.length === 1 && q.title === 'Add a contact form to the shop page' && q.statusText === 'Waiting for approval' && !('updates' in q) && !('body' in q), mine.text.slice(0, 300));
+        check('T-0199: a request needs a real title', (await c6('POST', '/api/requests', { token: R.token, body: { title: 'x' } })).status === 400);
+        const onBoard = ((await c6('GET', '/api/tickets', { token: M1.token })).json?.tickets || []).find(t => t.id === rq1.json?.id);
+        check('T-0199: the request is on the team board as a proposed ticket tagged request, with who does it left open', !!onBoard && onBoard.status === 'proposed' && onBoard.proposed_by === 'req6' && (onBoard.tags || []).includes('request') && !onBoard.for, JSON.stringify(onBoard || {}).slice(0, 300));
+        const appR = await c6('GET', '/app', { token: R.token, redirect: 'manual' });
+        check('T-0199: a requester who opens the app is sent to their requests page, which is served', appR.status === 302 && /\/requests$/.test(appR.headers.get('location') || '') && (await c6('GET', '/requests', { token: R.token })).status === 200, appR.status + ' ' + appR.headers.get('location'));
+        check('T-0199: a requester cannot approve, not even their own request', (await c6('POST', `/api/tickets/${rq1.json?.id}/approve`, { token: R.token, body: { by: 'x' } })).status === 403);
+        const tk = async (who, title, priority = 'normal') => ((await c6('POST', '/api/tickets', { token: who.token, body: { title, for: 'agent', priority, by: 'x' } })).json?.message || '').match(/T-\d+/)?.[0];
+        const ap = (who, id) => c6('POST', `/api/tickets/${id}/approve`, { token: who.token, body: { by: 'x' } });
+        const find = async id => ((await c6('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(t => t.id === id) || {};
+        const t0 = await tk(M1, 'default rules ticket');
+        check('T-0190: with no rules set, the person who proposed may approve (as before)', (await ap(M1, t0)).status === 200 && (await find(t0)).status === 'approved');
+        check('T-0190: with no rules set, a viewer cannot approve', (await ap(V, rq1.json?.id)).status === 403);
+        check('T-0190: only the owner may change the approval rules', (await c6('POST', '/account/workspace', { token: M1.token, body: { approval: { noSelf: true } } })).status === 403);
+        const badTwo = await c6('POST', '/account/workspace', { token: O.token, body: { approval: { two: 'sometimes' } } }), badReq = await c6('POST', '/account/workspace', { token: O.token, body: { approval: { approvers: ['req6'] } } }), badUnknown = await c6('POST', '/account/workspace', { token: O.token, body: { approval: { approvers: ['nobody-here'] } } });
+        check('T-0190: unknown settings, requesters and strangers are refused as approvers', badTwo.status === 400 && badReq.status === 400 && badUnknown.status === 400, [badTwo.status, badReq.status, badUnknown.status].join());
+        const setR = await c6('POST', '/account/workspace', { token: O.token, body: { approval: { noSelf: true, two: 'high', approvers: ['mem1', 'VIEW6'] } } }), got = (await c6('GET', '/account/workspace', { token: O.token })).json?.approval || {};
+        check('T-0190: the owner sets the rules and they read back (names as the accounts spell them)', setR.status === 200 && !setR.json?.approvalWarning && got.noSelf === true && got.two === 'high' && JSON.stringify(got.approvers) === JSON.stringify(['mem1', 'view6']), JSON.stringify(got));
+        const meV = (await c6('GET', '/api/me', { token: V.token })).json || {}, meM2 = (await c6('GET', '/api/me', { token: M2.token })).json || {}, meO = (await c6('GET', '/api/me', { token: O.token })).json || {};
+        check('T-0190: the app is told who may approve (named viewer yes, unnamed member no, owner always)', meV.canApprove === true && meV.wsRole === 'viewer' && meM2.canApprove === false && meO.canApprove === true, JSON.stringify([meV.canApprove, meM2.canApprove, meO.canApprove]));
+        const t1 = await tk(M1, 'normal ticket by mem1'), selfA = await ap(M1, t1), notNamed = await ap(M2, t1), byViewer = await ap(V, t1), t1s = await find(t1);
+        check('T-0190: nobody approves their own ticket, someone not named cannot approve, and a named viewer can', selfA.status === 403 && /proposed/.test(selfA.json?.error || '') && notNamed.status === 403 && byViewer.status === 200 && t1s.status === 'approved' && t1s.approved_by === 'view6', JSON.stringify([selfA.json, notNamed.json, byViewer.json]));
+        check('T-0199: a viewer who may approve still cannot claim, cancel or close', (await c6('POST', `/api/tickets/${t1}/claim`, { token: V.token, body: { by: 'x' } })).status === 403 && (await c6('POST', `/api/tickets/${t1}/cancel`, { token: V.token, body: { by: 'x', reason: 'no' } })).status === 403);
+        const t2 = await tk(M2, 'risky change', 'high'), a1 = await ap(O, t2), again = await ap(O, t2), t2a = await find(t2);
+        check('T-0190: a high-priority ticket needs two different people: the first approval waits, and the same person cannot approve twice', a1.status === 200 && /waits for another person/.test(a1.json?.message || '') && again.status === 400 && t2a.status === 'proposed' && (t2a.approvals || []).length === 1 && t2a.approvals_needed === 2, JSON.stringify([a1.json, again.json, t2a.status, t2a.approvals]));
+        await c6('POST', `/api/tickets/${t2}/edit`, { token: M2.token, body: { by: 'x', title: 'risky change, now bigger' } }); const t2e = await find(t2);
+        check('T-0190: changing a ticket after its first approval clears that approval, so the new version is approved again', (t2e.approvals || []).length === 0 && (t2e.updates || []).some(u => /cleared/.test(u.note || '')), JSON.stringify(t2e.approvals));
+        await ap(O, t2); const a3 = await ap(M1, t2), t2d = await find(t2);
+        check('T-0190: a second, different person completes the approval, and both are on the ticket', a3.status === 200 && t2d.status === 'approved' && t2d.approved_by === 'mem1' && (t2d.approvals || []).map(a => a.by).join() === 'own6,mem1', JSON.stringify(t2d.approvals));
+        const S = await owner6('solo6'), setS = await c6('POST', '/account/workspace', { token: S.token, body: { approval: { noSelf: true, two: 'all' } } });
+        const ts = await tk(S, 'solo ticket'), sa = await ap(S, ts), tsd = ((await c6('GET', '/api/tickets', { token: S.token })).json?.tickets || []).find(t => t.id === ts) || {};
+        check('T-0190: in a one-person workspace the rules cannot be met, so they do not block; the owner is warned and the ticket says so', setS.status === 200 && /cannot fully apply/.test(setS.json?.approvalWarning || '') && sa.status === 200 && tsd.status === 'approved' && (tsd.updates || []).some(u => /could not be met/.test(u.note || '')), JSON.stringify([setS.json?.approvalWarning, sa.json, tsd.status]));
+        const toViewer = await c6('POST', '/account/workspace/role', { token: O.token, body: { username: 'mem2', role: 'viewer' } }), m2post = await c6('POST', '/api/messages', { token: M2.token, body: { text: 'now a viewer' } });
+        const backFull = await c6('POST', '/account/workspace/role', { token: O.token, body: { username: 'view6', role: 'member' } }), noSeat = await c6('POST', '/account/workspace/role', { token: O.token, body: { username: 'mem2', role: 'member' } });
+        const noTransfer = await c6('POST', '/account/workspace/transfer', { token: O.token, body: { username: 'mem2', password: PW } });
+        check('T-0199: the owner moves people between roles, a new viewer stops writing at once, full seats are still counted, and a viewer cannot be handed the workspace', toViewer.status === 200 && m2post.status === 403 && backFull.status === 200 && noSeat.status === 409 && noTransfer.status === 400, [toViewer.status, m2post.status, backFull.status, noSeat.status, noTransfer.status].join());
+        const vl2 = await c6('POST', '/account/workspace/invite-reset', { token: O.token, body: { role: 'viewer' } }), off = await c6('POST', '/account/workspace/invite-reset', { token: O.token, body: { role: 'requester', off: true } });
+        check('T-0199: a new viewer link stops the old one, and a requester link can be turned off', vl2.status === 200 && off.status === 200 && (await c6('GET', `/account/invite/${vCode}`)).status === 404 && (await c6('GET', `/account/invite/${rCode}`)).status === 404 && (await c6('POST', '/account/signup', { body: { email: 'late@test.invalid', username: 'late6', password: PW, join: rCode } })).status === 400);
+        await c6('POST', '/account/workspace', { token: O.token, body: { agentPolicy: 'members' } });
+        const tokR = await c6('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Bot six', username: 'bot6' } }), cm = (await c6('GET', '/api/me', { token: tokR.json?.token })).json?.commanders || [];
+        check('T-0199: with "every member" as the agent rule, viewers and requesters still cannot instruct agents', cm.includes('own6') && cm.includes('mem1') && cm.includes('view6') && !cm.includes('req6') && !cm.includes('mem2'), JSON.stringify(cm) + tokR.text.slice(0, 120));
+        check('T-0199: an agent cannot send a request', (await c6('POST', '/api/requests', { token: tokR.json?.token, body: { title: 'agent request' } })).status === 403);
+      } finally { srv6.kill(); try { fs.rmSync(dir6, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('laptop install without admin rights (T-0186)');
+    { const port7 = 63500 + Math.floor(Math.random() * 1500), B7 = `http://127.0.0.1:${port7}`; const dir7 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-laptop-'));
+      const env7 = { ...env, CHAMBER_PUBLIC_URL: B7, CHAMBER_PORT: String(port7), CHAMBER_DATA: path.join(dir7, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir7, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir7, 'tickets.json') };
+      const srv7 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env7, stdio: ['ignore', 'pipe', 'pipe'] }); let log7 = ''; srv7.stdout.on('data', d => log7 += d); srv7.stderr.on('data', d => log7 += d);
+      const c7 = async (method, p, { token, body } = {}) => { const r = await fetch(B7 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c7('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      const home = path.join(dir7, 'home'), proj = path.join(home, 'code', 'shop'); fs.mkdirSync(proj, { recursive: true });
+      const { spawnSync } = require('child_process');
+      const sh = (args, extra = {}) => spawnSync('sh', [path.join(APP, 'public', 'laptop.sh'), ...args], { encoding: 'utf8', timeout: 30000, env: { PATH: process.env.PATH, HOME: home, CHAMBER_NO_START: '1', ...extra } });
+      let agent = null;
+      try {
+        const O = (await c7('POST', '/account/signup', { body: { email: 'own7@test.invalid', username: 'own7', password: 'password-for-tests', invite: INVITE } })).json || {};
+        const l7 = (log7.match(/\[accounts\] verify link for own7: (\S+)/) || [])[1]; if (l7) await fetch(l7, { redirect: 'manual' });
+        const f7 = path.join(dir7, 'accounts.json'), s7 = JSON.parse(fs.readFileSync(f7, 'utf8')); Object.assign(s7.accounts['own7@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f7, JSON.stringify(s7));
+        const tok = (await c7('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Laptop', username: 'lap7' } })).json?.token;
+        const inHome = sh(['--url', B7, '--token', tok || 'chk_x', '--workdir', home]);
+        check('T-0186: it refuses to give the agent the whole home folder', inHome.status !== 0 && /one project folder/.test(inHome.stderr), inHome.stderr.slice(0, 200));
+        check('T-0186: it refuses something that is not an agent key', sh(['--url', B7, '--token', 'not-a-key', '--workdir', proj]).status !== 0);
+        const r1 = sh(['--url', B7, '--token', tok, '--workdir', proj]);
+        const conf = path.join(home, '.config', 'chamber', 'agent.env'), cdir = path.dirname(conf), adir = path.join(home, '.chamber');
+        const txt = fs.existsSync(conf) ? fs.readFileSync(conf, 'utf8') : '', mode = f => fs.existsSync(f) ? (fs.statSync(f).mode & 0o777).toString(8) : 'missing';
+        check('T-0186: with no admin rights it installs into the home folder: the agent, and a settings file only the user can read with the key, the project folder and the laptop marker', r1.status === 0 && fs.existsSync(path.join(adir, 'chamber-agent.py')) && mode(conf) === '600' && mode(cdir) === '700' && mode(adir) === '700'
+          && txt.includes(`CHAMBER_TOKEN=${tok}`) && txt.includes(`CHAMBER_WORKDIR=${proj}`) && txt.includes('CHAMBER_INSTALL=laptop') && txt.includes('CHAMBER_ALLOWED_TOOLS=Read,Grep,Glob'), JSON.stringify({ st: r1.status, err: r1.stderr.slice(0, 200), conf: mode(conf), cdir: mode(cdir), adir: mode(adir) }));
+        agent = spawn('sh', [path.join(APP, 'public', 'laptop.sh'), '--url', B7, '--workdir', proj], { env: { PATH: process.env.PATH, HOME: home }, stdio: ['ignore', 'pipe', 'pipe'], detached: true }); let alog = ''; agent.stdout.on('data', d => alog += d); agent.stderr.on('data', d => alog += d);
+        let online = false; for (let i = 0; i < 60 && !online; i++) { await new Promise(r => setTimeout(r, 500)); const pr = (await c7('GET', '/api/presence', { token: O.token })).json; online = ((pr && pr.presence) || []).some(u => u.username === 'lap7' && u.role === 'ai' && u.state === 'online'); }
+        check('T-0186: run again in the foreground with the key it saved, the agent connects and shows up online', online, alog.slice(-400));
+        try { process.kill(-agent.pid, 'SIGTERM'); } catch {} agent = null;
+        const bg = sh(['--url', B7, '--workdir', proj, '--background']), unit = path.join(home, '.config', 'systemd', 'user', 'chamber-agent.service'), ut = fs.existsSync(unit) ? fs.readFileSync(unit, 'utf8') : '';
+        check('T-0186: --background on Linux writes a user service that runs the agent with its own settings file in the project folder', bg.status === 0 && ut.includes('--env') && ut.includes(conf) && ut.includes(`WorkingDirectory=${proj}`) && /Environment="PATH=/.test(ut), bg.stderr.slice(0, 200));
+        const un = sh(['--uninstall']);
+        check('T-0186: --uninstall removes the agent, its settings with the key, and the service, and reminds you to delete the key in Chamber', un.status === 0 && !fs.existsSync(adir) && !fs.existsSync(conf) && !fs.existsSync(unit) && /delete its key in Chamber/.test(un.stdout), un.stdout.slice(0, 200));
+      } finally { if (agent) { try { process.kill(-agent.pid, 'SIGTERM'); } catch {} } srv7.kill(); try { fs.rmSync(dir7, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('review that talks back (T-0189)');
+    { const port8 = 58200 + Math.floor(Math.random() * 1500), B8 = `http://127.0.0.1:${port8}`; const dir8 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-review-'));
+      const env8 = { ...env, CHAMBER_PUBLIC_URL: B8, CHAMBER_PORT: String(port8), CHAMBER_DATA: path.join(dir8, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir8, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir8, 'tickets.json') };
+      const srv8 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env8, stdio: ['ignore', 'pipe', 'pipe'] }); let log8 = ''; srv8.stdout.on('data', d => log8 += d); srv8.stderr.on('data', d => log8 += d);
+      const c8 = async (method, p, { token, body } = {}) => { const r = await fetch(B8 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c8('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const O = (await c8('POST', '/account/signup', { body: { email: 'own8@test.invalid', username: 'own8', password: 'password-for-tests', invite: INVITE } })).json || {};
+        const l8 = (log8.match(/\[accounts\] verify link for own8: (\S+)/) || [])[1]; if (l8) await fetch(l8, { redirect: 'manual' });
+        const f8 = path.join(dir8, 'accounts.json'), s8 = JSON.parse(fs.readFileSync(f8, 'utf8')); Object.assign(s8.accounts['own8@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f8, JSON.stringify(s8));
+        const code8 = ((await c8('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
+        const M = (await c8('POST', '/account/signup', { body: { email: 'mem8@test.invalid', username: 'mem8', password: 'password-for-tests', join: code8 } })).json || {};
+        await c8('POST', '/account/workspace', { token: O.token, body: { agentPolicy: 'members' } });
+        const AG = (await c8('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Coder', username: 'coder8' } })).json?.token;
+        await c8('POST', '/api/ping', { token: AG, body: { username: 'coder8', version: '3.20.0', rooms: ['general'] } });
+        const prop = await c8('POST', '/api/proposals', { token: AG, body: { title: 'Set x to 2', body: 'Change x from 1 to 2 in app.py.', room: 'general' } });
+        const tid = prop.json?.id;
+        const v1 = 'diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,2 @@\n-x = 1\n+x = 2\n y = 0\n';
+        const att1 = await c8('POST', `/api/tickets/${tid}/diff`, { token: AG, body: { diff: v1, plain: { what: 'x becomes 2' } } });
+        check('T-0189: the first change attached to a ticket is version 1', !!tid && att1.status === 201 && att1.json?.meta?.version === 1, att1.text.slice(0, 200));
+        const cBad = await c8('POST', `/api/tickets/${tid}/comments`, { token: M.token, body: { line: 99, text: 'nope' } });
+        const cOk = await c8('POST', `/api/tickets/${tid}/comments`, { token: M.token, body: { line: 6, text: 'Use 3 here, not 2.' } });
+        check('T-0189: a comment goes on a real line of the change and knows which file and code it is about; a line outside the change is refused', cBad.status === 400 && cOk.status === 201 && cOk.json?.comment?.file === 'app.py' && cOk.json.comment.code === '+x = 2' && cOk.json.comment.version === 1, cOk.text.slice(0, 200));
+        const agentAsks = await c8('POST', `/api/tickets/${tid}/changes`, { token: AG, body: { note: 'x' } });
+        const emptyAsk = await c8('POST', `/api/tickets/${tid}/reviewer`, { token: O.token, body: { reviewer: 'coder8' } });
+        check('T-0189: an agent cannot ask for changes, and an agent cannot be the reviewer', agentAsks.status === 403 && emptyAsk.status === 400, agentAsks.text + emptyAsk.text);
+        const rv = await c8('POST', `/api/tickets/${tid}/reviewer`, { token: O.token, body: { reviewer: 'mem8' } });
+        const tick = async () => ((await c8('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(t => t.id === tid) || {};
+        const msgs = async () => (await c8('GET', '/api/messages?since=0', { token: O.token })).json?.messages || [];
+        check('T-0189: the owner names a reviewer, who gets a mention in chat', rv.status === 200 && (await tick()).reviewer === 'mem8' && (await msgs()).some(x => x.username === 'own8' && /@mem8 please review the proposed change on/.test(x.text)), rv.text);
+        const ask = await c8('POST', `/api/tickets/${tid}/changes`, { token: M.token, body: { note: 'Please make it 3.' } }), t1 = await tick();
+        const told = (await msgs()).find(x => x.username === 'mem8' && x.text.startsWith('@coder8 Changes asked for on ' + tid));
+        check('T-0189: asking for changes records it on the ticket and tells the agent in chat, as the person who asked, with the line comments', ask.status === 200 && ask.json?.agent === 'coder8' && ask.json.agentWillAct === true && t1.changes?.by === 'mem8' && t1.changes.version === 1
+          && !!told && /Use 3 here, not 2\./.test(told.text) && /app\.py \(diff line 6\)/.test(told.text) && /Send a new version of the change for/.test(told.text), JSON.stringify([ask.json, t1.changes, told && told.text]));
+        const blocked = await c8('POST', `/api/tickets/${tid}/approve`, { token: O.token, body: { by: 'x' } });
+        check('T-0189: the ticket cannot be approved while changes are asked for', blocked.status === 400 && /changes were asked for/.test(blocked.json?.error || ''), blocked.text);
+        const v2 = 'diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,2 @@\n-x = 1\n+x = 3\n y = 0\n';
+        const att2 = await c8('POST', `/api/tickets/${tid}/diff`, { token: AG, body: { diff: v2 } }), t2 = await tick();
+        const now = await c8('GET', `/api/tickets/${tid}/diff`, { token: M.token }), old = await c8('GET', `/api/tickets/${tid}/diff?version=1`, { token: M.token });
+        check('T-0189: the agent attaches version 2; the request is answered, both versions are kept, and the ticket says so', att2.status === 201 && att2.json?.meta?.version === 2 && !t2.changes && (t2.updates || []).some(u => /NEW VERSION 2/.test(u.note))
+          && now.json?.current === 2 && now.json.diff.includes('+x = 3') && (now.json.versions || []).length === 2 && old.status === 200 && old.json.diff.includes('+x = 2'), JSON.stringify([att2.json?.meta, now.json?.versions]));
+        const cm = (await c8('GET', `/api/tickets/${tid}/comments`, { token: M.token })).json?.comments || [];
+        check('T-0189: the comment stays with version 1', cm.length === 1 && cm[0].version === 1);
+        check('T-0189: a missing version answers 404', (await c8('GET', `/api/tickets/${tid}/diff?version=7`, { token: M.token })).status === 404);
+        const ask2 = await c8('POST', `/api/tickets/${tid}/changes`, { token: O.token, body: { note: 'One more thing.' } });
+        const wd1 = await c8('POST', `/api/tickets/${tid}/changes`, { token: AG, body: { withdraw: true } }), wd2 = await c8('POST', `/api/tickets/${tid}/changes`, { token: O.token, body: { withdraw: true } });
+        const ok = await c8('POST', `/api/tickets/${tid}/approve`, { token: M.token, body: { by: 'x' } }), t3 = await tick();
+        check('T-0189: a request can be withdrawn by the person who asked, and then the new version can be approved', ask2.status === 200 && wd1.status === 403 && wd2.status === 200 && ok.status === 200 && t3.status === 'approved', [ask2.status, wd1.status, wd2.status, ok.status, t3.status].join() + ' ' + ok.text);
+        check('T-0189: nothing more can be asked once the ticket is approved', (await c8('POST', `/api/tickets/${tid}/changes`, { token: M.token, body: { note: 'late' } })).status === 409);
+      } finally { srv8.kill(); try { fs.rmSync(dir8, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('a record nobody can quietly change, and what each job cost (T-0194)');
+    { const chain = require(path.join(APP, 'auditchain.js'));
+      const e1 = { ts: 1, actor: 'a', action: 'x', n: 1, prev: null }; e1.h = chain.hash(e1);
+      const e2 = { ts: 2, actor: 'b', action: 'y', n: 2, prev: e1.h }; e2.h = chain.hash(e2);
+      const e3 = { ts: 3, actor: 'c', action: 'z', n: 3, prev: e2.h }; e3.h = chain.hash(e3);
+      check('T-0194: an untouched record checks out', chain.verify([e1, e2, e3], { n: 3, h: e3.h }).ok === true);
+      const ch1 = chain.verify([e1, { ...e2, actor: 'mallory' }, e3], { n: 3, h: e3.h }), ch2 = chain.verify([e1, e3], { n: 3, h: e3.h }), ch3 = chain.verify([e1, e2], { n: 3, h: e3.h }), ch4 = chain.verify([{ ts: 0, actor: 'old', action: 'w' }, e1, e2, e3], { n: 3, h: e3.h });
+      check('T-0194: a changed entry, a removed entry and removed newest entries are each caught at the right place; older unchecked entries are only counted', !ch1.ok && ch1.at.n === 2 && /changed/.test(ch1.reason) && !ch2.ok && ch2.at.n === 3 && !ch3.ok && /newest/.test(ch3.reason) && ch4.ok && ch4.before === 1 && ch4.checked === 3, JSON.stringify([ch1, ch2, ch3, ch4]).slice(0, 300));
+      const v = await call('GET', '/account/workspace/audit/verify', { token: A.token });
+      check('T-0194: the record written during these tests checks out, and the page gets its newest check value', v.status === 200 && v.json?.ok === true && v.json.checked > 5 && /^[0-9a-f]{64}$/.test(v.json.head || ''), v.text.slice(0, 200));
+      const adir = path.join(TMP, 'ws', A.account.workspace.id), af = fs.readdirSync(adir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort().pop(), apath = path.join(adir, af), orig = fs.readFileSync(apath, 'utf8');
+      const lines = orig.split('\n'), idx = lines.map((l, k) => [l, k]).filter(([l]) => l.includes('"h":"')).map(([, k]) => k)[2];
+      const bad = JSON.parse(lines[idx]), badN = bad.n; bad.actor = 'mallory'; lines[idx] = JSON.stringify(bad); fs.writeFileSync(apath, lines.join('\n'));
+      const v2 = await call('GET', '/account/workspace/audit/verify', { token: A.token }); fs.writeFileSync(apath, orig); const v3 = await call('GET', '/account/workspace/audit/verify', { token: A.token });
+      check('T-0194: editing one entry on the server\'s disk is caught and the check names that entry; putting it back makes it intact again', v2.json?.ok === false && v2.json.at?.n === badN && /changed/.test(v2.json.reason || '') && v3.json?.ok === true, JSON.stringify(v2.json).slice(0, 300));
+      const exj = await (await fetch(BASE + '/account/workspace/audit?format=json', { headers: { Authorization: `Bearer ${A.token}` } })).json(), tmpf = path.join(TMP, 'audit-export.json'); fs.writeFileSync(tmpf, JSON.stringify(exj));
+      const { execFileSync } = require('child_process'), runV = () => { try { return 'EXIT 0 ' + execFileSync(process.execPath, [path.join(APP, 'tools', 'verify-audit.js'), tmpf], { encoding: 'utf8' }); } catch (e) { return 'EXIT ' + e.status + ' ' + (e.stdout || ''); } };
+      const out1 = runV(); exj.entries[3].action = 'changed-later'; fs.writeFileSync(tmpf, JSON.stringify(exj)); const out2 = runV();
+      check('T-0194: an export carries the check, tools/verify-audit.js confirms it without the server, and catches a change made to the file', exj.chain?.ok === true && /^EXIT 0 INTACT/.test(out1) && /^EXIT 1 NOT INTACT/.test(out2), out1.slice(0, 120) + ' | ' + out2.slice(0, 160));
+      const us = await call('GET', '/api/usage?days=30', { token: A.token });
+      check('T-0194: the usage page adds up the agents\' answers by agent and by week, and says how cost is counted', us.status === 200 && us.json?.total?.answers >= 1 && Object.keys(us.json.byAgent || {}).length >= 1 && Object.keys(us.json.byWeek || {}).length >= 1 && /API prices/.test(us.json.note || ''), us.text.slice(0, 300));
+      const tk = await call('POST', '/api/tickets', { token: A.token, body: { title: 'usage ticket T-0194 check', for: 'agent', by: 'x' } }), utid = (tk.json?.message || '').match(/T-\d+/)?.[0];
+      const lg = await call('POST', `/api/tickets/${utid}/log`, { token: A.token, body: { by: 'x', usage: { cost_cents: 12.5, ms: 3000, tokens_in: 100, tokens_out: 20 } } }), lg2 = await call('POST', `/api/tickets/${utid}/log`, { token: A.token, body: { by: 'x', usage: { cost_cents: -1 } } });
+      await call('POST', `/api/tickets/${utid}/log`, { token: A.token, body: { by: 'x', usage: { cost_cents: 2.5, ms: 1000 } } });
+      const tu = ((await call('GET', '/api/tickets', { token: A.token })).json?.tickets || []).find(t => t.id === utid)?.usage, ut = ((await call('GET', '/api/usage?days=30', { token: A.token })).json?.tickets || []).find(t => t.id === utid);
+      check('T-0194: the ticket worker reports what each run cost; totals are kept on the ticket and show on the usage page; nonsense is refused', lg.status === 200 && lg2.status === 400 && tu?.runs === 2 && tu.cost_cents === 15 && tu.ms === 4000 && ut?.worker?.cost_cents === 15, JSON.stringify([tu, ut]));
+    }
+    console.log('nobody waits silently for an approval (T-0201)');
+    { const port10 = 56500 + Math.floor(Math.random() * 1500), B10 = `http://127.0.0.1:${port10}`; const dir10 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-remind-'));
+      const env10 = { ...env, CHAMBER_PUBLIC_URL: B10, CHAMBER_PORT: String(port10), CHAMBER_DATA: path.join(dir10, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir10, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir10, 'tickets.json') };
+      const srv10 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env10, stdio: ['ignore', 'pipe', 'pipe'] }); let log10 = ''; srv10.stdout.on('data', d => log10 += d); srv10.stderr.on('data', d => log10 += d);
+      const c10 = async (method, p, { token, body } = {}) => { const r = await fetch(B10 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c10('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', O = (await c10('POST', '/account/signup', { body: { email: 'own10@test.invalid', username: 'own10', password: PW, invite: INVITE } })).json || {};
+        const l10 = (log10.match(/\[accounts\] verify link for own10: (\S+)/) || [])[1]; if (l10) await fetch(l10, { redirect: 'manual' });
+        const f10 = path.join(dir10, 'accounts.json'), s10 = JSON.parse(fs.readFileSync(f10, 'utf8')); Object.assign(s10.accounts['own10@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f10, JSON.stringify(s10));
+        const code10 = ((await c10('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
+        const M1 = (await c10('POST', '/account/signup', { body: { email: 'mra@test.invalid', username: 'mra', password: PW, join: code10 } })).json || {}, M2 = (await c10('POST', '/account/signup', { body: { email: 'mrb@test.invalid', username: 'mrb', password: PW, join: code10 } })).json || {};
+        const set = ap => c10('POST', '/account/workspace', { token: O.token, body: { approval: ap } });
+        const b1 = await set({ remindMin: 60, escalateMin: 30, backup: 'mrb' }), b2 = await set({ remindMin: 60, escalateMin: 240 }), b3 = await set({ remindMin: 60, escalateMin: 240, backup: 'nobody' }), b4 = await set({ remindMin: -5 });
+        check('T-0201: the backup must come later than the reminder, must be named, must be a person who may approve, and times must make sense', [b1, b2, b3, b4].every(x => x.status === 400), [b1, b2, b3, b4].map(x => x.status).join());
+        const ok = await set({ remindMin: 60, escalateMin: 240, backup: 'mrb' }), back = (await c10('GET', '/account/workspace', { token: O.token })).json?.approval || {};
+        check('T-0201: the owner switches reminders on and they read back', ok.status === 200 && back.remindMin === 60 && back.escalateMin === 240 && back.backup === 'mrb', JSON.stringify(back));
+        const prop = async (who, title) => ((await c10('POST', '/api/tickets', { token: who.token, body: { title, for: 'agent', by: 'x' } })).json?.message || '').match(/T-\d+/)?.[0];
+        const t1 = await prop(M1, 'first waiting ticket'), t2 = await prop(M1, 'second waiting ticket'), t3 = await prop(M1, 'approved quickly');
+        await c10('POST', `/api/tickets/${t3}/approve`, { token: O.token, body: { by: 'x' } });
+        const base = Date.now(), tick = async min => (await c10('GET', `/api/_test/tick?at=${base + min * 6e4}`)).json?.reminded || [];
+        const fromBot = async () => ((await c10('GET', '/api/messages?since=0', { token: O.token })).json?.messages || []).filter(x => x.username === 'chamber-reminder');
+        const r0 = await tick(30), r1 = await tick(61), m1 = await fromBot(), r2 = await tick(62);
+        check('T-0201: nothing before the time; after it, ONE message reminds everyone who may approve (not the proposer) about both waiting tickets, and not the approved one; nothing twice', r0.length === 0 && r1.length === 2 && r1.every(x => x.stage === 'reminded' && x.to.join() === 'own10,mrb') && m1.length === 1
+          && m1[0].text.startsWith('@own10 @mrb') && m1[0].text.includes(t1) && m1[0].text.includes(t2) && !m1[0].text.includes(t3) && r2.length === 0, JSON.stringify([r0, r1, m1.map(x => x.text), r2]).slice(0, 500));
+        const r3 = await tick(241), m3 = await fromBot(), r4 = await tick(600);
+        check('T-0201: later the backup approver is told, once, in one message', r3.length === 2 && r3.every(x => x.stage === 'escalated' && x.to.join() === 'mrb') && m3.length === 2 && /^@mrb Nobody has decided/.test(m3[1].text) && r4.length === 0, JSON.stringify([r3, m3.map(x => x.text.slice(0, 60)), r4]).slice(0, 400));
+        const t4 = await prop(M1, 'ticket with a reviewer'); await c10('POST', `/api/tickets/${t4}/reviewer`, { token: O.token, body: { reviewer: 'mrb' } });
+        const r5 = (await c10('GET', `/api/_test/tick?at=${Date.now() + 61 * 6e4}`)).json?.reminded || [];
+        check('T-0201: a ticket with a named reviewer reminds only the reviewer', r5.length === 1 && r5[0].ticket === t4 && r5[0].to.join() === 'mrb', JSON.stringify(r5));
+        const bot = ((await c10('GET', '/api/presence', { token: O.token })).json?.presence || []).find(u => u.username === 'chamber-reminder');
+        check('T-0201: reminders come from an ai identity, so agents never answer them', bot?.role === 'ai', JSON.stringify(bot));
+      } finally { srv10.kill(); try { fs.rmSync(dir10, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('a weekly report for the business (T-0202)');
+    { const port11 = 54800 + Math.floor(Math.random() * 1500), B11 = `http://127.0.0.1:${port11}`; const dir11 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-report-'));
+      const env11 = { ...env, CHAMBER_PUBLIC_URL: B11, CHAMBER_PORT: String(port11), CHAMBER_DATA: path.join(dir11, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir11, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir11, 'tickets.json') };
+      const srv11 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env11, stdio: ['ignore', 'pipe', 'pipe'] }); let log11 = ''; srv11.stdout.on('data', d => log11 += d); srv11.stderr.on('data', d => log11 += d);
+      const c11 = async (method, p, { token, body } = {}) => { const r = await fetch(B11 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text, headers: r.headers }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c11('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', O = (await c11('POST', '/account/signup', { body: { email: 'own11@test.invalid', username: 'own11', password: PW, invite: INVITE } })).json || {};
+        const l11 = (log11.match(/\[accounts\] verify link for own11: (\S+)/) || [])[1]; if (l11) await fetch(l11, { redirect: 'manual' });
+        const f11 = path.join(dir11, 'accounts.json'), s11 = JSON.parse(fs.readFileSync(f11, 'utf8')); Object.assign(s11.accounts['own11@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f11, JSON.stringify(s11));
+        await c11('POST', '/account/workspace', { token: O.token, body: { name: 'Shop Team' } });
+        const code11 = ((await c11('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
+        const M = (await c11('POST', '/account/signup', { body: { email: 'mrep@test.invalid', username: 'mrep', password: PW, join: code11 } })).json || {};
+        check('T-0202: a member cannot change the report settings', (await c11('POST', '/account/workspace/report', { token: M.token, body: { link: 'make' } })).status === 403);
+        const bad1 = await c11('POST', '/account/workspace/report', { token: O.token, body: { recipients: 'not-an-email' } }), bad2 = await c11('POST', '/account/workspace/report', { token: O.token, body: { enabled: true, recipients: [] } });
+        const set = await c11('POST', '/account/workspace/report', { token: O.token, body: { enabled: true, recipients: 'boss@test.invalid, Client@Test.invalid', link: 'make' } });
+        const link = set.json?.report?.linkUrl || '';
+        check('T-0202: the owner lists who gets it (addresses checked) and makes a private link', bad1.status === 400 && bad2.status === 400 && set.status === 200 && set.json.report.enabled && set.json.report.recipients.join() === 'boss@test.invalid,client@test.invalid' && /\/report\/[A-Za-z0-9_-]{20,}$/.test(link), set.text.slice(0, 300));
+        await c11('POST', '/api/messages', { token: M.token, body: { text: 'PRIVATE-CHAT-LINE that must never reach a report' } });
+        const prop = async (title) => ((await c11('POST', '/api/tickets', { token: M.token, body: { title, for: 'agent', by: 'x' } })).json?.message || '').match(/T-\d+/)?.[0];
+        const t1 = await prop('Add a contact form'), t2 = await prop('Price list page');
+        await c11('POST', `/api/tickets/${t1}/approve`, { token: O.token, body: { by: 'x' } });
+        await c11('POST', `/api/tickets/${t1}/close`, { token: M.token, body: { by: 'x', note: '1. Contact form: done, sends to support. Tested by hand.' } });
+        const pg = await c11('GET', new URL(link).pathname + '?week=this');
+        check('T-0202: the private page shows the week in plain words: what was done with its result, how long it took, who approved, what waits, and the facts-only note', pg.status === 200 && pg.text.includes('Shop Team') && pg.text.includes(t1) && pg.text.includes('Contact form: done, sends to support') && pg.text.includes('own11') && pg.text.includes(t2) && /Only measured facts/.test(pg.text) && /approval waited/.test(pg.text), pg.text.slice(0, 200));
+        check('T-0202: the page holds no chat and no script, is never cached or indexed, and a wrong link is refused', !pg.text.includes('PRIVATE-CHAT-LINE') && !/<script/i.test(pg.text) && /no-store/.test(pg.headers.get('cache-control') || '') && /noindex/.test(pg.headers.get('x-robots-tag') || '') && (await c11('GET', '/report/' + 'x'.repeat(24))).status === 404);
+        const nextMon = new Date(new Date().setUTCHours(0, 0, 0, 0)); nextMon.setUTCDate(nextMon.getUTCDate() - ((nextMon.getUTCDay() + 6) % 7) + 7); const at = nextMon.getTime() + 8 * 36e5 + 5 * 6e4;
+        const r1 = (await c11('GET', `/api/_test/tick?at=${at}`)).json?.reports || [], r2 = (await c11('GET', `/api/_test/tick?at=${at + 6e4}`)).json?.reports || [];
+        check('T-0202: on Monday morning last week\'s report is emailed to the listed people, once', r1.length === 1 && r1[0].to.join() === 'boss@test.invalid,client@test.invalid' && r1[0].done === 1 && /Shop Team: 1 done, 1 waiting/.test(r1[0].subject) && r2.length === 0 && /\[report\] mail to boss@test\.invalid/.test(log11), JSON.stringify([r1, r2]).slice(0, 300));
+        const off = await c11('POST', '/account/workspace/report', { token: O.token, body: { link: 'off' } });
+        check('T-0202: turning the link off stops it working', off.status === 200 && off.json.report.linkUrl === null && (await c11('GET', new URL(link).pathname)).status === 404);
+      } finally { srv11.kill(); try { fs.rmSync(dir11, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('an AI budget the business sets (T-0203)');
+    { const port12 = 53100 + Math.floor(Math.random() * 1500), B12 = `http://127.0.0.1:${port12}`; const dir12 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-budget-'));
+      const env12 = { ...env, CHAMBER_PUBLIC_URL: B12, CHAMBER_PORT: String(port12), CHAMBER_DATA: path.join(dir12, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir12, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir12, 'tickets.json') };
+      const srv12 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env12, stdio: ['ignore', 'pipe', 'pipe'] }); let log12 = ''; srv12.stdout.on('data', d => log12 += d); srv12.stderr.on('data', d => log12 += d);
+      const c12 = async (method, p, { token, body } = {}) => { const r = await fetch(B12 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c12('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', O = (await c12('POST', '/account/signup', { body: { email: 'own12@test.invalid', username: 'own12', password: PW, invite: INVITE } })).json || {};
+        const l12 = (log12.match(/\[accounts\] verify link for own12: (\S+)/) || [])[1]; if (l12) await fetch(l12, { redirect: 'manual' });
+        const f12 = path.join(dir12, 'accounts.json'), s12 = JSON.parse(fs.readFileSync(f12, 'utf8')); Object.assign(s12.accounts['own12@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f12, JSON.stringify(s12));
+        const code12 = ((await c12('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
+        const M = (await c12('POST', '/account/signup', { body: { email: 'mbud@test.invalid', username: 'mbud', password: PW, join: code12 } })).json || {};
+        const tok = async u => (await c12('POST', '/account/workspace/tokens', { token: O.token, body: { name: u, username: u } })).json?.token;
+        const A1 = await tok('paid-bot'), A2 = await tok('local-bot');
+        const setB = body => c12('POST', '/account/workspace', { token: O.token, body: { budget: body } });
+        const b1 = await setB({ monthlyCents: -5 }), b2 = await setB({ monthlyCents: 100, perAgent: 'paid-bot lots' }), b3 = await c12('POST', '/account/workspace', { token: M.token, body: { budget: { monthlyCents: 100 } } });
+        const ok = await setB({ monthlyCents: 100 });
+        check('T-0203: only the owner sets the budget, in sensible amounts, and it reads back', b1.status === 400 && b2.status === 400 && b3.status === 403 && ok.status === 200 && ok.json?.budget?.monthlyCents === 100, [b1.status, b2.status, b3.status, ok.status].join());
+        const run = async (token, cents) => { const line = (await c12('POST', '/api/messages', { token, body: { text: 'working on it for @own12', type: 'status', run: { state: 'running' } } })).json?.message; await c12('POST', '/api/messages/edit', { token, body: { id: line?.id, text: '@own12 done', type: 'message', run: cents === undefined ? { state: 'done' } : { state: 'done', cost_cents: cents } } }); };
+        await run(A1, 85); await run(A2);
+        const me1 = (await c12('GET', '/api/me', { token: A1 })).json?.budget || {}, mo = (await c12('GET', '/api/me', { token: O.token })).json?.budget || {};
+        check('T-0203: the spend this month adds up what agents report, and the owner and the agent both see it', me1.spentCents === 85 && me1.pct === 85 && me1.over === false && mo.monthlyCents === 100 && mo.leftCents === 15 && (mo.noCostAgents || []).includes('local-bot'), JSON.stringify([me1, mo]));
+        const bot = async () => ((await c12('GET', '/api/messages?since=0', { token: O.token })).json?.messages || []).filter(x => x.username === 'chamber-reminder');
+        const k1 = (await c12('GET', '/api/_test/tick')).json?.budget || [], k2 = (await c12('GET', '/api/_test/tick')).json?.budget || [], m80 = await bot();
+        check('T-0203: at 80 percent the owner is told, once', k1.length === 1 && k1[0].stage === 'a80' && k2.length === 0 && m80.length === 1 && /^@own12 The AI budget for .* is 85% used: \$0\.85 of \$1\.00/.test(m80[0].text), JSON.stringify([k1, k2, m80.map(x => x.text)]).slice(0, 300));
+        const tk = async title => { const id = ((await c12('POST', '/api/tickets', { token: O.token, body: { title, for: 'agent', by: 'x' } })).json?.message || '').match(/T-\d+/)?.[0]; await c12('POST', `/api/tickets/${id}/approve`, { token: O.token, body: { by: 'x' } }); return id; };
+        const claim = (token, id) => c12('POST', `/api/tickets/${id}/claim`, { token, body: { by: 'x' } });
+        const t1 = await tk('first job'); const c1 = await claim(A1, t1);
+        await c12('POST', `/api/tickets/${t1}/log`, { token: A1, body: { by: 'x', usage: { cost_cents: 20 } } });
+        const k3 = (await c12('GET', '/api/_test/tick')).json?.budget || [], t2 = await tk('second job'), c2 = await claim(A1, t2), t3 = await tk('third job'), c3 = await claim(A2, t3);
+        check('T-0203: past 100 percent (the ticket worker\'s cost counts too) the owner is told, the paying agent takes no new ticket, and the no-cost agent is not blocked', c1.status === 200 && k3.length === 1 && k3[0].stage === 'a100' && c2.status === 402 && /used up/.test(c2.json?.error || '') && c3.status === 200
+          && (await c12('GET', '/api/me', { token: A1 })).json?.budget?.over === true && (await c12('GET', '/api/me', { token: A2 })).json?.budget?.over === false, JSON.stringify([c1.status, k3, c2.json, c3.status]).slice(0, 300));
+        await setB({ monthlyCents: 500 }); const c2b = await claim(A1, t2);
+        check('T-0203: raising the budget lets the agent take work again', c2b.status === 200, c2b.text);
+        await setB({ monthlyCents: 500, perAgent: 'paid-bot 0.50' }); const t4 = await tk('fourth job'), c4 = await claim(A1, t4), t5 = await tk('fifth job'), c5 = await claim(A2, t5);
+        check('T-0203: a limit for one agent stops only that agent', c4.status === 402 && /own limit is \$0\.50/.test(c4.json?.error || '') && c5.status === 200, JSON.stringify([c4.json, c5.status]));
+      } finally { srv12.kill(); try { fs.rmSync(dir12, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('an evidence pack for each job (T-0204)');
+    { const port13 = 51500 + Math.floor(Math.random() * 1400), B13 = `http://127.0.0.1:${port13}`; const dir13 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-evidence-'));
+      const env13 = { ...env, CHAMBER_PUBLIC_URL: B13, CHAMBER_PORT: String(port13), CHAMBER_DATA: path.join(dir13, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir13, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir13, 'tickets.json') };
+      const srv13 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env13, stdio: ['ignore', 'pipe', 'pipe'] }); let log13 = ''; srv13.stdout.on('data', d => log13 += d); srv13.stderr.on('data', d => log13 += d);
+      const c13 = async (method, p, { token, body } = {}) => { const r = await fetch(B13 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c13('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const O = (await c13('POST', '/account/signup', { body: { email: 'own13@test.invalid', username: 'own13', password: 'password-for-tests', invite: INVITE } })).json || {};
+        const l13 = (log13.match(/\[accounts\] verify link for own13: (\S+)/) || [])[1]; if (l13) await fetch(l13, { redirect: 'manual' });
+        const f13 = path.join(dir13, 'accounts.json'), s13 = JSON.parse(fs.readFileSync(f13, 'utf8')); Object.assign(s13.accounts['own13@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f13, JSON.stringify(s13));
+        const AG = (await c13('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Worker', username: 'worker13' } })).json?.token;
+        const tid = (await c13('POST', '/api/proposals', { token: AG, body: { title: 'Set x to 2', body: 'Change x from 1 to 2 in app.py.', room: 'general' } })).json?.id;
+        await c13('POST', `/api/tickets/${tid}/diff`, { token: AG, body: { diff: 'diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n', plain: { what: 'x becomes 2', risk: 'none' } } });
+        await c13('POST', `/api/tickets/${tid}/comments`, { token: O.token, body: { line: 6, text: 'Looks right.' } });
+        await c13('POST', `/api/tickets/${tid}/approve`, { token: O.token, body: { by: 'x' } });
+        const line = (await c13('POST', '/api/messages', { token: AG, body: { text: `working on ${tid}`, type: 'status', run: { state: 'running' } } })).json?.message;
+        await c13('POST', '/api/messages/edit', { token: AG, body: { id: line?.id, text: `@own13 ${tid} is done`, type: 'message', run: { state: 'done', model: 'test-model', cost_cents: 3.2, tools: [{ tool: 'Bash', input: 'npm test', out: '5 passing', exit: 0 }] } } });
+        await c13('POST', `/api/tickets/${tid}/claim`, { token: AG, body: { by: 'x' } });
+        await c13('POST', `/api/tickets/${tid}/log`, { token: AG, body: { by: 'x', line: 'tests passed, deployed' } });
+        await c13('POST', `/api/tickets/${tid}/close`, { token: AG, body: { by: 'x', note: '1. x set to 2: done, tests pass.' } });
+        const pr = await c13('GET', `/api/tickets/${tid}/evidence?format=json`, { token: O.token }), pk = pr.json || {}, t = (pk.tickets || [])[0] || {};
+        check('T-0204: the pack holds the request, who approved it, the change with its plain words, the review comment, the commands the agent ran with their output, the run log, the result and the record entries', pr.status === 200 && pk.kind === 'chamber-evidence' && t.request.includes('Change x from 1 to 2') && t.approvals[0]?.by === 'own13'
+          && t.change?.versions?.[0]?.diff.includes('+x = 2') && t.change.versions[0].plain?.what === 'x becomes 2' && t.comments.length === 1 && t.agent_runs[0]?.commands?.[0]?.output === '5 passing' && t.agent_runs[0].commands[0].exit === 0
+          && t.run_log.some(l => /tests passed/.test(l.line)) && /x set to 2: done/.test(t.result || '') && t.record.length >= 4 && t.record.every(e => /^[0-9a-f]{64}$/.test(e.h || '')) && pk.record_check?.intact === true && /^[0-9a-f]{64}$/.test(pk.seal?.sha256 || ''), JSON.stringify(pk).slice(0, 400));
+        const pf = path.join(dir13, 'pack.json'), ef = path.join(dir13, 'record.json'); fs.writeFileSync(pf, pr.text);
+        fs.writeFileSync(ef, (await c13('GET', '/account/workspace/audit?format=json', { token: O.token })).text);
+        const { execFileSync } = require('child_process'), vp = (...a) => { try { return 'EXIT 0 ' + execFileSync(process.execPath, [path.join(APP, 'tools', 'verify-pack.js'), ...a], { encoding: 'utf8' }); } catch (e) { return 'EXIT ' + e.status + ' ' + (e.stdout || ''); } };
+        const v1 = vp(pf), v2 = vp(pf, ef); const changed = JSON.parse(pr.text); changed.tickets[0].result = 'nothing happened'; fs.writeFileSync(pf, JSON.stringify(changed)); const v3 = vp(pf);
+        check('T-0204: tools/verify-pack.js confirms the pack and, with a full record export, that every entry is in the record; a changed pack is caught', /^EXIT 0 INTACT/.test(v1) && /^EXIT 0 INTACT.*are in the full record/.test(v2.replace(/\n/g, ' ')) && /^EXIT 1 NOT INTACT: the pack was changed/.test(v3), [v1, v2, v3].map(x => x.slice(0, 120)).join(' | '));
+        const hp = await c13('GET', `/api/tickets/${tid}/evidence`, { token: O.token });
+        check('T-0204: the readable page shows the same, with no script and the seal', hp.status === 200 && hp.text.includes('5 passing') && hp.text.includes('Looks right.') && /SHA-256 of the data version of this pack: <code>[0-9a-f]{64}<\/code>/.test(hp.text) && !/<script/i.test(hp.text) && /does not by itself show/.test(hp.text));
+        const today = new Date().toISOString().slice(0, 10), rg = await c13('GET', `/api/evidence?from=${today}&to=${today}&format=json`, { token: O.token });
+        check('T-0204: a pack for a date range holds the tickets closed in it; a bad range and an agent are refused', rg.status === 200 && (rg.json?.tickets || []).some(x => x.id === tid) && (await c13('GET', `/api/evidence?from=${today}&to=2020-01-01`, { token: O.token })).status === 400 && (await c13('GET', `/api/tickets/${tid}/evidence`, { token: AG })).status === 403);
+        const AG2 = (await c13('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Other', username: 'other13' } })).json?.token;   // T-0191
+        const pr1 = await c13('POST', `/api/tickets/${tid}/pr`, { token: AG, body: { url: 'https://github.com/o/r/pull/7', number: 7, state: 'merged', branch: `chamber/${tid}`, repo: 'o/r' } });
+        const pr2 = await c13('POST', `/api/tickets/${tid}/pr`, { token: AG2, body: { url: 'https://github.com/o/r/pull/7', number: 7, state: 'open' } }), pr3 = await c13('POST', `/api/tickets/${tid}/pr`, { token: O.token, body: { url: 'http://evil.example/x', number: 7, state: 'open' } });
+        const tpr = ((await c13('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(x => x.id === tid)?.pr;
+        check('T-0191: the worker on the ticket records its pull request; another agent cannot, and only an https link is taken', pr1.status === 200 && pr2.status === 403 && pr3.status === 400 && tpr?.number === 7 && tpr.state === 'merged', JSON.stringify([pr1.status, pr2.status, pr3.status, tpr]));
+      } finally { srv13.kill(); try { fs.rmSync(dir13, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('standing approvals for routine jobs (T-0200)');
+    { const port14 = 48100 + Math.floor(Math.random() * 1000), B14 = `http://127.0.0.1:${port14}`; const dir14 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-standing-'));
+      const env14 = { ...env, CHAMBER_PUBLIC_URL: B14, CHAMBER_PORT: String(port14), CHAMBER_DATA: path.join(dir14, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir14, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir14, 'tickets.json') };
+      const srv14 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env14, stdio: ['ignore', 'pipe', 'pipe'] }); let log14 = ''; srv14.stdout.on('data', d => log14 += d); srv14.stderr.on('data', d => log14 += d);
+      const c14 = async (method, p, { token, body } = {}) => { const r = await fetch(B14 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c14('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const O = (await c14('POST', '/account/signup', { body: { email: 'own14@test.invalid', username: 'own14', password: 'password-for-tests', invite: INVITE } })).json || {};
+        const l14 = (log14.match(/\[accounts\] verify link for own14: (\S+)/) || [])[1]; if (l14) await fetch(l14, { redirect: 'manual' });
+        const f14 = path.join(dir14, 'accounts.json'), s14 = JSON.parse(fs.readFileSync(f14, 'utf8')); Object.assign(s14.accounts['own14@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f14, JSON.stringify(s14));
+        const memberCode = ((await c14('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
+        const M = (await c14('POST', '/account/signup', { body: { email: 'mem14@test.invalid', username: 'mem14', password: 'password-for-tests', join: memberCode } })).json || {};
+        const AG = (await c14('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Worker', username: 'worker14' } })).json?.token;
+        const AG2 = (await c14('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Other', username: 'other14' } })).json?.token;
+        const day = n => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10), sa = (tok, body) => c14('POST', '/api/standing', { token: tok, body });
+        const good = { what: 'fix failing tests', agent: 'worker14', paths: 'tests/', maxFiles: 2, perWeek: 3, until: day(10) };
+        const r1 = await sa(AG, good), r2 = await sa(O.token, { ...good, until: day(120) }), r3 = await sa(O.token, { ...good, agent: 'mem14' }), r4 = await sa(O.token, { ...good, paths: '../etc' }), r5 = await sa(O.token, { ...good, what: 'x' });
+        check('T-0200: an agent cannot set up a standing approval; a far end date, a person as the agent, a path outside the repository and an empty description are refused', r1.status === 403 && r2.status === 400 && r3.status === 400 && r4.status === 400 && r5.status === 400, [r1.status, r2.status, r3.status, r4.status, r5.status].join());
+        const S1 = await sa(O.token, good), list = await c14('GET', '/api/standing', { token: M.token }), seen = (list.json?.standing || []).find(s => s.id === 'S-1');
+        check('T-0200: the owner sets one up; it is active and everyone in the workspace sees it with its limits', S1.status === 201 && S1.json?.standing?.state === 'active' && seen?.agent === 'worker14' && seen.maxFiles === 2 && JSON.stringify(seen.paths) === '["tests/"]' && list.json.canManage === true && (list.json.agents || []).includes('worker14') && (await c14('GET', '/api/standing', { token: AG })).json?.canManage === false, JSON.stringify(list.json).slice(0, 300));
+        const find = async id => ((await c14('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(t => t.id === id) || {};
+        const propA = async (title, extra = {}) => (await c14('POST', '/api/proposals', { token: AG, body: { title, body: 'Make the tests pass again.', room: 'general', standing: 'S-1', ...extra } })).json || {};
+        const p1 = await propA('Fix test 1'), t1 = await find(p1.id);
+        check('T-0200: a ticket that names it is approved at once, by the person who set it up, and says which standing approval covered it', p1.standing?.ok === true && t1.status === 'approved' && t1.approved_by === 'own14' && t1.standing?.id === 'S-1' && t1.approvals?.[0]?.standing === 'S-1' && (t1.updates || []).some(u => /APPROVED IN ADVANCE by standing approval S-1/.test(u.note || '')), JSON.stringify([p1, t1.status, t1.approvals]));
+        const p2 = await c14('POST', '/api/tickets', { token: M.token, body: { title: '[standing:S-1] Fix test 2', for: 'agent', by: 'x' } }), id2 = (p2.json?.message || '').match(/T-\d+/)?.[0];
+        const p3 = await propA('Fix test 3'), p4 = await propA('Fix test 4'), t4 = await find(p4.id);
+        check('T-0200: a person can name it in the title too; past the jobs-a-week limit the next ticket waits for a person, with the reason on it', p2.json?.standing?.ok === true && (await find(id2)).status === 'approved' && p3.standing?.ok === true && p4.standing?.ok === false && /a week/.test(p4.standing?.why || '') && t4.status === 'proposed' && (t4.updates || []).some(u => /does not cover this/.test(u.note || '')), JSON.stringify([p2.json?.standing, p3.standing, p4.standing]));
+        const ph = await c14('POST', '/api/tickets', { token: M.token, body: { title: 'Call the customer', for: 'human', standing: 'S-1', by: 'x' } }), bad = await c14('POST', '/api/tickets', { token: M.token, body: { title: 'x y z', for: 'agent', standing: 'yes please', by: 'x' } });
+        check('T-0200: a ticket for a person is never covered; a made-up standing approval is refused', ph.json?.standing?.ok === false && /not a ticket for an agent/.test(ph.json.standing.why) && bad.status === 400, JSON.stringify([ph.json?.standing, bad.status]));
+        const claim = (tok, id, mode) => c14('POST', `/api/tickets/${id}/claim`, { token: tok, body: { by: 'x', ...(mode ? { mode } : {}) } });
+        const cOther = await claim(AG2, p1.id, 'pr'), cLive = await claim(AG, id2, 'live'), t2b = await find(id2), cOk = await claim(AG, p1.id, 'pr');
+        check('T-0200: only the named agent may take it, and only in pull-request mode: a live-folder worker sends it back to waiting for a person', cOther.status === 409 && /worker14 only/.test(cOther.json?.error || '') && cLive.status === 409 && t2b.status === 'proposed' && t2b.standing_was?.id === 'S-1' && !t2b.standing && cOk.status === 200 && (await find(p1.id)).status === 'in_progress', JSON.stringify([cOther.json, cLive.json, t2b.status, cOk.status]));
+        const chk = (tok, id, files) => c14('POST', `/api/tickets/${id}/standing-check`, { token: tok, body: { by: 'x', files } });
+        const k0 = await chk(AG2, p1.id, ['tests/a.py']), k1 = await chk(AG, p1.id, ['tests/test_a.py', './tests/test_b.py']), t1b = await find(p1.id);
+        check('T-0200: before pushing, the worker on the ticket asks Chamber; inside the limits the answer is yes and the run log says so; another agent cannot ask', k0.status === 403 && k1.status === 200 && k1.json?.ok === true && t1b.status === 'in_progress' && (t1b.log || []).some(l => /inside them/.test(l.line || '')), JSON.stringify([k0.status, k1.json]));
+        await claim(AG, p3.id, 'pr');
+        const k2 = await chk(AG, p3.id, ['tests/a.py', 'tests/b.py', 'tests/c.py']), t3b = await find(p3.id);
+        check('T-0200: a change with more files than allowed is stopped before it is pushed, and the ticket waits for a person', k2.json?.ok === false && /at most 2/.test(k2.json?.why || '') && t3b.status === 'proposed' && !t3b.assignee && (t3b.updates || []).some(u => /WAITS FOR A PERSON/.test(u.note || '')), JSON.stringify([k2.json, t3b.status]));
+        const p5 = await propA('Fix test 5'), p6 = await propA('Fix test 6'); await claim(AG, p5.id, 'pr'); await claim(AG, p6.id, 'pr');
+        const k3 = await chk(AG, p5.id, ['src/app.py']), k4 = await chk(AG, p6.id, ['tests/secrets.json']);
+        check('T-0200: files outside the chosen folders, and files no standing approval ever covers (secrets, keys, build pipelines), send the ticket back to a person', p5.standing?.ok && p6.standing?.ok && k3.json?.ok === false && /outside tests\//.test(k3.json.why) && k4.json?.ok === false && /no standing approval covers/.test(k4.json.why) && (await find(p5.id)).status === 'proposed' && (await find(p6.id)).status === 'proposed', JSON.stringify([p5.standing, p6.standing, k3.json, k4.json]));
+        const p7 = await propA('Fix test 7'), wAg = await c14('POST', '/api/standing/S-1/withdraw', { token: AG, body: {} }), w = await c14('POST', '/api/standing/S-1/withdraw', { token: M.token, body: {} });
+        const t7 = await find(p7.id), k5 = await chk(AG, p1.id, ['tests/test_a.py']), p8 = await propA('Fix test 8');
+        check('T-0200: one tap withdraws it (an agent cannot): what it approved and nobody started goes back to a person, work in progress stops before it is pushed, new tickets are not covered', p7.standing?.ok && wAg.status === 403 && w.status === 200 && w.json?.back === 1 && t7.status === 'proposed' && k5.json?.ok === false && /withdrawn/.test(k5.json.why) && (await find(p1.id)).status === 'proposed' && p8.standing?.ok === false && /withdrawn/.test(p8.standing.why), JSON.stringify([p7.standing, wAg.status, w.json, t7.status, k5.json, p8.standing]));
+        await c14('POST', '/account/workspace', { token: O.token, body: { approval: { two: 'all' } } });
+        const S2 = await sa(O.token, { ...good, what: 'update libraries to a newer patch version', paths: '', maxFiles: 5, perWeek: 5 }), pW = await propA('Bump lib', { standing: 'S-2' });
+        const cSelf = await c14('POST', '/api/standing/S-2/confirm', { token: O.token, body: {} }), cM = await c14('POST', '/api/standing/S-2/confirm', { token: M.token, body: {} }), pC = await propA('Bump lib again', { standing: 'S-2' });
+        check('T-0200: when the rules need two people, a standing approval waits for a second, different approver before it covers anything', S2.status === 201 && S2.json?.standing?.state === 'waiting' && pW.standing?.ok === false && /second approver/.test(pW.standing.why) && cSelf.status === 403 && cM.status === 200 && pC.standing?.ok === true && (await find(pC.id)).status === 'approved', JSON.stringify([S2.json?.standing?.state, pW.standing, cSelf.status, cM.status, pC.standing]));
+        await c14('POST', '/account/workspace', { token: O.token, body: { approval: { two: 'all', noSelf: true } } });
+        const pS = await c14('POST', '/api/tickets', { token: O.token, body: { title: 'Bump lib by the owner', for: 'agent', standing: 'S-2', by: 'x' } });
+        check('T-0200: with "nobody approves their own ticket", a standing approval does not cover tickets from the person who set it up', pS.json?.standing?.ok === false && /own ticket/.test(pS.json.standing.why || ''), JSON.stringify(pS.json?.standing));
+        const ev = (await c14('GET', `/api/tickets/${pC.id}/evidence?format=json`, { token: O.token })).json?.tickets?.[0] || {};
+        const au = ((await c14('GET', '/account/workspace/audit?format=json', { token: O.token })).json?.entries || []).map(e => e.action);
+        check('T-0200: the evidence pack and the activity record name the standing approval at every step', ev.approvals?.[0]?.standing === 'S-2' && ev.standing?.id === 'S-2' && ['standing-create', 'ticket-approve-standing', 'standing-not-covered', 'standing-check', 'standing-outside', 'standing-withdraw', 'standing-confirm'].every(a => au.includes(a)), JSON.stringify([ev.approvals, ev.standing, [...new Set(au)]]).slice(0, 400));
+        const app14 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8');
+        check('T-0200: the app has the Standing approvals button and window, and the propose form offers active ones for agent jobs', /id="standing-btn"/.test(app14) && /id="standing-modal"/.test(app14) && /function fillPropStanding\(/.test(app14) && /id="prop-standing"/.test(app14));
+      } finally { srv14.kill(); try { fs.rmSync(dir14, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('any AI tool can use Chamber through MCP (T-0198)');
+    { const port15 = 47100 + Math.floor(Math.random() * 1000), B15 = `http://127.0.0.1:${port15}`; const dir15 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-mcp-'));
+      const env15 = { ...env, CHAMBER_PUBLIC_URL: B15, CHAMBER_PORT: String(port15), CHAMBER_DATA: path.join(dir15, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir15, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir15, 'tickets.json') };
+      const srv15 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env15, stdio: ['ignore', 'pipe', 'pipe'] }); let log15 = ''; srv15.stdout.on('data', d => log15 += d); srv15.stderr.on('data', d => log15 += d);
+      const c15 = async (method, p, { token, body } = {}) => { const r = await fetch(B15 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c15('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      const MCP = path.join(APP, 'public', 'chamber-mcp.py'), home15 = path.join(dir15, 'home'); fs.mkdirSync(home15);
+      const mcpRun = envX => { const p = spawn('python3', [MCP], { env: { PATH: process.env.PATH, HOME: home15, ...envX }, stdio: ['pipe', 'pipe', 'pipe'] });
+        let buf = '', err = '', next = 1; const waiting = new Map();
+        p.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue; let m; try { m = JSON.parse(line); } catch { m = { bad: line }; } const w = waiting.get(m.id); if (w) { waiting.delete(m.id); w(m); } } });
+        p.stderr.on('data', d => err += d);
+        const rpc = (method, params) => new Promise((ok, bad) => { const id = next++; const t = setTimeout(() => bad(new Error('no answer to ' + method + ': ' + err.slice(-300))), 15000); waiting.set(id, m => { clearTimeout(t); ok(m); }); p.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); });
+        const note = method => p.stdin.write(JSON.stringify({ jsonrpc: '2.0', method }) + '\n');
+        const call = async (name, args) => (await rpc('tools/call', { name, arguments: args })).result || {};
+        return { p, rpc, note, call, text: r => (r.content || []).map(c => c.text).join('\n') };
+      };
+      const hello = { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'chamber-test', version: '1' } };
+      let mcp1, mcp2, mcp3;
+      try {
+        const O = (await c15('POST', '/account/signup', { body: { email: 'own15@test.invalid', username: 'own15', password: 'password-for-tests', invite: INVITE } })).json || {};
+        const l15 = (log15.match(/\[accounts\] verify link for own15: (\S+)/) || [])[1]; if (l15) await fetch(l15, { redirect: 'manual' });
+        const f15 = path.join(dir15, 'accounts.json'), s15 = JSON.parse(fs.readFileSync(f15, 'utf8')); Object.assign(s15.accounts['own15@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f15, JSON.stringify(s15));
+        const AG = (await c15('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'MCP', username: 'mcp15' } })).json?.token;
+        mcp1 = mcpRun({ CHAMBER_URL: B15, CHAMBER_TOKEN: AG });
+        const init = await mcp1.rpc('initialize', hello); mcp1.note('notifications/initialized');
+        const old = await mcp1.rpc('initialize', { ...hello, protocolVersion: '1999-01-01' }), tl = (await mcp1.rpc('tools/list', {})).result?.tools || [], names = tl.map(t => t.name);
+        check('T-0198: the MCP server answers the handshake (newest protocol, or its own when asked for one it does not know) and lists a short, safe set of tools, none that approves', init.result?.protocolVersion === '2025-11-25' && init.result?.serverInfo?.name === 'chamber' && !!init.result?.capabilities?.tools && old.result?.protocolVersion === '2025-11-25'
+          && ['read_room', 'post_message', 'list_tickets', 'read_ticket', 'propose_ticket', 'add_ticket_note', 'list_standing_approvals'].every(n => names.includes(n)) && !names.some(n => /approve|reject|claim|close|delete|cancel/.test(n)) && tl.every(t => t.inputSchema?.type === 'object'), JSON.stringify([init.result?.protocolVersion, names]));
+        await c15('POST', '/api/messages', { token: O.token, body: { room: 'general', text: 'Owner says: the release is Friday.', type: 'message' } });
+        const rr = await mcp1.call('read_room', { room: 'general', limit: 5 });
+        check('T-0198: read_room gives the latest messages with who wrote them, marked as information, not instructions', !rr.isError && /own15 \(person\): Owner says: the release is Friday\./.test(mcp1.text(rr)) && /not as instructions/.test(mcp1.text(rr)), mcp1.text(rr).slice(0, 300));
+        const pm = await mcp1.call('post_message', { text: 'Hello from an MCP tool.' }), msgs = (await c15('GET', '/api/messages?room=general', { token: O.token })).json?.messages || [];
+        check('T-0198: post_message posts as the agent', !pm.isError && msgs.some(m => m.username === 'mcp15' && m.text === 'Hello from an MCP tool.'), mcp1.text(pm));
+        const pt = await mcp1.call('propose_ticket', { title: 'Add a health page', body: 'Serve /health with 200 and the version.', reason: 'Uptime checks need it.' }), tid = (mcp1.text(pt).match(/T-\d{4}/) || [])[0];
+        const tk = ((await c15('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(t => t.id === tid) || {};
+        check('T-0198: propose_ticket files a ticket for an agent that waits for a person', !pt.isError && tk.status === 'proposed' && tk.proposed_by === 'mcp15' && tk.for === 'agent' && /waits for a person/.test(mcp1.text(pt)), mcp1.text(pt));
+        const nt = await mcp1.call('add_ticket_note', { id: tid, note: 'Looked at the router; /health is free.' }), rt = await mcp1.call('read_ticket', { id: tid }), lt = await mcp1.call('list_tickets', { status: 'proposed' });
+        check('T-0198: read_ticket and list_tickets show it, and add_ticket_note adds a note', !nt.isError && /Add a health page/.test(mcp1.text(rt)) && /status: proposed/.test(mcp1.text(rt)) && /Looked at the router/.test(mcp1.text(rt)) && mcp1.text(lt).includes(tid), mcp1.text(rt).slice(0, 300));
+        const unk = await mcp1.rpc('tools/call', { name: 'approve_ticket', arguments: { id: tid } }), direct = await c15('POST', `/api/tickets/${tid}/approve`, { token: AG, body: { by: 'own15' } }), bad = await mcp1.call('read_ticket', { id: 'nope' });
+        check('T-0198: there is no approve tool, the same key cannot approve through the API either, and bad input gets a plain error', unk.error?.code === -32602 && direct.status === 403 && bad.isError === true && /T-0042/.test(mcp1.text(bad)), JSON.stringify([unk.error, direct.status]));
+        const au = ((await c15('GET', '/account/workspace/audit?format=json', { token: O.token })).json?.entries || []).filter(e => e.actor === 'mcp15' && e.kind === 'agent').map(e => e.action);
+        check('T-0198: what it did is on the activity record under the agent\'s name, refused approval included', ['message', 'proposal', 'ticket-update', 'ticket-approve-refused'].every(a => au.includes(a)), JSON.stringify(au));
+        const { execFileSync } = require('child_process'), runSetup = url => { try { return 'EXIT 0 ' + execFileSync('python3', [MCP, '--setup', '--url', url, '--token', AG], { env: { PATH: process.env.PATH, HOME: home15 }, encoding: 'utf8', timeout: 20000, stdio: 'pipe' }); } catch (e) { return 'EXIT ' + e.status + ' ' + (e.stdout || '') + (e.stderr || ''); } };
+        const so = runSetup(B15), envf = path.join(home15, '.config', 'chamber', 'mcp.env'), mode = (() => { try { return fs.statSync(envf).mode & 0o777; } catch { return -1; } })();
+        mcp2 = mcpRun({}); await mcp2.rpc('initialize', hello); const rr2 = await mcp2.call('read_room', {});
+        const pres = ((await c15('GET', '/api/presence', { token: O.token })).json?.presence || []).find(u => u.username === 'mcp15');
+        check('T-0198: --setup checks the key, saves it where only the user can read it, prints the lines for Claude Code, Codex and Cursor; the server then works with no key in the tool\'s settings and shows online', /^EXIT 0 Connected to Chamber as mcp15/.test(so) && mode === 0o600 && /claude mcp add --scope user chamber -- /.test(so) && /\[mcp_servers\.chamber\]/.test(so) && /"chamber": \{"command"/.test(so)
+          && !rr2.isError && /Hello from an MCP tool/.test(mcp2.text(rr2)) && !!pres && pres.state !== 'offline', so.slice(0, 300) + ' mode=' + mode.toString(8) + ' ' + JSON.stringify(pres || {}).slice(0, 120));
+        const so2 = runSetup('http://chamber.example');
+        mcp3 = mcpRun({ CHAMBER_URL: B15, CHAMBER_TOKEN: 'chk_not_a_real_key' }); await mcp3.rpc('initialize', hello); const r3 = await mcp3.call('read_room', {});
+        check('T-0198: it refuses to send the key to a plain-http address, and a wrong key gets a plain answer, not a crash', /^EXIT [1-9].*https/.test(so2.replace(/\n/g, ' ')) && r3.isError === true && /did not accept the key/.test(mcp3.text(r3)), so2.slice(0, 200) + ' | ' + mcp3.text(r3));
+        const app15 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8'), dl = await c15('GET', '/chamber-mcp.py');
+        check('T-0198: Add an agent offers "Any AI tool (MCP)" with the one-line setup, and the file is served to anyone', /name="aw-kind" value="mcp"/.test(app15) && /chamber-mcp\.py/.test(app15) && /--setup --url/.test(app15) && dl.status === 200 && dl.text.includes('VERSION = "'), dl.status);
+      } finally { for (const m of [mcp1, mcp2, mcp3]) try { if (m) m.p.kill(); } catch {} srv15.kill(); try { fs.rmSync(dir15, { recursive: true, force: true }); } catch {} }
+    }
+    console.log('the agent asks, a person taps Allow or Deny (T-0188)');
+    { const port16 = 46100 + Math.floor(Math.random() * 900), B16 = `http://127.0.0.1:${port16}`; const dir16 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-asks-'));
+      const env16 = { ...env, CHAMBER_PUBLIC_URL: B16, CHAMBER_PORT: String(port16), CHAMBER_DATA: path.join(dir16, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir16, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir16, 'tickets.json') };
+      const srv16 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env16, stdio: ['ignore', 'pipe', 'pipe'] }); let log16 = ''; srv16.stdout.on('data', d => log16 += d); srv16.stderr.on('data', d => log16 += d);
+      const c16 = async (method, p, { token, body } = {}) => { const r = await fetch(B16 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c16('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', O = (await c16('POST', '/account/signup', { body: { email: 'own16@test.invalid', username: 'own16', password: PW, invite: INVITE } })).json || {};
+        const l16 = (log16.match(/\[accounts\] verify link for own16: (\S+)/) || [])[1]; if (l16) await fetch(l16, { redirect: 'manual' });
+        const f16 = path.join(dir16, 'accounts.json'), s16 = JSON.parse(fs.readFileSync(f16, 'utf8')); Object.assign(s16.accounts['own16@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f16, JSON.stringify(s16));
+        const memberCode = ((await c16('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
+        const M = (await c16('POST', '/account/signup', { body: { email: 'mem16@test.invalid', username: 'mem16', password: PW, join: memberCode } })).json || {};
+        const vCode = ((await c16('POST', '/account/workspace/invite-reset', { token: O.token, body: { role: 'viewer' } })).json?.inviteUrl || '').split('/join/')[1];
+        const V = (await c16('POST', '/account/signup', { body: { email: 'view16@test.invalid', username: 'view16', password: PW, join: vCode } })).json || {};
+        const AG = (await c16('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Asker', username: 'asker16' } })).json?.token;
+        const ask = extra => c16('POST', '/api/asks', { token: AG, body: { room: 'general', tool: 'Bash', summary: 'run this command: npm test', detail: '{"command":"npm test"}', for: 'mem16', waitSec: 300, ...extra } });
+        const a0 = await ask({}), me0 = (await c16('GET', '/api/me', { token: AG })).json || {};
+        check('T-0188: off by default: the agent cannot ask until the owner switches it on, and /api/me tells the connector so', a0.status === 403 && /switched off/.test(a0.json?.error || '') && me0.mayAsk === false, JSON.stringify([a0.status, me0.mayAsk]));
+        const tid16 = ((await c16('GET', '/account/workspace/tokens', { token: O.token })).json?.tokens || []).find(t => t.username === 'asker16')?.id;
+        const swM = await c16('POST', '/account/workspace/tokens/ask', { token: M.token, body: { id: tid16, on: true } }), sw = await c16('POST', '/account/workspace/tokens/ask', { token: O.token, body: { id: tid16, on: true } });
+        const a1 = await ask({}), me1 = (await c16('GET', '/api/me', { token: AG })).json || {}, id1 = a1.json?.id;
+        const qm = ((await c16('GET', '/api/messages?room=general', { token: O.token })).json?.messages || []).find(m => m.username === 'asker16' && /npm test/.test(m.text));
+        check('T-0188: only the owner switches it on; then the question appears in the room with the exact command, mentioning the person who asked for the job', swM.status === 403 && sw.status === 200 && me1.mayAsk === true && a1.status === 201 && /^A-\d+$/.test(id1 || '') && !!qm && /^@mem16 May I run this command\?/.test(qm.text) && /npm test/.test(qm.text) && /Allow once or Deny/.test(qm.text), JSON.stringify([swM.status, sw.status, a1.json, qm && qm.text]));
+        const lM = (await c16('GET', '/api/asks?status=waiting', { token: M.token })).json?.asks || [], lV = (await c16('GET', '/api/asks?status=waiting', { token: V.token })).json?.asks || [];
+        const vAns = await c16('POST', `/api/asks/${id1}/answer`, { token: V.token, body: { decision: 'allow' } }), agAns = await c16('POST', `/api/asks/${id1}/answer`, { token: AG, body: { decision: 'allow' } });
+        check('T-0188: people who may approve see Allow / Deny; a viewer who is not an approver, and the agent itself, cannot answer', lM[0]?.canAnswer === true && lV[0]?.canAnswer === false && vAns.status === 403 && agAns.status === 403, JSON.stringify([lM[0]?.canAnswer, lV[0]?.canAnswer, vAns.status, agAns.status]));
+        await c16('POST', '/account/workspace', { token: O.token, body: { approval: { approvers: 'own16' } } });
+        const mAns = await c16('POST', `/api/asks/${id1}/answer`, { token: M.token, body: { decision: 'allow' } }), oAns = await c16('POST', `/api/asks/${id1}/answer`, { token: O.token, body: { decision: 'allow' } });
+        const again = await c16('POST', `/api/asks/${id1}/answer`, { token: O.token, body: { decision: 'deny' } }), g1 = (await c16('GET', `/api/asks/${id1}`, { token: AG })).json || {};
+        check('T-0188: the approval rules decide who may answer: a member who is not named cannot; the owner allows it once; a second answer is refused', mAns.status === 403 && oAns.status === 200 && again.status === 409 && g1.status === 'allowed' && g1.answeredBy === 'own16', JSON.stringify([mAns.status, oAns.status, again.status, g1.status]));
+        const r1 = await c16('POST', `/api/asks/${id1}/result`, { token: AG, body: { ok: true, output: '12 passing' } }), r1b = await c16('POST', `/api/asks/${id1}/result`, { token: AG, body: { ok: true, output: 'again' } });
+        check('T-0188: the agent records the result once', r1.status === 200 && r1b.status === 409, [r1.status, r1b.status].join());
+        const a2 = await ask({ summary: 'run this command: rm -rf build' }), d2 = await c16('POST', `/api/asks/${a2.json?.id}/answer`, { token: O.token, body: { decision: 'deny' } }), g2 = (await c16('GET', `/api/asks/${a2.json?.id}`, { token: AG })).json || {};
+        const a3 = await ask({ waitSec: 1 }); await new Promise(r => setTimeout(r, 1400)); const g3 = (await c16('GET', `/api/asks/${a3.json?.id}`, { token: AG })).json || {}, late = await c16('POST', `/api/asks/${a3.json?.id}/answer`, { token: O.token, body: { decision: 'allow' } });
+        check('T-0188: Deny is a no, and no answer in time is a no that cannot be turned into a yes afterwards', d2.status === 200 && g2.status === 'denied' && g3.status === 'expired' && late.status === 409 && /not answered in time/.test(late.json?.error || ''), JSON.stringify([d2.status, g2.status, g3.status, late.status]));
+        const a4 = await ask({}), c4 = await c16('POST', `/api/asks/${a4.json?.id}/cancel`, { token: AG, body: {} });
+        const AG2 = (await c16('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Other', username: 'other16' } })).json?.token, peek = await c16('GET', `/api/asks/${id1}`, { token: AG2 }), list2 = (await c16('GET', '/api/asks', { token: AG2 })).json?.asks || [];
+        check('T-0188: the agent withdraws a question it no longer needs; another agent sees none of them', c4.status === 200 && peek.status === 403 && list2.length === 0, JSON.stringify([c4.status, peek.status, list2.length]));
+        const outcome = ((await c16('GET', '/api/messages?room=general', { token: O.token })).json?.messages || []).find(m => m.id === qm?.id);
+        const au = (await c16('GET', '/account/workspace/audit?format=json', { token: O.token })).json?.entries || [], byAct = a => au.filter(e => e.action === a);
+        check('T-0188: the question, the answer, who gave it and the result are on the record, and the question in the room shows the answer', byAct('ask').length === 4 && byAct('ask-allow').some(e => e.actor === 'own16' && e.ask === id1) && byAct('ask-deny').length === 1 && byAct('ask-expired').length === 1 && byAct('ask-result').some(e => e.output === '12 passing' && e.actor === 'asker16') && byAct('ask-answer-refused').length === 3 && byAct('agent-may-ask').length === 1 && /Allowed once by own16\.$/.test(outcome?.text || ''), JSON.stringify([...new Set(au.map(e => e.action))]).slice(0, 300) + ' ' + String(outcome?.text || '').slice(-60));
+        const app16 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8'), land16 = fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8');
+        check('T-0188: the app shows waiting questions with Allow once / Deny, and the account page has the switch per agent', /id="ask-bar"/.test(app16) && /function answerAsk\(/.test(app16) && /d\.kind === 'asks'/.test(app16) && /data-mayask=/.test(land16));
+      } finally { srv16.kill(); try { fs.rmSync(dir16, { recursive: true, force: true }); } catch {} }
     }
     console.log('free trial (T-0159)');
     { const cfg0 = (await call('GET', '/account/config')).json;

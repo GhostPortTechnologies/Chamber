@@ -295,7 +295,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.17.1")
+check("the connector reports its version", m.AGENT_VERSION == "3.22.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -542,6 +542,133 @@ shutil.rmtree(askroot, ignore_errors=True)
 h = m.signin_help("Not logged in · Please run /login")
 check("a connector with no Claude sign-in answers with the two commands to run, not 'Please run /login' (T-0174)",
       bool(h) and "setup-token" in h and "--oauth-token" in h and "/login" not in h and m.signin_help("Invalid API key · Fix external API key") and m.signin_help("Hello! You are not logged in to the wiki, " + "x" * 300) is None and m.signin_help("All good.") is None, str(h)[:200])
+print("follow-ups continue the same session (T-0187)")
+sroot = os.path.join(askroot, "sessions"); os.makedirs(sroot, exist_ok=True)
+spylog = os.path.join(sroot, "argv.log")
+sc = os.path.join(sroot, "sessclaude")
+open(sc, "w").write("""#!/usr/bin/env python3
+import json, os, sys
+a = sys.argv[1:]
+open(os.environ["SPY_LOG"], "a").write(json.dumps(a) + "\\n")
+sid = a[a.index("--session-id") + 1] if "--session-id" in a else (a[a.index("--resume") + 1] if "--resume" in a else "none")
+if "--resume" in a and sid == "gone-session":
+    print("No conversation found with session ID: gone-session", file=sys.stderr); sys.exit(1)
+print(json.dumps({"type": "system", "subtype": "init", "session_id": sid, "model": "fake"}))
+print(json.dumps({"type": "result", "subtype": "success", "result": "ok " + sid}))
+"""); os.chmod(sc, 0o755)
+os.environ["SPY_LOG"] = spylog
+ms = load("claude", extra={"CHAMBER_STATE": os.path.join(sroot, "state.json")}); ms.CLAUDE_BIN = sc
+def calls():
+    try: return [json.loads(l) for l in open(spylog)]
+    except FileNotFoundError: return []
+def argval(a, flag): return a[a.index(flag) + 1] if flag in a else None
+now_ms = int(time.time() * 1000)
+mA = {"id": "s1", "ts": now_ms, "username": "alice", "text": "@test-bot what is in this repo?"}
+ra = ms.ask_claude("general", [], mA); cA = calls()[-1]; sidA = argval(cA, "--session-id")
+check("a new top-level question starts a new, named Claude Code session (no more --no-session-persistence)", bool(sidA) and "--resume" not in cA and "--no-session-persistence" not in cA and ra == "ok " + sidA, cA[-8:])
+check("the session list is kept only for the agent's own user (mode 600)", (os.stat(ms.SESSIONS_FILE).st_mode & 0o777) == 0o600)
+mB = {"id": "s2", "ts": now_ms + 1000, "username": "alice", "text": "@test-bot and which file does the login?", "reply_to": "s1"}
+hB = [{"ts": now_ms - 60000, "username": "alice", "text": "OLD LINE before the session"}, {"ts": now_ms + 500, "username": "bob", "text": "NEW LINE in the thread"}]
+rb = ms.ask_claude("general", hB, mB); cB = calls()[-1]; pB = argval(cB, "-p") or ""
+check("a reply in that thread continues the same session", argval(cB, "--resume") == sidA and "--session-id" not in cB and rb == "ok " + sidA, cB[-8:])
+check("the continued session gets only what is new since its last answer", "NEW LINE in the thread" in pB and "OLD LINE before the session" not in pB)
+mC = {"id": "s3", "ts": now_ms + 2000, "username": "alice", "text": "@test-bot something else entirely"}
+ms.ask_claude("general", [], mC); cC = calls()[-1]
+check("a new top-level mention starts its own session again", bool(argval(cC, "--session-id")) and argval(cC, "--session-id") != sidA and "--resume" not in cC)
+ms._sessions_write({"t-gone": {"sid": "gone-session", "room": "general", "ts": time.time(), "turns": 1}})
+mD = {"id": "s4", "ts": now_ms + 3000, "username": "alice", "text": "@test-bot carry on", "reply_to": "t-gone"}
+rd_ = ms.ask_claude("general", [], mD); cD1, cD2 = calls()[-2], calls()[-1]
+check("when the old session cannot be found it starts a fresh one once, with the whole context, and still answers", argval(cD1, "--resume") == "gone-session" and bool(argval(cD2, "--session-id")) and rd_.startswith("ok ") and "gone-session" not in rd_, [cD1[-4:], cD2[-4:]])
+ms.SESSION_IDLE = 0; time.sleep(0.05)
+mE = {"id": "s5", "ts": now_ms + 4000, "username": "alice", "text": "@test-bot later", "reply_to": "s1"}
+ms.ask_claude("general", [], mE); cE = calls()[-1]
+check("after the idle time a reply starts a fresh session instead", bool(argval(cE, "--session-id")) and "--resume" not in cE)
+mo = load("claude", extra={"CHAMBER_STATE": os.path.join(sroot, "state2.json"), "CHAMBER_SESSIONS": "off"}); mo.CLAUDE_BIN = sc
+mo.ask_claude("general", [], {"id": "s6", "ts": now_ms, "username": "alice", "text": "@test-bot hi", "reply_to": "s1"}); cF = calls()[-1]
+check("CHAMBER_SESSIONS=off goes back to one fresh run per mention with no session file", "--no-session-persistence" in cF and "--resume" not in cF and "--session-id" not in cF)
+del os.environ["SPY_LOG"]
+print("review that talks back (T-0189)")
+DIFFS["T-0130"] = {"id": "T-0130", "diff": "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n", "meta": {"version": 1}}
+rx = m.request_extras({"text": "@test-bot Changes asked for on T-0130 (version 1) by alice.\nUse 3, not 2.\nSend a new version of the change for T-0130."})
+check("a request for changes tells the agent to send the whole corrected change and end with REVISE, and shows it the current version", "REVISE: T-0130" in rx and "+x = 2" in rx and "PROPOSE" in rx and "Do not add a PROPOSE line" in rx, rx[:300])
+check("an ordinary message gets no review instructions", "REVISE" not in m.request_extras({"text": "@test-bot how is T-0130 going?"}))
+rv_rest, rv_tid, rv_diff = m.take_revise("I changed it to 3.\n```diff\ndiff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 3\n```\nREVISE: T-0130")
+check("the REVISE line and the diff are taken out of the reply and handed over", rv_tid == "T-0130" and "+x = 3" in (rv_diff or "") and "REVISE" not in rv_rest and "diff --git" not in rv_rest and rv_rest.startswith("I changed it"), (rv_tid, rv_rest))
+check("a reply without REVISE is left alone", m.take_revise("all fine") == ("all fine", None, None))
+print("AI budget (T-0203)")
+m.BUDGET.clear(); check("with budget left (or none set) the agent answers as usual", m.budget_reply("alice") is None)
+m.BUDGET.update({"over": True, "reason": "The AI budget for November 2026 is used up ($50.00 of $50.00)."})
+_br = m.budget_reply("alice")
+check("when the budget is used up the agent says so and names who can raise it, instead of running the model", bool(_br) and _br.startswith("@alice The AI budget for November 2026 is used up") and "owner" in _br, _br)
+m.BUDGET.clear()
+print("laptop install (T-0186)")
+import tempfile
+_td = tempfile.mkdtemp(prefix="chamber-laptop-test-"); _envf = os.path.join(_td, "agent.env")
+with open(_envf, "w") as _f: _f.write(f"CHAMBER_URL=http://127.0.0.1:{port}\nCHAMBER_TOKEN=chk_from_the_env_file\nCHAMBER_INSTALL=laptop\nCHAMBER_WORKDIR={_td}\n")
+for _k in list(os.environ):
+    if _k.startswith("CHAMBER_"): del os.environ[_k]
+_spec = importlib.util.spec_from_file_location("agent_laptop", HERE / "chamber-agent.py"); _ml = importlib.util.module_from_spec(_spec)
+sys.argv = ["chamber-agent.py", "--env", _envf]; _spec.loader.exec_module(_ml)
+check("--env reads the settings from the named file (the laptop install's own folder)", _ml.TOKEN == "chk_from_the_env_file" and _ml.WORKDIR == _td, (_ml.TOKEN, _ml.WORKDIR))
+_hl = _ml.signin_help("Not logged in · Please run /login")
+check("on a laptop the sign-in help says to run claude once there, with no sudo and no installer", bool(_hl) and "sudo" not in _hl and "install.sh" not in _hl and "log in" in _hl, _hl)
+print("asking a person (3.22.0, T-0188)")
+mk = load("claude", extra={"CHAMBER_STATE": os.path.join(tempfile.mkdtemp(prefix="ask-state-"), "state.json"), "CHAMBER_ALLOWED_TOOLS": "Read,Grep,Bash(git status:*),Bash(ls)"})
+pre = mk.ask_preapproved
+check("plain commands this agent may run anyway are not asked about; chains, redirection, substitution and other tools are",
+      pre("Bash", {"command": "git status"}) and pre("Bash", {"command": "git status --short"}) and pre("Bash", {"command": "ls"}) and not pre("Bash", {"command": "ls -la"})
+      and not pre("Bash", {"command": "git status; rm -rf x"}) and not pre("Bash", {"command": "git status && make"}) and not pre("Bash", {"command": "git status > out"})
+      and not pre("Bash", {"command": "git status $(id)"}) and not pre("Bash", {"command": "git statusx"}) and not pre("Edit", {"file_path": "a"}) and not pre("Bash", {"command": ""}))
+check("the person is shown the exact command or file", mk.ask_summary("Bash", {"command": "npm test"}) == "run this command: npm test" and mk.ask_summary("Write", {"file_path": "/x/a.txt", "content": "1\n2"}) == "write the file /x/a.txt (2 lines)")
+src_ag = open(HERE / "chamber-agent.py", encoding="utf-8").read()
+check("the helper starts before any settings file is read, so it never holds the key", 0 < src_ag.index('if "--ask-mcp" in sys.argv: _ask_mcp_main(); sys.exit(0)') < src_ag.index("for _p in _env_paths(): load_env(_p)"))
+hd = tempfile.mkdtemp(prefix="ask-helper-")
+hp = subprocess.Popen([sys.executable, str(HERE / "chamber-agent.py"), "--ask-mcp", hd, "2"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env={"PATH": os.environ.get("PATH", ""), "HOME": hd})
+def hrpc(i, method, params=None):
+    hp.stdin.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}) + "\n"); hp.stdin.flush(); return json.loads(hp.stdout.readline())
+def hanswer(decision, delay=0.3):
+    def go():
+        for _ in range(60):
+            reqs = [x for x in os.listdir(hd) if x.endswith(".req.json") and not os.path.exists(os.path.join(hd, x[:-9] + ".ans.json"))]
+            if reqs:
+                time.sleep(delay); open(os.path.join(hd, reqs[0][:-9] + ".ans.json"), "w").write(json.dumps({"decision": decision, "message": "alice said no in Chamber."})); return
+            time.sleep(0.1)
+    threading.Thread(target=go, daemon=True).start()
+ini = hrpc(1, "initialize", {"protocolVersion": "2025-11-25"}); tl = hrpc(2, "tools/list")
+hanswer("allow"); r1 = json.loads(hrpc(3, "tools/call", {"name": "ask", "arguments": {"tool_name": "Bash", "input": {"command": "npm test"}, "tool_use_id": "tu1"}})["result"]["content"][0]["text"])
+hanswer("deny"); r2 = json.loads(hrpc(4, "tools/call", {"name": "ask", "arguments": {"tool_name": "Bash", "input": {"command": "rm -rf build"}, "tool_use_id": "tu2"}})["result"]["content"][0]["text"])
+t0 = time.time(); r3 = json.loads(hrpc(5, "tools/call", {"name": "ask", "arguments": {"tool_name": "Bash", "input": {"command": "make"}, "tool_use_id": "tu3"}})["result"]["content"][0]["text"]); took = time.time() - t0
+hp.stdin.close(); hp.wait(5)
+check("the helper speaks MCP and offers one tool, ask", ini["result"]["serverInfo"]["name"] == "chamber_ask" and [t["name"] for t in tl["result"]["tools"]] == ["ask"])
+check("an allow runs exactly the input that was shown; a no carries the person's words; no answer in time is a no", r1 == {"behavior": "allow", "updatedInput": {"command": "npm test"}} and r2["behavior"] == "deny" and "alice said no" in r2["message"] and r3["behavior"] == "deny" and "Nobody answered" in r3["message"] and 3 < took < 8, (r1, r2, r3, round(took, 1)))
+pump_calls = []
+def fake_api(method, path, body=None):
+    pump_calls.append((method, path, body))
+    if method == "POST" and path == "/api/asks": return {"ok": True, "id": "A-7"}
+    if method == "GET" and path == "/api/asks/A-7": return {"id": "A-7", "status": "allowed" if len([c for c in pump_calls if c[1] == "/api/asks/A-7"]) > 1 else "waiting", "answeredBy": "alice"}
+    return {"ok": True}
+mk.api = fake_api; pd = tempfile.mkdtemp(prefix="ask-pump-"); asks = {}; prun = mk.Run("general", {"id": "m9", "username": "alice"})
+json.dump({"tool_name": "Bash", "input": {"command": "git status"}, "tool_use_id": "p1"}, open(os.path.join(pd, "aa.req.json"), "w"))
+json.dump({"tool_name": "Bash", "input": {"command": "npm test"}, "tool_use_id": "p2"}, open(os.path.join(pd, "bb.req.json"), "w"))
+w1 = mk.ask_pump(pd, "general", {"id": "m9", "username": "alice"}, prun, asks); asks["bb"]["next"] = 0; w2 = mk.ask_pump(pd, "general", {"id": "m9", "username": "alice"}, prun, asks); asks["bb"]["next"] = 0; w3 = mk.ask_pump(pd, "general", {"id": "m9", "username": "alice"}, prun, asks)
+posted = [c for c in pump_calls if c[0] == "POST" and c[1] == "/api/asks"]
+check("the connector answers the pre-allowed one itself and asks Chamber about the other, naming the person and the request, then passes the answer on", json.load(open(os.path.join(pd, "aa.ans.json")))["decision"] == "allow" and len(posted) == 1 and posted[0][2]["summary"] == "run this command: npm test" and posted[0][2]["for"] == "alice" and posted[0][2]["msg"] == "m9" and w1 and w2 and not w3 and json.load(open(os.path.join(pd, "bb.ans.json")))["decision"] == "allow", (w1, w2, w3, posted))
+mk.ask_finish(pd, asks, {"results": {"p2": {"out": "12 passing sk_live_ABCDEFGHIJKLMNOPQRSTUVWX", "error": False}}})
+res_post = [c for c in pump_calls if c[1] == "/api/asks/A-7/result"]
+check("after the run the result of the allowed use goes on the record (secrets blanked) and the folder is removed", len(res_post) == 1 and res_post[0][2]["ok"] is True and "12 passing" in res_post[0][2]["output"] and "sk_live_ABCDEFGHIJKLMNOPQRSTUVWX" not in res_post[0][2]["output"] and not os.path.exists(pd), res_post)
+st_ev = {"pending": {"tu9": {"name": "Bash", "input": {"command": "npm test"}, "t": time.time()}}, "text": None, "result": None, "raw": []}
+mk.stream_event(prun, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu9", "content": "ok 3 tests", "is_error": False}]}}, st_ev)
+check("the run keeps each tool result by its id, so the right result goes with the right question", st_ev.get("results", {}).get("tu9") == {"out": "ok 3 tests", "error": False})
+os.environ["SPY_LOG"] = spylog; mk.CLAUDE_BIN = sc; open(spylog, "w").close(); mk.MAY_ASK = True
+mk.ask_claude("general", [], {"id": "q1", "ts": int(time.time() * 1000), "username": "alice", "text": "@test-bot run the tests"}); ca = calls()[-1]
+mk.MAY_ASK = False; mk.ask_claude("general", [], {"id": "q2", "ts": int(time.time() * 1000), "username": "alice", "text": "@test-bot hi"}); cb = calls()[-1]
+sa = json.loads(argval(ca, "--settings")); mc = json.loads(argval(ca, "--mcp-config"))
+toolsA = ca[ca.index("--tools") + 1:ca.index("--allowedTools")]; allowA = ca[ca.index("--allowedTools") + 1:ca.index("--permission-mode")]
+check("asking on: Bash exists but is not pre-allowed, every use is asked about, the helper is the permission prompt, and the AI cannot touch its folder",
+      argval(ca, "--permission-mode") == "manual" and argval(ca, "--permission-prompt-tool") == "mcp__chamber_ask__ask" and "Bash" in toolsA and not any(t.startswith("Bash") and t != "Bash(git status:*)" and t != "Bash(ls)" for t in allowA)
+      and sa["permissions"]["ask"] == ["Bash"] and any("/asks/**" in d and d.startswith("Write(") for d in sa["permissions"]["deny"]) and mc["mcpServers"]["chamber_ask"]["args"][1] == "--ask-mcp" and "CHAMBER_TOKEN" not in json.dumps(mc), (ca[:4], toolsA, allowA, sa.get("permissions", {}).get("ask")))
+check("asking off (the default): the locked spawn is unchanged (dontAsk, no helper, no MCP servers)", argval(cb, "--permission-mode") == "dontAsk" and "--permission-prompt-tool" not in cb and argval(cb, "--mcp-config") == '{"mcpServers":{}}')
+sys.argv = ["chamber-agent.py"]
 srv.shutdown()
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

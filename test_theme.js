@@ -22,7 +22,7 @@ function run(quiet) {
     check(`${name} theme defines its tokens`, th.bg && th.surface && th.text && th['text-dim'] && th['text-faint'] && th.accent);
     for (const [fg, bg, min] of pairs) { if (!th[fg] || !th[bg]) { check(`${name}: ${fg} on ${bg} is defined`, false); continue; } const c = contrast(th[fg], th[bg]); check(`${name}: ${fg} on ${bg} ≥ ${min}:1 (${c.toFixed(2)})`, c >= min); }
   }
-  for (const f of ['landing.html', 'help.html', 'api.html']) {
+  for (const f of ['landing.html', 'help.html', 'api.html', 'compare.html']) {
     const t = fs.readFileSync(path.join(__dirname, 'public', f), 'utf8');
     check(`${f} carries the same light theme block and the pre-paint theme script`, t.includes(lightBlock) && t.includes("l.getItem('chamber-theme')"));
     check(`${f}: grey text follows the theme (--dim and --faint come from --text-dim and --text-faint)`, /--text-dim:\s*#8d978f/.test(t) && /--dim:\s*var\(--text-dim\)/.test(t) && /--faint:\s*var\(--text-faint\)/.test(t));

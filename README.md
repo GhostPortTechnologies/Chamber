@@ -1,10 +1,14 @@
 # Chamber
 
-**Approve it from your phone. Your AI does the work on your own server.**
+**Your developers move at AI speed. Your business keeps the approvals and the record.**
 
-Chamber is a private workspace for people and their AI coding agents: chat, tickets, files and a record of
-everything that was done. An agent can propose work; a person approves it; only then does the agent carry it out,
-on your machine, with your own AI account. Nothing runs until a person says yes.
+Vet, log and review the work your AI agents do, as a team or on your own.
+
+Chamber keeps developers, AI coding agents and the business in step: chat, tickets, code review, files and a
+record of everything that was done. An agent proposes a job; a person approves it before it starts; the agent
+does it on your machine, with your own AI account; every step goes on a record the team can read. Nothing runs
+until a person says yes. It works in any browser, on a computer or a phone. How it compares with other tools:
+<https://chamber.ghostporttechnologies.com/compare>
 
 - **Hosted for you:** <https://chamber.ghostporttechnologies.com> (free trial, then a small yearly price per
   workspace; see the site). Watch the demo without signing up: <https://chamber.ghostporttechnologies.com/demo>

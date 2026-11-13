@@ -3,13 +3,13 @@
 <head><script>try{var h=document.documentElement,l=localStorage;h.dataset.theme=l.getItem('chamber-theme')||'dark';h.dataset.size=l.getItem('chamber-size')||'normal';h.dataset.density=l.getItem('chamber-density')||'cozy'}catch(e){}</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Chamber: approve it from your phone, your AI does the work on your server</title>
+<title>Chamber: AI speed for developers, approvals and a record for the business</title>
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#0a0d0b">
 <link rel="icon" href="/favicon.ico" sizes="any"><link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png"><link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<meta name="description" content="For solo developers and small teams running AI coding agents: approve a ticket from your phone and your own AI does the work on your own server. Nothing runs until a person says yes.">
+<meta name="description" content="Vet, log and review the work your AI coding agents do. An agent proposes a job, a person approves it before it starts, the work happens on your own server, and every step goes on a record your team and your business can read.">
 <meta property="og:site_name" content="Chamber"><meta property="og:type" content="website"><meta property="og:url" content="https://chamber.ghostporttechnologies.com/">
-<meta property="og:title" content="Chamber: approve it from your phone, your AI does the work on your server">
+<meta property="og:title" content="Your developers move at AI speed. Your business keeps the approvals and the record.">
 <meta property="og:description" content="A private room for a small team and its AI agents: chat, tickets with an approval trail, and a record of every step. No ads, no trackers.">
 <meta property="og:image" content="https://chamber.ghostporttechnologies.com/og.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
@@ -102,6 +102,7 @@
   .hero h1 { font-size: clamp(30px, 5vw, 52px); line-height: 1.1; margin: 0 0 18px; letter-spacing: -.01em; text-wrap: balance; }
   .hero h1 em { color: var(--accent); font-style: normal; }
   .hero p { color: var(--dim); max-width: 60ch; font-size: 17px; margin: 0 0 28px; }
+  .hero p.hero-lead { color: var(--text); font-size: 20px; margin: -4px 0 16px; }   /* T-0195: the line under the headline */
   .hero .actions { display: flex; gap: 12px; flex-wrap: wrap; }
   .term { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); padding: 18px 20px; margin: 36px 0; font-size: 13.5px; overflow-x: auto; }
   .term .t { color: var(--faint); } .term .u { color: var(--accent); }
@@ -190,9 +191,10 @@
   <!-- ── Home ─────────────────────────────────────────────────────── -->
   <section class="view" data-view="/">
     <div class="hero">
-      <h1>Approve it from your phone. Your AI does the work <em>on your own server</em>.</h1>
-      <p>For solo developers and small teams who run AI coding agents and want a person to approve every change before it touches a real machine. Ask in plain words, approve the ticket, and your own AI carries it out on the machine you chose, with a record of every step. <b>Nothing runs until a person says yes.</b></p>
-      <p class="hero-fit">Works with Claude Code. Agents can also answer through OpenAI, Gemini, Mistral, Groq, Together or a local Ollama model.</p>
+      <h1>Your developers move at AI speed. <em>Your business keeps the approvals and the record.</em></h1>
+      <p class="hero-lead">Vet, log and review the work your AI agents do, as a team or on your own.</p>
+      <p>Chamber keeps developers, AI agents and the business in step. An agent proposes a job, a person approves it before it starts, the agent does it on your own server with your own AI account, and every step goes on a record the whole team can read. For solo developers and small teams who want AI to multiply what they get done without losing track of what it did. <b>Nothing runs until a person says yes.</b></p>
+      <p class="hero-fit">Works with Claude Code. Agents can also answer through OpenAI, Gemini, Mistral, Groq, Together or a local Ollama model. Use it from a computer or a phone. <a href="/compare">How it compares with other tools</a>.</p>
       <div class="actions">
         <a href="/signup" class="btn primary">Create account</a>
         <a href="/demo" class="btn">Watch the demo</a>
@@ -229,15 +231,16 @@
 
     <h2 id="features" class="h-sec">Features</h2>
     <div class="grid">
-      <div class="card"><h3>Real-time chat + rooms</h3><p>Fast, plain, searchable. Presence shows who is online, human or agent.</p></div>
-      <div class="card"><h3>Files and screenshots</h3><p>Paste a screenshot or drop a file into the room. People and agents can both read it; images show inline.</p></div>
-      <div class="card"><h3>Tickets with a paper trail</h3><p>Propose, approve, claim, close. Closing needs a note, so the record stays honest.</p></div>
+      <div class="card"><h3>Tickets with a paper trail</h3><p>Propose, approve, claim, close. A person approves a job before an agent starts it, and closing needs a note, so the record stays honest.</p></div>
+      <div class="card"><h3>Code review in plain words</h3><p>A proposed change comes with a plain-words summary: what it changes, how to try it, what could go wrong and how to undo it. The line-by-line view is one tap away, and a person approves or rejects it.</p></div>
       <div class="card"><h3>Activity timeline</h3><p>One feed of who did what and when, across chat, tickets and code reviews.</p></div>
+      <div class="card"><h3>Real-time chat + rooms</h3><p>Fast, plain, searchable. One place where the team and its agents stay in step. Presence shows who is online, human or agent.</p></div>
+      <div class="card"><h3>Files and screenshots</h3><p>Paste a screenshot or drop a file into the room. People and agents can both read it; images show inline.</p></div>
       <div class="card"><h3>Built for agents too</h3><p>A small, documented HTTP API with bearer tokens. Your AI tools can read and post like anyone else.</p></div>
-      <div class="card"><h3>Ask AI from your phone</h3><p>Ask the AI on your own machine a question from the Chamber app on your phone. The answer comes from that machine, not from us.</p></div>
       <div class="card"><h3>A worker that knows its limits</h3><p>The ticket worker only takes tickets about the one code folder you gave it. It cannot touch secrets, databases, backups or files owned by the system, and it may restart only the one service you named. Anything else it hands back with the reason.</p></div>
       <div class="card"><h3>You hold the keys</h3><p>Two-factor sign-in, agent tokens you can revoke, an audit trail, and a full export of your workspace whenever you want it.</p></div>
       <div class="card"><h3>Private by design</h3><p>Hosted by GhostPort Technologies, a privacy company. Open source under the AGPL. No analytics.</p></div>
+      <div class="card"><h3>Works on your phone too</h3><p>Approve a job, follow an agent's progress, or ask the AI on your own machine a question from the Chamber app on your phone. The answer comes from that machine, not from us.</p></div>
     </div>
 
     <h2 id="pricing" class="h-sec center">Pricing</h2>
@@ -376,10 +379,48 @@
         <label class="check"><input type="radio" name="pol" value="owner" id="pol-owner"> Only the owner</label>
         <label class="check"><input type="radio" name="pol" value="members" id="pol-members"> Every human member of the workspace</label>
         <div class="msg" id="pol-msg"></div>
+        <h2 class="sec" id="approval">Approval rules</h2>
+        <p class="sub">Who may say yes to a ticket before a person or an agent starts it. The server enforces these rules for everyone.</p>
+        <label class="check"><input type="checkbox" id="ap-noself"> Nobody approves a ticket they proposed themselves</label>
+        <label for="ap-two">Two different people must approve</label>
+        <select id="ap-two" style="max-width:360px"><option value="none">Never: one approval is enough</option><option value="high">High and critical priority tickets</option><option value="all">Every ticket</option></select>
+        <label for="ap-who">Only these people may approve</label>
+        <input id="ap-who" maxlength="600" placeholder="usernames separated by commas; empty means everyone in a full seat">
+        <p class="sub meta-block">The owner can always approve. Name a viewer here to let a manager approve without being able to change anything else.</p>
+        <label for="ap-remind">Remind the approvers when a ticket waits</label>
+        <select id="ap-remind" style="max-width:360px"><option value="0">Never</option><option value="60">After 1 hour</option><option value="120">After 2 hours</option><option value="240">After 4 hours</option><option value="1440">After 1 day</option></select>
+        <label for="ap-esc">Then tell a backup approver</label>
+        <div class="inline-form"><select id="ap-esc" style="flex:0 1 220px"><option value="0">Never</option><option value="240">After 4 hours</option><option value="480">After 8 hours</option><option value="1440">After 1 day</option><option value="2880">After 2 days</option></select><input id="ap-backup" maxlength="24" placeholder="backup approver's username" style="flex:1 1 160px"></div>
+        <p class="sub meta-block">One reminder per ticket, and one message to the backup; tickets due together go out as one message. Each person's quiet hours still apply.</p>
+        <p class="sub meta-block">For routine jobs, anyone who may approve can also set up a <b>standing approval</b> in the app (Tickets tab, Standing approvals): that kind of job, by that agent, starts without waiting, within limits they choose, as a pull request a person merges.</p>
+        <button class="btn" id="ap-save" type="button">Save approval rules</button>
+        <div class="msg" id="ap-msg"></div>
         <h2 class="sec" id="audit">Activity &amp; audit</h2>
         <p class="sub">Who did what in this workspace: agent writes and administrative actions by people, newest first. Each entry carries a request id you can quote to support.</p>
         <div class="inline-form"><input id="au-q" placeholder="search (action, ticket, room…)" style="flex:1 1 160px"><select id="au-actor" style="flex:0 1 160px"><option value="">everyone</option></select><button class="btn ghost" type="button" id="au-go">Filter</button><span id="au-export" style="display:none"><a class="btn ghost sm" id="au-csv" href="/account/workspace/audit?format=csv">Export CSV</a> <a class="btn ghost sm" id="au-json" href="/account/workspace/audit?format=json">JSON</a></span></div>
         <div id="audit-list"></div><p class="sub" id="au-count"></p>
+        <div class="inline-form"><button class="btn ghost" type="button" id="au-verify">Check the record</button></div><p class="sub" id="au-verify-msg" role="status"></p>
+        <p class="sub" style="margin-top:12px">Evidence pack for the tickets closed in a period: the request, approvals, change, commands the agents ran, result and record entries of each, sealed so a change shows.</p>
+        <div class="inline-form"><input id="ev-from" type="date" style="flex:0 1 170px"><input id="ev-to" type="date" style="flex:0 1 170px"><button class="btn ghost" type="button" id="ev-open">Open</button><button class="btn ghost" type="button" id="ev-json">Data (JSON)</button></div>
+        <h2 class="sec" id="usage">AI usage</h2>
+        <p class="sub">What the agents' work cost and how long it took, from what each agent reports with its answers. <span id="us-note"></span></p>
+        <div class="inline-form"><select id="us-days" style="max-width:200px"><option value="7">Last 7 days</option><option value="28" selected>Last 4 weeks</option><option value="90">Last 3 months</option></select></div>
+        <div id="usage-box"><p class="sub">Loading…</p></div>
+        <h2 class="sec" id="budget">AI budget</h2>
+        <p class="sub">A monthly limit on what the agents may spend. At 80% the owner and admins are told; at 100% agents finish what they are doing and take no new work until you raise it or the month turns. Agents that report no cost (local models) are never stopped by it.</p>
+        <p class="sub" id="bu-now"></p>
+        <label for="bu-month">Monthly budget for the workspace, in dollars</label><input id="bu-month" inputmode="decimal" maxlength="9" placeholder="empty = no budget" style="max-width:220px">
+        <label for="bu-agents">Limits for single agents (optional)</label><textarea id="bu-agents" rows="3" maxlength="800" placeholder="one per line, for example:  server-agent 20"></textarea>
+        <button class="btn" type="button" id="bu-save">Save budget</button><div class="msg" id="bu-msg"></div>
+        <div id="rep-box" hidden>
+        <h2 class="sec" id="report">Weekly report</h2>
+        <p class="sub">A plain-words page of what got done each week (how long each thing took, how long approvals waited, who approved it, what the AI cost, and what is waiting), to hand to a manager or a client. Measured facts only: no estimates of time saved. No chat and no code.</p>
+        <div class="inline-form"><button class="btn ghost" type="button" id="rep-link">Make a private link</button><button class="btn ghost" type="button" id="rep-off" hidden>Turn the link off</button></div>
+        <p class="sub wrap-any" id="rep-url"></p>
+        <label class="check"><input type="checkbox" id="rep-on"> Email last week's report every Monday morning</label>
+        <label for="rep-to">To</label><input id="rep-to" maxlength="500" placeholder="email addresses separated by commas (up to 10)">
+        <button class="btn" type="button" id="rep-save">Save</button><div class="msg" id="rep-msg"></div>
+        </div>
       </div>
       <div id="tok-box" hidden>
         <h2 class="sec" id="agents">AI agents</h2>
@@ -449,7 +490,7 @@
 
 <footer role="contentinfo"><div class="wrap">
   <span>© 2026 GhostPort Technologies</span>
-  <span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refunds">Refunds</a> · <a href="/help">Help</a> · <a href="/?topic=question#contact">Contact</a> · <a href="/changelog">Changelog</a> · <a href="/source">Source code of this version (AGPL-3.0)</a> · <a href="https://github.com/GhostPortTechnologies/Chamber" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.ghostporttechnologies.com" target="_blank" rel="noopener">ghostporttechnologies.com</a></span>
+  <span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refunds">Refunds</a> · <a href="/help">Help</a> · <a href="/compare">Compare</a> · <a href="/?topic=question#contact">Contact</a> · <a href="/changelog">Changelog</a> · <a href="/source">Source code of this version (AGPL-3.0)</a> · <a href="https://github.com/GhostPortTechnologies/Chamber" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.ghostporttechnologies.com" target="_blank" rel="noopener">ghostporttechnologies.com</a></span>
 </div></footer>
 
 <script src="/theme.js"></script>
@@ -517,7 +558,7 @@
     if (vq === '0') act.insertAdjacentHTML('beforeend', '<p class="msg err">That confirmation link is invalid or expired. Use "Resend" below.</p>');
     if (me.needsTotp) act.insertAdjacentHTML('beforeend', '<p class="msg err">You own agent tokens that can read your servers. Turn on <a href="#tf-box">two-factor authentication</a> below.</p>');   // T-0040
     if (me.emailVerified === false) act.insertAdjacentHTML('beforeend', `<p class="msg err" id="vf-box">Confirm your email: we sent a link to <b>${esc(me.email)}</b>. If it is not in your inbox, look in spam. ${me.billing?.trialPending ? 'Your free trial starts when you open that link.' : 'Until then you can use the app but cannot subscribe, invite or create agent tokens.'} <a href="#" id="vf-resend">Resend the link</a></p>`);
-    if (me.entitled) act.insertAdjacentHTML('beforeend', '<a class="btn primary" href="/app">Open Chamber</a>');
+    if (me.entitled) act.insertAdjacentHTML('beforeend', me.workspace?.role === 'requester' ? '<a class="btn primary" href="/requests">Your requests</a>' : '<a class="btn primary" href="/app">Open Chamber</a>');   // T-0199
     if (me.entitled && trialish && tb.isPayer) act.insertAdjacentHTML('beforeend', ' <button class="btn" id="bi-sub-btn">Subscribe: $49 / year</button>');
     if (me.entitled || tb.trialPending) {}                                            // nothing more to offer: already in, or waiting on the email link
     else if (me.workspace && me.workspace.role !== 'owner') act.insertAdjacentHTML('beforeend', `<p class="msg err">Your workspace's owner (${esc(me.workspace.owner)}) needs an active subscription for you to get in.</p>`);
@@ -592,15 +633,18 @@
     } catch (err) { show(out, err.message || 'Import failed.', 'err'); }
   };
   const renderWorkspace = async () => {
+    if (me?.workspace?.role === 'requester') { $('ws-sub').textContent = `You can send requests to ${me.workspace.name} and follow your own on the Your requests page.`; $('ws-status').innerHTML = '<dt>Your requests</dt><dd><a href="/requests">Open Your requests</a></dd>'; return; }   // T-0199
     let w; try { w = await api('/account/workspace'); } catch { return; }
     const owner = w.role === 'owner'; const canManage = !!w.canManage;                         // T-0034
     if (owner) { $('exp-btn').hidden = false; $('exp-sub').textContent = 'Download everything in your workspace as one JSON file. Deleting your account deletes the workspace, cancels the subscription, and gives each member an empty workspace of their own.'; $('imp-wrap').hidden = false; wireImport(); }
     else $('exp-sub').textContent = 'Deleting your account removes you from this workspace. The workspace and its content belong to its owner.';
     $('ws-sub').textContent = owner ? 'You own this workspace. Invite teammates with the link below; they share your subscription.' : `Owned by ${w.owner}. Everything here is private to this workspace.`;
-    $('ws-status').innerHTML = `<dt>Name</dt><dd>${esc(w.name)}${canManage ? ' <a href="#" id="ws-rename">rename</a>' : ''}</dd><dt>Members</dt><dd>${w.members.length}</dd>`
-      + (canManage ? `<dt>Invite link</dt><dd class="wrap-any"><code id="ws-invite">${esc(w.inviteUrl)}</code><div class="inline-form"><button class="btn ghost sm" id="ws-copy">Copy</button><button class="btn ghost sm" id="ws-reset">New link</button></div></dd>` : '');
+    $('ws-status').innerHTML = `<dt>Name</dt><dd>${esc(w.name)}${canManage ? ' <a href="#" id="ws-rename">rename</a>' : ''}</dd><dt>Members</dt><dd>${w.seats ? `${w.seats.full} of ${w.seats.maxFull} seats` + (w.seats.guests ? `, plus ${w.seats.guests} viewer${w.seats.guests === 1 ? '' : 's'} or requester${w.seats.guests === 1 ? '' : 's'}` : '') : w.members.length}</dd>`
+      + (canManage ? `<dt>Invite link</dt><dd class="wrap-any"><code id="ws-invite">${esc(w.inviteUrl)}</code><div class="inline-form"><button class="btn ghost sm" id="ws-copy">Copy</button><button class="btn ghost sm" id="ws-reset">New link</button></div></dd>`
+        + `<dt>Managers and clients</dt><dd>${['viewer', 'requester'].map(r => `<div class="guest-inv"><b>${r === 'viewer' ? 'Viewer link' : 'Requester link'}</b> <span class="meta">${r === 'viewer' ? 'reads everything; approves only if you name them in the approval rules' : 'sends requests and follows only their own'}</span>`
+          + (w.inviteUrls?.[r] ? `<div class="wrap-any"><code>${esc(w.inviteUrls[r])}</code></div><div class="inline-form"><button class="btn ghost sm" data-gcopy="${r}">Copy</button><button class="btn ghost sm" data-gnew="${r}">New link</button><button class="btn ghost sm" data-goff="${r}">Turn off</button></div>` : `<div class="inline-form"><button class="btn ghost sm" data-gnew="${r}">Create link</button></div>`) + '</div>').join('')}<p class="sub meta-block">Viewers and requesters do not use one of your ${w.seats?.maxFull || 25} seats.</p></dd>` : '');   // T-0199
     const ago = (t) => !t ? 'never active' : (Date.now() - t < 120e3 ? 'active now' : Date.now() - t < 36e5 ? `active ${Math.round((Date.now() - t) / 6e4)} min ago` : Date.now() - t < 864e5 ? `active ${Math.round((Date.now() - t) / 36e5)} h ago` : `active ${Math.round((Date.now() - t) / 864e5)} d ago`);   // T-0034
-    $('ws-members').innerHTML = w.members.map(mm => `<div class="row-item"><span>${esc(mm.username)} <span class="pill ${mm.role === 'owner' ? 'on' : ''}">${mm.role}</span>${mm.chatRole === 'ai' ? ' <span class="pill">ai</span>' : ''} <span class="meta">${ago(mm.lastSeen)}</span></span><span class="row-actions">${owner && mm.role === 'member' && mm.chatRole !== 'ai' ? `<a href="#" data-role="${esc(mm.username)}" data-to="admin">make admin</a>` : ''}${owner && mm.role === 'admin' ? `<a href="#" data-role="${esc(mm.username)}" data-to="member">make member</a>` : ''}${owner && mm.role !== 'owner' && mm.chatRole !== 'ai' ? `<a href="#" data-transfer="${esc(mm.username)}">transfer ownership</a>` : ''}${canManage && mm.role !== 'owner' && (owner || mm.role === 'member') ? `<a href="#" data-remove="${esc(mm.username)}" class="danger">remove</a>` : ''}</span></div>`).join('');
+    $('ws-members').innerHTML = w.members.map(mm => `<div class="row-item"><span>${esc(mm.username)} <span class="pill ${mm.role === 'owner' ? 'on' : ''}">${mm.role}</span>${mm.chatRole === 'ai' ? ' <span class="pill">ai</span>' : ''} <span class="meta">${ago(mm.lastSeen)}</span></span><span class="row-actions">${owner && mm.role !== 'owner' && mm.chatRole !== 'ai' ? ['admin', 'member', 'viewer', 'requester'].filter(r => r !== mm.role).map(r => `<a href="#" data-role="${esc(mm.username)}" data-to="${r}">make ${r}</a>`).join('') : ''}${owner && ['admin', 'member'].includes(mm.role) && mm.chatRole !== 'ai' ? `<a href="#" data-transfer="${esc(mm.username)}">transfer ownership</a>` : ''}${canManage && mm.role !== 'owner' && (owner || ['member', 'viewer', 'requester'].includes(mm.role)) ? `<a href="#" data-remove="${esc(mm.username)}" class="danger">remove</a>` : ''}</span></div>`).join('');
     $('ws-actions').innerHTML = owner ? `<label for="ws-ret">Keep messages</label><select id="ws-ret" style="max-width:260px">${[[0, 'forever (default)'], [30, '30 days'], [90, '90 days'], [365, '1 year']].map(([v, l]) => `<option value="${v}" ${(w.retentionDays || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}</select><p class="sub meta-block">Older messages and their files are deleted for good once an hour. Export first if you need them.</p>` : '';   // T-0037
     $('ws-ret')?.addEventListener('change', async e => { try { await api('/account/workspace', { retentionDays: Number(e.target.value) }); show($('ws-msg'), Number(e.target.value) ? `Messages older than ${e.target.value} days will be deleted hourly.` : 'Messages are kept forever.', 'ok'); } catch (err) { show($('ws-msg'), err.message, 'err'); } });
     document.querySelectorAll('[data-role]').forEach(a => a.addEventListener('click', async e => { e.preventDefault();                    // T-0034
@@ -613,6 +657,9 @@
         try { const d = await api('/account/workspace/transfer', { username: u, password: $('tr-pw').value }); show($('ws-msg'), `${d.owner} now owns this workspace${d.subscriptionMoved ? ' and its subscription' : ''}.`, 'ok'); me = await api('/account/me'); renderBilling(); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }; }));
     $('ws-rename')?.addEventListener('click', async e => { e.preventDefault(); const name = window.prompt ? null : null; const input = document.createElement('input'); input.value = w.name; input.maxLength = 48; e.target.replaceWith(input); input.focus();
       input.addEventListener('keydown', async ev => { if (ev.key === 'Enter') { try { await api('/account/workspace', { name: input.value }); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } } if (ev.key === 'Escape') renderWorkspace(); }); });
+    document.querySelectorAll('[data-gnew]').forEach(b => b.addEventListener('click', async () => { try { await api('/account/workspace/invite-reset', { role: b.dataset.gnew }); show($('ws-msg'), `New ${b.dataset.gnew} link made. An older one no longer works.`, 'ok'); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }));   // T-0199
+    document.querySelectorAll('[data-goff]').forEach(b => b.addEventListener('click', async () => { try { await api('/account/workspace/invite-reset', { role: b.dataset.goff, off: true }); show($('ws-msg'), `The ${b.dataset.goff} link is turned off.`, 'ok'); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }));
+    document.querySelectorAll('[data-gcopy]').forEach(b => b.addEventListener('click', async () => { try { await navigator.clipboard.writeText(w.inviteUrls[b.dataset.gcopy]); show($('ws-msg'), 'Link copied.', 'ok'); } catch { show($('ws-msg'), 'Select the link and copy it.', 'err'); } }));
     $('ws-copy')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(w.inviteUrl); show($('ws-msg'), 'Invite link copied.', 'ok'); } catch { show($('ws-msg'), 'Select the link and copy it.', 'err'); } });
     $('ws-reset')?.addEventListener('click', async () => { try { await api('/account/workspace/invite-reset', {}); show($('ws-msg'), 'Old invite link no longer works.', 'ok'); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } });
     document.querySelectorAll('[data-remove]').forEach(a => a.addEventListener('click', async e => { e.preventDefault(); const u = a.dataset.remove;
@@ -673,7 +720,62 @@
     if (!owner) show($('pol-msg'), `Only the workspace owner (${w.owner}) can change this.`, '');
     document.querySelectorAll('input[name=pol]').forEach(r => { r.disabled = !owner; r.addEventListener('change', async () => {
       try { await api('/account/workspace', { agentPolicy: r.value }); show($('pol-msg'), 'Saved. Agents pick this up within a minute.', 'ok'); } catch (err) { show($('pol-msg'), err.message, 'err'); } }); });
+    const ap = w.approval || { noSelf: false, two: 'none', approvers: [] };                 // T-0190
+    $('ap-noself').checked = !!ap.noSelf; $('ap-two').value = ap.two || 'none'; $('ap-who').value = (ap.approvers || []).join(', ');
+    $('ap-remind').value = String(ap.remindMin || 0); $('ap-esc').value = String(ap.escalateMin || 0); $('ap-backup').value = ap.backup || '';   // T-0201
+    ['ap-noself', 'ap-two', 'ap-who', 'ap-remind', 'ap-esc', 'ap-backup', 'ap-save'].forEach(id => { $(id).disabled = !owner; });
+    if (!owner) show($('ap-msg'), `Only the workspace owner (${w.owner}) can change approval rules.`, '');
+    $('ap-save').onclick = async () => {
+      try { const d = await api('/account/workspace', { approval: { noSelf: $('ap-noself').checked, two: $('ap-two').value, approvers: $('ap-who').value.split(',').map(s => s.trim()).filter(Boolean), remindMin: Number($('ap-remind').value), escalateMin: Number($('ap-esc').value), backup: $('ap-backup').value.trim() } });
+        show($('ap-msg'), d.approvalWarning ? 'Saved. ' + d.approvalWarning : 'Saved. Approvals follow these rules from now on.', d.approvalWarning ? 'err' : 'ok'); }
+      catch (err) { show($('ap-msg'), err.message, 'err'); }
+    };
     renderAudit();                                                                      // T-0057
+    $('au-verify').onclick = async () => {                                              // T-0194
+      show($('au-verify-msg'), 'Checking…');
+      try { const v = await api('/account/workspace/audit/verify');
+        if (v.ok) show($('au-verify-msg'), v.checked ? `Intact: all ${v.checked} entries check out${v.before ? ` (and ${v.before} older ones from before the check started)` : ''}. Newest check value: ${String(v.head).slice(0, 16)}… Keep a copy somewhere else; it lets you tell later that nothing was rewritten.` : 'Nothing to check yet: entries get check values from now on.', 'ok');
+        else show($('au-verify-msg'), `NOT INTACT: ${v.reason}${v.at ? ` (entry ${v.at.n ?? '?'}${v.at.ts ? ', ' + new Date(v.at.ts).toLocaleString() : ''}${v.at.actor ? ', ' + v.at.actor : ''}${v.at.action ? ', ' + v.at.action : ''})` : ''}. Write to support if you did not expect this.`, 'err');
+      } catch (err) { show($('au-verify-msg'), err.message, 'err'); }
+    };
+    const usage = async () => {                                                          // T-0194
+      let u; try { u = await api('/api/usage?days=' + $('us-days').value); } catch { $('usage-box').innerHTML = '<p class="sub">Usage is not available here.</p>'; return; }
+      const money = c => '$' + (c / 100).toFixed(2), mins = ms => ms < 60000 ? Math.round(ms / 1000) + ' s' : Math.round(ms / 60000) + ' min';
+      const line = (label, x) => `<div class="row-item"><span>${label}</span><span class="meta">${x.answers} answer${x.answers === 1 ? '' : 's'} · ${money(x.cents)}${x.no_cost ? ` (${x.no_cost} without a cost)` : ''} · ${mins(x.ms)}</span></div>`;
+      $('us-note').textContent = u.note || '';
+      const weeks = Object.entries(u.byWeek || {}).sort((a, b) => b[0].localeCompare(a[0])), agents = Object.entries(u.byAgent || {}).sort((a, b) => b[1].cents - a[1].cents);
+      $('usage-box').innerHTML = !u.total.answers && !(u.tickets || []).length ? '<p class="sub">No agent answers in this period yet.</p>'
+        : line('<b>Total</b>', u.total) + '<p class="sub" style="margin-top:10px">By week (starting Monday)</p>' + weeks.map(([w, x]) => line(esc(w), x)).join('')
+          + '<p class="sub" style="margin-top:10px">By agent</p>' + agents.map(([a, x]) => line(esc(a), x)).join('')
+          + ((u.tickets || []).length ? '<p class="sub" style="margin-top:10px">By ticket (answers that name it, plus what the ticket worker reported)</p>' + u.tickets.slice(0, 12).map(t => line(`${esc(t.id)}${t.title ? ' ' + esc(t.title).slice(0, 60) : ''}`, { ...t, cents: t.cents + (t.worker?.cost_cents || 0), ms: t.ms + (t.worker?.ms || 0), answers: t.answers + (t.worker?.runs || 0) })).join('') : '');
+    };
+    $('us-days').onchange = usage; usage();
+    { const d = new Date(), iso = x => x.toISOString().slice(0, 10); if (!$('ev-to').value) { $('ev-to').value = iso(d); $('ev-from').value = iso(new Date(d.getTime() - 30 * 864e5)); }   // T-0204
+      const ev = fmt => { const u = `/api/evidence?from=${encodeURIComponent($('ev-from').value)}&to=${encodeURIComponent($('ev-to').value)}${fmt ? '&format=' + fmt : ''}`; window.open(u, '_blank', 'noopener'); };
+      $('ev-open').onclick = () => ev(''); $('ev-json').onclick = () => ev('json'); }
+    const rep = r => {                                                                   // T-0202: owners and admins only (the server sends report only to them)
+      if (!r) return; $('rep-box').hidden = false;
+      $('rep-url').innerHTML = r.linkUrl ? `<a href="${esc(r.linkUrl)}?week=this" target="_blank" rel="noopener">${esc(r.linkUrl)}</a> <span class="meta">anyone with this link can read the reports; make a new one to stop the old one working</span>` : '';
+      $('rep-link').textContent = r.linkUrl ? 'Make a new link' : 'Make a private link'; $('rep-off').hidden = !r.linkUrl;
+      $('rep-on').checked = !!r.enabled; $('rep-to').value = (r.recipients || []).join(', ');
+    };
+    rep(w.report);
+    const bud = async b => {                                                             // T-0203
+      b = b || { monthlyCents: 0, perAgent: {} };
+      $('bu-month').value = b.monthlyCents ? (b.monthlyCents / 100).toFixed(2).replace(/\.00$/, '') : ''; $('bu-agents').value = Object.entries(b.perAgent || {}).map(([k, v]) => `${k} ${(v / 100).toFixed(2).replace(/\.00$/, '')}`).join('\n');
+      ['bu-month', 'bu-agents', 'bu-save'].forEach(id => { $(id).disabled = !owner; });
+      try { const now = (await api('/api/me')).budget; $('bu-now').textContent = now ? (now.monthlyCents ? `This month so far: $${(now.spentCents / 100).toFixed(2)} of $${(now.monthlyCents / 100).toFixed(2)} (${now.pct}%)${now.over ? '. Used up: agents take no new work.' : '.'}` : `This month so far: $${(now.spentCents / 100).toFixed(2)}.`) + (now.noCostAgents && now.noCostAgents.length ? ` No cost reported by: ${now.noCostAgents.join(', ')}.` : '') : (owner ? 'No budget set.' : ''); } catch { /* the line stays empty */ }
+    };
+    bud(w.budget);
+    $('bu-save').onclick = async () => {
+      const d = $('bu-month').value.trim().replace(/^\$/, ''), n = d === '' ? 0 : Math.round(Number(d) * 100);
+      if (Number.isNaN(n) || n < 0) { show($('bu-msg'), 'Write the budget in dollars, for example 50.', 'err'); return; }
+      try { const r = await api('/account/workspace', { budget: { monthlyCents: n, perAgent: $('bu-agents').value } }); bud(r.budget); show($('bu-msg'), n ? 'Saved. Agents follow it within a minute.' : 'Saved. No workspace budget.', 'ok'); } catch (err) { show($('bu-msg'), err.message, 'err'); }
+    };
+    const repCall = async (body, okText) => { try { const d = await api('/account/workspace/report', body); rep(d.report); show($('rep-msg'), okText, 'ok'); } catch (err) { show($('rep-msg'), err.message, 'err'); } };
+    $('rep-link').onclick = () => repCall({ link: 'make' }, 'Link made. An older link no longer works.');
+    $('rep-off').onclick = () => repCall({ link: 'off' }, 'The link is off.');
+    $('rep-save').onclick = () => repCall({ enabled: $('rep-on').checked, recipients: $('rep-to').value }, $('rep-on').checked ? 'Saved. The next report goes out on Monday morning.' : 'Saved.');
   };
   const renderAudit = async () => {                                                         // T-0057
     const q = encodeURIComponent($('au-q')?.value || ''), actor = encodeURIComponent($('au-actor')?.value || '');
@@ -681,9 +783,9 @@
     const sel = $('au-actor'); if (sel && sel.options.length <= 1) (a.actors || []).forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
     const canExport = me && me.workspace && (me.workspace.role === 'owner' || me.workspace.role === 'admin'); if ($('au-export')) $('au-export').style.display = canExport ? 'inline' : 'none';
     if ($('au-csv')) { $('au-csv').href = `/account/workspace/audit?format=csv&q=${q}&actor=${actor}`; $('au-json').href = `/account/workspace/audit?format=json&q=${q}&actor=${actor}`; }
-    const skip = new Set(['ts', 'actor', 'agent', 'kind', 'action', 'rid', 'ip']);
+    const skip = new Set(['ts', 'actor', 'agent', 'kind', 'action', 'rid', 'ip', 'n', 'prev', 'h']);   // T-0194: the check values belong to Check the record, not the list
     $('audit-list').innerHTML = a.audit.length ? a.audit.slice(0, 50).map(x => { const extra = Object.entries(x).filter(([k, v]) => !skip.has(k) && v !== undefined && v !== null).map(([k, v]) => `${esc(k)}=${esc(typeof v === 'object' ? JSON.stringify(v) : v)}`).join(' ');
-      return `<div class="row-item"><span class="meta">${new Date(x.ts).toLocaleString()}</span> <b>${esc(x.actor || x.agent)}</b> <span class="pill">${esc(x.kind || (x.agent ? 'agent' : 'human'))}</span> ${esc(x.action)} <span class="meta">${extra}${x.rid ? ' · rid ' + esc(x.rid) : ''}</span></div>`; }).join('') : '<p class="empty">Nothing recorded yet. Agent writes and admin actions will show up here.</p>';
+      return `<div class="row-item"><span class="meta">${new Date(x.ts).toLocaleString()}</span> <b>${esc(x.actor || x.agent)}</b> <span class="pill">${esc(x.kind || (x.agent ? 'agent' : 'human'))}</span> ${esc(x.action)} <span class="meta" style="overflow-wrap:anywhere">${extra}${x.rid ? ' · rid ' + esc(x.rid) : ''}</span></div>`; }).join('') : '<p class="empty">Nothing recorded yet. Agent writes and admin actions will show up here.</p>';
     if ($('au-count')) $('au-count').textContent = a.total > 50 ? `Showing 50 of ${a.total} recent entries; export for everything.` : '';
   };
   $('au-go')?.addEventListener('click', renderAudit); $('au-q')?.addEventListener('keydown', e => { if (e.key === 'Enter') renderAudit(); }); $('au-actor')?.addEventListener('change', renderAudit);
@@ -729,7 +831,10 @@
     if (!me || !me.workspace || me.workspace.role !== 'owner') return;
     let d; try { d = await api('/account/workspace/tokens'); } catch { return; }
     $('tok-box').hidden = false;
-    $('tok-list').innerHTML = d.tokens.length ? d.tokens.map(t => `<div class="row-item"><span>${esc(t.name)} <span class="pill">${esc(t.username)}</span><br><small class="meta">${t.lastUsed ? 'last used ' + new Date(t.lastUsed).toLocaleString() : 'never used'}</small></span><a href="#" data-revoke="${esc(t.id)}" class="danger">revoke</a></div>`).join('') : '<p class="empty">No agent tokens yet. Create one below, or pair a device with a 6-digit code.</p>';
+    $('tok-list').innerHTML = d.tokens.length ? d.tokens.map(t => `<div class="row-item"><span>${esc(t.name)} <span class="pill">${esc(t.username)}</span><br><small class="meta">${t.lastUsed ? 'last used ' + new Date(t.lastUsed).toLocaleString() : 'never used'}</small><br><label class="meta ask-toggle"><input type="checkbox" data-mayask="${esc(t.id)}"${t.mayAsk ? ' checked' : ''}> may ask to run things (you tap Allow or Deny)</label></span><a href="#" data-revoke="${esc(t.id)}" class="danger">revoke</a></div>`).join('') : '<p class="empty">No agent tokens yet. Create one below, or pair a device with a 6-digit code.</p>';
+    document.querySelectorAll('[data-mayask]').forEach(c => c.addEventListener('change', async () => {   // T-0188
+      try { const r = await api('/account/workspace/tokens/ask', { id: c.dataset.mayask, on: c.checked }); show($('tok-msg'), r.mayAsk ? 'This agent may now ask. Each question appears in the room with Allow once and Deny for the people who may approve; no answer means no. It needs connector 3.22 or newer.' : 'Asking is off for this agent.', 'ok'); }
+      catch (err) { c.checked = !c.checked; show($('tok-msg'), err.message, 'err'); } }));
     document.querySelectorAll('[data-revoke]').forEach(a => a.addEventListener('click', async e => { e.preventDefault();
       if (a.textContent !== 'confirm revoke') { a.textContent = 'confirm revoke'; return; }
       try { await api('/account/workspace/tokens/revoke', { id: a.dataset.revoke }); show($('tok-msg'), 'Token revoked. That agent is locked out.', 'ok'); renderTokens(); } catch (err) { show($('tok-msg'), err.message, 'err'); } }));

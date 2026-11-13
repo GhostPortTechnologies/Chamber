@@ -27,7 +27,7 @@ const PUBLIC = [   // [path, text that must be on screen, selectors that must be
   ['/signup', /Create account/i, ['#su-email', '#su-user', '#su-pass', 'button[type=submit]:visible']],
   ['/forgot', /./, ['input:visible']],
   ['/demo', /./, ['#play']],
-  ['/help', /./, []], ['/help/api', /./, []], ['/terms', /Free trial/, []], ['/privacy', /./, []], ['/refunds', /Free trial/, []],
+  ['/help', /./, []], ['/help/api', /./, []], ['/compare', /Chamber compared/i, []], ['/terms', /Free trial/, []], ['/privacy', /./, []], ['/refunds', /Free trial/, []],
 ];
 
 async function run(size) {
@@ -166,6 +166,27 @@ async function run(size) {
       const card = page.locator('.ticket-card', { hasText: 'Browser check ticket' }).first(); await card.waitFor(); check(`${size}: a proposed ticket appears on the board`, true); await shot('tickets');
       const cb = await card.boundingBox(); check(`${size}: the ticket is on the first screen`, !!cb && cb.y + cb.height <= SIZES[size].viewport.height * 0.75, JSON.stringify(cb));
     });
+    await step('review a proposed change: comment on a line and ask for changes', async () => { try {    // T-0189
+      const tid = await page.evaluate(async () => {
+        const r = await fetch('/api/tickets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Review check: set x', body: 'A change to review.', for: 'agent', by: 'x' }) });
+        const id = ((await r.json()).message || '').match(/T-\d+/)[0];
+        await fetch(`/api/tickets/${id}/diff`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ diff: 'diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n' }) });
+        return id; });
+      await page.click('.tab[data-view="tickets"]'); await page.evaluate(() => loadTickets());
+      const card = page.locator('.ticket-card', { hasText: 'Review check: set x' }).first(); await card.waitFor(); await card.click();
+      await page.locator('#tm-diff .tabs-mini button', { hasText: 'Diff' }).click();
+      await page.locator('#tm-diff .pane.df span.line').nth(5).click(); const picked = await page.inputValue('#dv-line');
+      await page.fill('#dv-text', 'Use 3 here, not 2.'); await page.locator('#tm-diff button', { hasText: 'Comment' }).click();
+      await page.locator('#tm-diff .dv-comments', { hasText: 'Use 3 here, not 2.' }).waitFor(); await shot('review-comment');
+      const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
+      check(`${size}: on a ticket with a change, tapping a line number picks the line and a comment shows under the diff`, picked === '6' && fits, JSON.stringify({ picked, fits }));
+      await page.locator('#tm-actions button', { hasText: 'Ask for changes' }).click(); await page.fill('#ask-text', 'Please make it 3.'); await page.click('#ask-ok');
+      await page.waitForFunction(() => !document.getElementById('ticket-modal')?.classList.contains('show'), null, { timeout: 8000 }).catch(() => {});
+      await page.evaluate(() => loadTickets()); const card2 = page.locator('.ticket-card', { hasText: 'Review check: set x' }).first(); await card2.locator('.pill', { hasText: 'changes asked' }).waitFor(); await card2.click();
+      const st = await page.evaluate(() => ({ note: document.getElementById('tm-actions').innerText, approve: [...document.querySelectorAll('#tm-actions button')].some(b => /,'approve'\)/.test(b.getAttribute('onclick') || '')) }));
+      await shot('review-changes'); await page.evaluate(() => closeTicketModal());
+      check(`${size}: Ask for changes marks the ticket, says what was asked, and takes Approve away until a new version comes`, /Changes asked for by/.test(st.note) && /Please make it 3/.test(st.note) && !st.approve && !!tid, JSON.stringify(st).slice(0, 300));
+    } finally { await page.evaluate(() => { try { closeTicketModal(); document.getElementById('ask-cancel')?.click(); } catch {} }).catch(() => {}); } });
     await step('add an agent', async () => {
       await page.click('.tab[data-view="chat"]'); await page.click('#gear-btn'); await page.click('#menu-add-agent');
       await page.fill('#aw-name', 'check-bot-' + size); await page.click('#aw-mkkey');
@@ -174,7 +195,47 @@ async function run(size) {
       await page.waitForFunction(() => { const t = document.getElementById('aw-cmd').textContent; return /--token '?chk_/.test(t) && !/PASTE/.test(t); });
       const cmd = await page.locator('#aw-cmd').textContent();
       check(`${size}: Add an agent makes the key itself and writes the full install command`, /install\.sh \| sudo bash/.test(cmd) && /--role connector/.test(cmd) && /--commanders /.test(cmd) && !/PASTE/.test(cmd), cmd.replace(/chk_[A-Za-z0-9_-]+/, "chk_…")); await shot('add-agent');
+      await page.check('input[name="aw-kind"][value="laptop"]'); const lcmd = await page.locator('#aw-cmd').textContent();   // T-0186
+      check(`${size}: Add an agent also writes a laptop command that needs no sudo`, /laptop\.sh \| sh -s -- --token chk_/.test(lcmd) && !/sudo/.test(lcmd) && /^cd /.test(lcmd), lcmd.replace(/chk_[A-Za-z0-9_-]+/, 'chk_…')); await shot('add-agent-laptop');
       await page.locator('#agent-wizard .close-x').click();
+    });
+    await step('standing approvals: set one up, offer it when proposing, withdraw it', async () => { try {      // T-0200
+      await page.click('.tab[data-view="tickets"]'); await page.click('#standing-btn'); await page.locator('#standing-modal.show').waitFor();
+      await page.fill('#sa-what', 'fix failing tests'); await page.fill('#sa-paths', 'tests/'); await page.click('#sa-save');
+      const item = page.locator('#sa-list .sa-item', { hasText: 'fix failing tests' }).first(); await item.locator('.pill', { hasText: 'Active' }).waitFor(); await shot('standing');
+      const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), txt = await item.innerText();
+      check(`${size}: Standing approvals sets one up and lists it with its limits, inside the screen`, /only in tests\//.test(txt) && /until \d{4}-\d\d-\d\d/.test(txt) && fits, JSON.stringify({ txt: txt.slice(0, 200), fits }));
+      await page.evaluate(() => closeStanding()); await page.getByText('+ Propose ticket').click();
+      await page.check('input[name="prop-for"][value="agent"]'); await page.locator('#prop-standing-wrap').waitFor({ state: 'visible' });
+      const opts = await page.locator('#prop-standing option').allTextContents(); await shot('standing-propose');
+      check(`${size}: the propose form offers the standing approval when an agent does the job`, opts.some(o => /fix failing tests/.test(o)), opts.join(' | '));
+      await page.check('input[name="prop-for"][value="human"]'); await sleep(150);
+      check(`${size}: and does not offer it when a person does the job`, !(await page.locator('#prop-standing-wrap').isVisible()));
+      await page.evaluate(() => closeProposeModal()); await page.click('#standing-btn');
+      await page.locator('#sa-list .sa-item', { hasText: 'fix failing tests' }).first().locator('button', { hasText: 'Withdraw' }).click();
+      await page.locator('#sa-list .sa-item', { hasText: 'fix failing tests' }).first().locator('.pill', { hasText: 'Withdrawn' }).waitFor();
+      check(`${size}: one tap withdraws it`, true);
+    } finally { await page.evaluate(() => { try { closeStanding(); closeProposeModal(); } catch {} }).catch(() => {}); } });
+    await step('add an agent: any AI tool (MCP)', async () => {                                       // T-0198
+      await page.click('.tab[data-view="chat"]'); await page.click('#gear-btn'); await page.click('#menu-add-agent');
+      await page.check('input[name="aw-kind"][value="mcp"]'); const mcmd = await page.locator('#aw-cmd').textContent(); await shot('add-agent-mcp');
+      const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1);
+      check(`${size}: Add an agent offers any AI tool through MCP, with a one-line setup that needs no sudo`, /chamber-mcp\.py/.test(mcmd) && /--setup --url /.test(mcmd) && !/sudo/.test(mcmd) && fits, mcmd.replace(/chk_[A-Za-z0-9_-]+/, 'chk_…'));
+      await page.locator('#agent-wizard .close-x').click();
+    });
+    await step('an agent asks: Allow once / Deny in the room', async () => {                         // T-0188
+      const made = await page.evaluate(async () => {
+        const k = await (await fetch('/account/workspace/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Asker', username: 'asker-' + Date.now().toString(36).slice(-5) }) })).json();
+        await fetch('/account/workspace/tokens/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: k.id, on: true }) });
+        const r = await fetch('/api/asks', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + k.token }, body: JSON.stringify({ room: 'general', tool: 'Bash', summary: 'run this command: npm test -- --watch=false', waitSec: 300 }) });
+        return { status: r.status, err: k.error };
+      });
+      await page.click('.tab[data-view="chat"]'); await page.evaluate(() => { if (currentRoom !== 'general') switchRoom('general'); return loadAsks(); });
+      const item = page.locator('#ask-bar .ask-item').first(); await item.waitFor(); await shot('ask-bar');
+      const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), txt = await item.innerText();
+      check(`${size}: a question from an agent shows in the room with the exact command, Allow once and Deny, inside the screen`, made.status === 201 && /npm test -- --watch=false/.test(txt) && /Allow once/.test(txt) && /Deny/.test(txt) && fits, JSON.stringify({ made, txt: txt.slice(0, 160), fits }));
+      await item.locator('button', { hasText: 'Allow once' }).click(); await page.locator('#ask-bar').waitFor({ state: 'hidden' });
+      check(`${size}: Allow once answers it and the question goes away`, true);
     });
     await step('accent row: RGB and the custom colour', async () => {                            // 2026-11-13: RGB added; the colour chooser used to look like a sixth ready-made colour
       await page.click('.tab[data-view="chat"]'); await page.click('#gear-btn'); await page.locator('#theme-picker').waitFor();
@@ -223,6 +284,47 @@ async function run(size) {
       await page.click('#gear-btn'); await page.locator('#menu.open').waitFor(); const on = await page.evaluate(() => document.getElementById('accent-rgb').classList.contains('on')); await shot('account-wheel');
       check(`${size}: RGB picked in the app carries over to the account page, and the wheel there shows it as chosen`, b1 !== b2 && on, JSON.stringify({ b1, b2, on }));
       await page.click('#accent-reset'); await page.keyboard.press('Escape');
+    });
+    await step('managers and clients: approval rules and a requester', async () => {               // T-0190, T-0199
+      await page.goto(BASE + '/billing', { waitUntil: 'networkidle' });
+      await page.locator('#ap-save').waitFor(); const rulesOk = await page.locator('#ap-save').isEnabled() && await page.locator('#ap-two').isVisible();
+      await page.locator('button[data-gnew="requester"]').click(); await page.locator('button[data-gcopy="requester"]').waitFor();
+      const link = await page.evaluate(() => [...document.querySelectorAll('.guest-inv code')].map(c => c.textContent).find(t => /\/join\//.test(t)));
+      await page.locator('.guest-inv').first().scrollIntoViewIfNeeded(); await shot('guest-links');
+      const ctx2 = await browser.newContext(SIZES[size]); const p2 = await ctx2.newPage(); p2.setDefaultTimeout(12000); const errs2 = []; p2.on('pageerror', e => errs2.push(e.message));
+      try {
+        await p2.goto(link, { waitUntil: 'networkidle' });
+        const ru = `rq${size.slice(0, 1)}${Date.now().toString(36)}`;
+        await p2.fill('#su-email', `${ru}@test.invalid`); await p2.fill('#su-user', ru); await p2.fill('#su-pass', 'browser-check-password'); await p2.click('button[type=submit]:visible');
+        await p2.waitForFunction(() => !document.querySelector('#su-email')?.offsetParent, null, { timeout: 12000 });
+        await p2.goto(BASE + '/app', { waitUntil: 'networkidle' }); const onReq = new URL(p2.url()).pathname === '/requests';
+        await p2.fill('#rq-title', 'Please add a price list to the shop'); await p2.fill('#rq-body', 'Sent by the browser check.'); await p2.click('#rq-send');
+        await p2.locator('#rq-list', { hasText: 'Please add a price list to the shop' }).waitFor();
+        const info = await p2.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, status: document.querySelector('#rq-list .st')?.textContent }));
+        try { await p2.screenshot({ path: path.join(OUT, `${size}-requests.png`), fullPage: true }); } catch {}
+        check(`${size}: a client who joins through a requester link lands on Your requests, sends a request and sees it waiting`, onReq && info.status === 'Waiting for approval' && info.sw <= info.cw + 1 && errs2.length === 0, JSON.stringify({ url: p2.url(), info, errs2 }));
+      } finally { await ctx2.close(); }
+      const board = await page.evaluate(async () => ((await (await fetch('/api/tickets')).json()).tickets || []).some(t => /Please add a price list to the shop/.test(t.title) && (t.tags || []).includes('request')));
+      check(`${size}: the account page shows the approval rules, makes a requester link, and the owner sees the request on the board`, rulesOk && !!link && board, JSON.stringify({ rulesOk, link: !!link, board }));
+    });
+    await step('account page: check the record and AI usage', async () => {                           // T-0194
+      await page.goto(BASE + '/billing', { waitUntil: 'networkidle' });
+      await page.locator('#au-verify').scrollIntoViewIfNeeded(); await page.click('#au-verify');
+      await page.locator('#au-verify-msg', { hasText: /Intact|Nothing to check/ }).waitFor();
+      await page.waitForFunction(() => !/Loading/.test(document.getElementById('usage-box')?.innerText || 'Loading'));
+      const t = await page.evaluate(() => ({ v: document.getElementById('au-verify-msg').innerText, u: document.getElementById('usage-box').innerText, sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+      await page.locator('#usage').scrollIntoViewIfNeeded(); await shot('record-usage');
+      check(`${size}: the account page checks the record and shows AI usage`, /Intact/.test(t.v) && t.u.length > 10 && t.sw <= t.cw + 1, JSON.stringify(t).slice(0, 300));
+    });
+    await step('weekly report: private link and page', async () => {                                   // T-0202
+      await page.goto(BASE + '/billing', { waitUntil: 'networkidle' });
+      await page.locator('#rep-link').scrollIntoViewIfNeeded(); await page.click('#rep-link');
+      await page.locator('#rep-url a').waitFor(); const href = await page.locator('#rep-url a').getAttribute('href');
+      const p3 = await page.context().newPage(); try { await p3.goto(href, { waitUntil: 'networkidle' });
+        const r = await p3.evaluate(() => ({ t: document.body.innerText, sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+        try { await p3.screenshot({ path: path.join(OUT, `${size}-weekly-report.png`), fullPage: true }); } catch {}
+        check(`${size}: the weekly report link opens a readable page that fits the screen`, /Weekly report/.test(r.t) && /In short/.test(r.t) && /Only measured facts/.test(r.t) && r.sw <= r.cw + 1, JSON.stringify({ sw: r.sw, cw: r.cw, t: r.t.slice(0, 120) }));
+      } finally { await p3.close(); }
     });
     await step('account page offers extra storage when the server sells it', async () => {      // storage add-on: the server's answers are stood in for here (the server side has its own tests)
       let packs = 0, sent = null; const offer = () => ({ packGb: 10, label: '$49.99 / year', maxPacks: 10, baseMb: 500, packs, canChange: true, isPayer: true });

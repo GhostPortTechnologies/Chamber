@@ -75,6 +75,8 @@
   button:disabled, .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
   .pill { display: inline-block; font-size: 10px; line-height: 16px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--text-dim); vertical-align: middle; white-space: nowrap; }
   .pill.ok { color: var(--accent); border-color: var(--accent-line); } .pill.warn { color: var(--warn); border-color: rgba(255, 171, 64, .4); } .pill.bad { color: var(--danger); border-color: rgba(255, 107, 107, .4); }
+  .sa-item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 0 0 8px; overflow-wrap: anywhere; } .sa-item.sa-off { opacity: .65; } .sa-btns { display: flex; gap: 6px; margin-top: 6px; } #standing-count { margin-left: 4px; }  /* T-0200 */
+  #ask-bar { margin: 6px 12px 0; display: flex; flex-direction: column; gap: 6px; } #ask-bar[hidden] { display: none; } .ask-item { border: 1px solid var(--accent-line); border-radius: 10px; padding: 8px 10px; font-size: 13px; overflow-wrap: anywhere; } .ask-item pre { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; } .ask-item .ask-btns { display: flex; gap: 8px; margin-top: 6px; align-items: center; flex-wrap: wrap; }  /* T-0188 */
   .empty { color: var(--text-dim); font-size: 12px; padding: 14px; text-align: center; border: 1px dashed var(--line); border-radius: var(--r); }
   .empty b { color: var(--text); }
   .dim { color: var(--text-dim); } .small { font-size: 11px; }
@@ -411,6 +413,8 @@
   .tabs-mini { display: flex; gap: 2px; margin: 8px 0 0; border-bottom: 1px solid var(--line); } .tabs-mini button { all: unset; cursor: pointer; font: inherit; font-size: 11px; color: var(--text-dim); padding: 6px 10px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .tabs-mini button.on { color: var(--accent); border-bottom-color: var(--accent); } .tabs-mini button:focus-visible { outline: none; color: var(--text); }
   #tm-diff .pane { display: none; } #tm-diff .pane.on { display: block; }
+  .dv-vers { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 11px; color: var(--text-dim); } .dv-vers .btn.on { border-color: var(--accent); color: var(--accent); }   /* T-0189 */
+  .dv-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; } .dv-comments { margin-top: 8px; } #tm-diff .pane.df span.line { cursor: pointer; } #tm-diff span.line.picked { outline: 1px solid var(--accent); }
   .pw-row { display: grid; grid-template-columns: 140px 1fr; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.5; } .pw-row:last-child { border-bottom: 0; } .pw-row b { color: var(--text-dim); font-weight: 600; }
   /* T-0068: rich messages — markdown blocks, task boxes, syntax colours, numbered code, secret guard */
   h1.md, h2.md, h3.md { margin: 6px 0 2px; line-height: 1.3; font-weight: 700; color: var(--text); } h1.md { font-size: 15px; } h2.md { font-size: 14px; } h3.md { font-size: 13px; }
@@ -614,6 +618,7 @@
     <div id="empty"></div>
     <button id="jump" type="button" onclick="jumpToLatest()">↓ <span id="jump-n">new</span></button>
     <div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+    <div id="ask-bar" hidden role="region" aria-label="Questions from agents"></div>   <!-- T-0188 -->
     <div class="composer">
       <div id="editing-hint" class="ctx">Editing your message · <kbd>Esc</kbd> cancels <a id="edit-cancel">Cancel</a></div>
       <div id="reply-hint" class="ctx"></div>
@@ -644,6 +649,8 @@
   <div class="toolbar">
     <button class="btn btn-primary" onclick="openProposeModal()">+ Propose ticket</button>
     <a class="btn" href="/api/tickets/export?format=html" target="_blank" rel="noopener">Export</a>
+    <button class="btn" id="standing-btn" type="button" onclick="openStanding()" title="Routine jobs that may start without waiting for a tap, within limits a person set">Standing approvals <span id="standing-count" class="pill ok" hidden></span></button>   <!-- T-0200 -->
+    <span id="budget-line" class="dim small" hidden></span>
     <input id="ticket-q" type="search" placeholder="Filter tickets" aria-label="Filter tickets" autocomplete="off" oninput="renderTickets()">
     <div class="seg" id="ticket-for-filter" role="group" aria-label="Who does it"><button class="active" data-for="" onclick="setForFilter('')">All</button><button data-for="human" onclick="setForFilter('human')">People</button><button data-for="agent" onclick="setForFilter('agent')">Agents</button></div>
     <span class="spacer"></span>
@@ -841,7 +848,9 @@
       <p class="meta-row">Three steps: name it, paste one command on the machine it should work on, and watch it appear here. <a href="/help#agents" target="_blank" rel="noopener">Which kind do I want?</a></p>
       <div class="aw-step"><b>1. What kind?</b>
         <label class="aw-opt"><input type="radio" name="aw-kind" value="connector" checked onchange="awRender()"> <b>Chat agent</b> <span class="dim">answers when you @mention it, and from the Ask AI tab. Start with this one.</span></label>
-        <label class="aw-opt"><input type="radio" name="aw-kind" value="worker" onchange="awRender()"> <b>Ticket worker</b> <span class="dim">carries out approved agent tickets on one code project: change, test, release, roll back. Needs a git project on that machine.</span></label></div>
+        <label class="aw-opt"><input type="radio" name="aw-kind" value="laptop" onchange="awRender()"> <b>Chat agent on my own computer</b> <span class="dim">the same chat agent, on your Mac or Linux laptop, with no admin rights. It works in one project folder and reads it without changing it.</span></label>
+        <label class="aw-opt"><input type="radio" name="aw-kind" value="worker" onchange="awRender()"> <b>Ticket worker</b> <span class="dim">carries out approved agent tickets on one code project: change, test, release, roll back. Needs a git project on that machine.</span></label>
+        <label class="aw-opt"><input type="radio" name="aw-kind" value="mcp" onchange="awRender()"> <b>Any AI tool (MCP)</b> <span class="dim">lets Claude Code, Cursor, Codex or another AI tool you already use read rooms and tickets, post, and propose tickets. It cannot approve anything.</span></label></div>
       <div class="aw-step"><b>2. Name it</b>
         <div class="aw-grid"><label>Its name in chat <input id="aw-name" maxlength="32" value="my-agent" oninput="awRender()"></label></div>
         <div class="aw-row"><button class="btn btn-primary btn-sm" id="aw-mkkey" onclick="awCreateToken()">Create its key</button><span id="aw-token-status" class="small dim">The key lets this one agent into your workspace. It goes straight into the command below.</span></div>
@@ -852,11 +861,13 @@
         <label>Backend <select id="aw-backend" onchange="awRender()"><option value="claude">Claude Code (default)</option><option value="ollama">Ollama</option><option value="openai">OpenAI-compatible</option><option value="gemini">Gemini</option></select></label>
         <label>Model <input id="aw-model" placeholder="claude-opus-5-5, or the Ollama / OpenAI / Gemini model name" oninput="awRender()"></label></div></details></div>
       <div class="aw-step" id="aw-worker-fields" hidden><b>3. What it works on</b>
-        <div class="aw-grid"><label>Live git repo on that machine <input id="aw-repo" placeholder="/srv/myapp" oninput="awRender()"></label><label>Service to restart after a deploy <input id="aw-service" placeholder="myapp" oninput="awRender()"></label>
+        <div class="aw-grid"><label>How changes go out <select id="aw-wmode" onchange="awRender()"><option value="live">Deploy into the live folder, restart the service</option><option value="pr">Pull requests on GitHub, nothing deployed</option></select></label>   <!-- T-0191 -->
+        <label>Base branch (pull requests) <input id="aw-base" placeholder="main" oninput="awRender()"></label><label>Tickets at once (pull requests, 1 to 5) <input id="aw-par" type="number" min="1" max="5" value="1" oninput="awRender()"></label>
+        <label>Live git repo on that machine <input id="aw-repo" placeholder="/srv/myapp" oninput="awRender()"></label><label>Service to restart after a deploy <input id="aw-service" placeholder="myapp" oninput="awRender()"></label>
         <label>Health URL (optional) <input id="aw-health" placeholder="http://127.0.0.1:8080/health" oninput="awRender()"></label><label>Approvers <input id="aw-approvers" oninput="awRender()"></label>
         <label>What it owns, one line <input id="aw-scope" placeholder="the shop API and its deploy scripts" oninput="awRender()"></label></div>
         <p class="dim small">Triage (worker 1.3+): before claiming, the worker checks a ticket is about this repo. One it cannot do is left unclaimed with the reason in the ticket's run log, and it tells the approver when it is the only worker online. A ticket that fails after claiming is released, not left in progress.</p></div>
-      <div class="aw-step"><b>3. Paste this on the machine</b> <span class="dim small">(as a user who can sudo; the installer refuses to run without root)</span>
+      <div class="aw-step"><b>3. Paste this on the machine</b> <span class="dim small" id="aw-where">(as a user who can sudo; the installer refuses to run without root)</span>
         <pre id="aw-cmd" class="aw-cmd"></pre><div class="aw-row"><button class="btn btn-primary btn-sm" onclick="awCopy()">Copy command</button><span id="aw-copied" class="dim small"></span></div>
         <div class="dim small" id="aw-signin"></div></div>
       <div class="aw-step"><b>Then check it arrived</b> <span class="dim small">the installer checks itself; this confirms it from Chamber's side</span>
@@ -946,9 +957,10 @@
     <div class="modal-body form">
       <label>Who does this?</label>
       <div class="forpick" id="prop-for" role="radiogroup" aria-label="Who does this">
-        <label class="forpick-opt"><input type="radio" name="prop-for" value="human"> <b>A person</b> <span class="dim">agents never see or claim it</span></label>
-        <label class="forpick-opt"><input type="radio" name="prop-for" value="agent"> <b>An agent</b> <span class="dim">an AI worker may pick it up once approved</span></label>
+        <label class="forpick-opt"><input type="radio" name="prop-for" value="human" onchange="fillPropStanding()"> <b>A person</b> <span class="dim">agents never see or claim it</span></label>
+        <label class="forpick-opt"><input type="radio" name="prop-for" value="agent" onchange="fillPropStanding()"> <b>An agent</b> <span class="dim">an AI worker may pick it up once approved</span></label>
       </div>
+      <div id="prop-standing-wrap" hidden><label for="prop-standing">Covered by a standing approval? <span class="dim">then it starts without waiting</span></label><select id="prop-standing"></select></div>   <!-- T-0200 -->
       <label for="prop-title">Title</label>
       <input id="prop-title" type="text" maxlength="120" placeholder="What should be done?">
       <label for="prop-body">Details</label>
@@ -962,6 +974,35 @@
       <div id="prop-error" class="err"></div>
     </div>
     <div class="actions"><button onclick="closeProposeModal()">Cancel</button><button class="primary" id="prop-submit" onclick="submitPropose()">Propose</button></div>
+  </div>
+</div>
+
+<div id="standing-modal" class="modal" onclick="if(event.target===this)closeStanding()" role="dialog" aria-modal="true" aria-labelledby="sa-title">   <!-- T-0200 -->
+  <div class="modal-box">
+    <div class="modal-head"><h2 id="sa-title">Standing approvals</h2><button class="close-x" aria-label="Close" onclick="closeStanding()">×</button></div>
+    <div class="modal-body form">
+      <p class="note" style="margin:0 0 10px">Say once, in advance, that a kind of routine job is fine. A ticket that names a standing approval starts without waiting for a tap, and its record says which one covered it. Chamber's server checks the limits: which agent, how many files, which folders, how many jobs a week, the end date. The work always arrives as a pull request that a person merges, so nothing goes live by itself. Whether a job really is the kind described is for the person who reviews that pull request. One tap withdraws it.</p>
+      <div id="sa-list"></div>
+      <div id="sa-new" hidden>
+        <span class="section-title">New standing approval</span>
+        <label for="sa-what">What kind of job, in plain words</label>
+        <input id="sa-what" type="text" maxlength="200" placeholder="e.g. fix failing tests">
+        <div class="row">
+          <div><label for="sa-agent">Done by</label><select id="sa-agent"></select></div>
+          <div><label for="sa-until">Ends on</label><input id="sa-until" type="date"></div>
+        </div>
+        <label for="sa-paths">Only in these folders <span class="dim">optional, separated by commas, e.g. tests/, docs/</span></label>
+        <input id="sa-paths" type="text" maxlength="600" placeholder="anywhere in the repository">
+        <div class="row">
+          <div><label for="sa-files">Files per job, at most</label><input id="sa-files" type="number" min="1" max="50" value="5"></div>
+          <div><label for="sa-week">Jobs a week, at most</label><input id="sa-week" type="number" min="1" max="100" value="10"></div>
+        </div>
+        <p class="dim small" id="sa-never" style="margin:8px 0 0"></p>
+        <div id="sa-error" class="err"></div>
+      </div>
+      <p class="dim small" id="sa-cant" hidden>Only people who may approve tickets here can set up or withdraw a standing approval.</p>
+    </div>
+    <div class="actions"><button onclick="closeStanding()">Close</button><button class="primary" id="sa-save" onclick="saveStanding()">Set it up</button></div>
   </div>
 </div>
 
@@ -1105,6 +1146,7 @@ function connectEvents() {
     }
     else if (d.kind === 'rooms') loadRooms();
     else if (d.kind === 'tickets') loadTickets();
+    else if (d.kind === 'asks') loadAsks();                                             // T-0188
     else if (d.kind === 'reviews') loadReviews();
   });
 }
@@ -1198,6 +1240,13 @@ async function saveNotify() {
     myPrefs = me.prefs || {}; updatePlainState();                                // T-0072                                              // T-0047
     enterChamber(me.username, me.role);
     showBilling(me.billing);                                                // T-0028
+    if (me.budget && me.budget.monthlyCents) { const bl = document.getElementById('budget-line'); if (bl) { bl.hidden = false; bl.textContent = `AI budget: $${(me.budget.spentCents / 100).toFixed(2)} of $${(me.budget.monthlyCents / 100).toFixed(2)} used this month${me.budget.over ? ' (used up)' : ''}`; } }   // T-0203: the board shows what is left
+    window.meCanApprove = me.canApprove;                                     // T-0190: read by the ticket window
+    if (currentWsRole === 'viewer') {                                         // T-0199: a viewer reads everything and, when named, approves; nothing else
+      const input = document.getElementById('msg-input'); input.disabled = true; input.placeholder = 'You are a viewer here: you can read, not post';
+      const at = document.getElementById('attach-btn'); if (at) at.disabled = true; updateSendState();
+      toast('You are a viewer in this workspace: you can read everything' + (me.canApprove ? ' and approve tickets' : '') + ', but not post or change anything.');
+    }
     // T-0180: the T-0036 list is retired; the getting-started card (T-0160, gear menu) replaced it and its steps were out of date
   } catch { /* not signed in: the overlay stays */ }
 })();
@@ -1526,6 +1575,7 @@ async function jumpTo(room, id) {
 function switchRoom(room) {
   renderedIds.clear();                                                      // T-0021: new room, fresh screen
   currentRoom = room;
+  renderAsks();                                                            // T-0188: the questions for this room
   lastTs = 0; oldestTs = null; noOlder = false; cancelEdit(); cancelReply();   // T-0035/T-0049
   document.getElementById('messages').innerHTML = '<div id="older"><a onclick="loadOlder()">↑ earlier messages</a></div><div class="skel w2" aria-hidden="true"></div><div class="skel w1" aria-hidden="true"></div><div class="skel w3" aria-hidden="true"></div>';   // T-0073: skeleton until the first page lands
   newLineDone = false; newCount = 0; hideJump();                              // T-0073
@@ -1541,9 +1591,9 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { un
 // Markdown-lite for chat (T-0014): escape first, then fenced code, inline code, bold, italic, links, @mentions, line breaks.
 // Everything is HTML-escaped before any markup is added, so message text can never inject HTML.
 // T-0050: fenced code keeps its language tag; diff/patch blocks colour +/-/@@ lines; a copy button; long blocks fold.
-function renderCodeBlock(lang, code) {                                      // T-0068: colours for every language the module knows, line numbers past 8 lines
+function renderCodeBlock(lang, code, opts) {                                      // T-0068: colours for every language the module knows, line numbers past 8 lines
   lang = ChamberMD.normLang(lang) || ChamberMD.detectLang(code);
-  const lines = code.split('\n').length, long = lines > 25, numbered = lines > 8;
+  const lines = code.split('\n').length, long = lines > 25 && !(opts && opts.open), numbered = lines > 8 || !!(opts && opts.numbered);   // T-0189: a change under review is always numbered
   const id = 'cb' + Math.random().toString(36).slice(2, 8); codeStore[id] = ChamberMD.esc(code);
   return `<div class="codeblock${long ? ' folded' : ''}" data-id="${id}"><div class="codebar"><span class="lang">${esc(lang)}${long ? ` · ${lines} lines` : ''}</span><span>${long ? `<a href="#" onclick="event.preventDefault();this.closest('.codeblock').classList.toggle('folded');this.textContent=this.closest('.codeblock').classList.contains('folded')?'expand':'fold'">expand</a> · ` : ''}<a href="#" onclick="event.preventDefault();copyCode('${id}', this)">copy</a></span></div><pre class="code${numbered ? ' numbered' : ''}" data-lang="${esc(lang)}"><code class="lang-${esc(lang)}">${ChamberMD.highlight(code, lang, numbered)}</code></pre></div>`;
 }
@@ -1787,6 +1837,8 @@ function terminalInit(){
 
 async function loadTickets() {
   loadFleet();                                                              // T-0153: router strip above the board (cached a minute)
+  loadStanding();                                                          // T-0200: the count on the Standing approvals button
+  loadAsks();                                                              // T-0188: questions from agents waiting for an answer
   if (!ticketsCache.length) for (const c of ['col-proposed', 'col-approved', 'col-in_progress', 'col-done']) {   // [new] T-0077 item 4
     const el = document.getElementById(c); if (el) el.innerHTML = '<div class="skel w2" aria-hidden="true"></div><div class="skel w1" aria-hidden="true"></div>';
   }
@@ -1821,7 +1873,7 @@ function ticketCardHtml(t) {
         <span class="pri-${esc(t.priority)}">● ${esc(t.priority)}</span>
         <span>${esc(t.type)}</span>
         <span>${esc(t.proposed_by)}</span>
-        <span>${ageStr(t.proposed_at)}</span>
+        <span${t.status === 'proposed' ? ' title="waiting for approval"' : ''}>${t.status === 'proposed' ? 'waiting ' : ''}${ageStr(t.proposed_at)}</span>${t.changes && t.status === 'proposed' ? '<span class="pill warn">changes asked</span>' : ''}${t.reviewer && t.status === 'proposed' ? `<span>review: ${esc(t.reviewer)}</span>` : ''}${t.standing ? `<span class="pill ok" title="Approved in advance by standing approval ${esc(t.standing.id)}: ${esc(t.standing.what)}">standing ${esc(t.standing.id)}</span>` : ''}${t.pr ? `<span class="pill${t.pr.state === 'merged' ? ' ok' : ''}">PR #${Number(t.pr.number)} ${esc(t.pr.state)}</span>` : ''}${t.status === 'proposed' && Array.isArray(t.approvals) && t.approvals.length ? `<span title="approved by ${esc(t.approvals.map(a => a.by).join(', '))}">✓ ${t.approvals.length} of ${esc(t.approvals_needed || 2)}</span>` : ''}
       </div>
     </div>`;
 }
@@ -1892,10 +1944,8 @@ function openTicketModal(id) {
   if (t.reverts) { rv.style.display = 'block'; rv.innerHTML = `<b>Undoes:</b> <a href="#" class="tlink" onclick="event.preventDefault();openTicketModal('${escJ(t.reverts)}')">${esc(t.reverts)}</a>`; } else rv.style.display = 'none';
 
   const dv = document.getElementById('tm-diff'); dv.style.display = 'none'; dv.innerHTML = '';                 // T-0063: attached patch
-  if (t.hasDiff) { dv.style.display = 'block'; dv.innerHTML = '<span style="color:var(--text-dim);font-size:11px">loading diff…</span>';
-    fetch(`${API}/api/tickets/${t.id}/diff`).then(r => r.json()).then(d => { if (openTicketId !== t.id) return; const m = d.meta || {};
-      dv.innerHTML = renderDiffPanel(t, d);                                                                    // T-0072: plain words first, diff on the second tab
-    }).catch(() => { dv.innerHTML = ''; }); }
+  if (t.hasDiff) { dv.style.display = 'block'; dv.innerHTML = '<span style="color:var(--text-dim);font-size:11px">loading diff…</span>'; loadTicketDiff(t); }   // T-0072/T-0189
+  dv.onclick = e => { const ln = e.target.closest('.pane.df span.line'), box = document.getElementById('dv-line'); if (ln && box) { box.value = [...ln.parentElement.children].indexOf(ln) + 1; dv.querySelectorAll('span.line.picked').forEach(x => x.classList.remove('picked')); ln.classList.add('picked'); document.getElementById('dv-text')?.focus(); } };   // T-0189: tap a line to comment on it
   // T-0146: notes may now be long (up to 8000 chars). Fold anything over 600 chars behind a 'show more' so the history stays scannable.
   const foldNote = n => { n = String(n || ''); if (n.length <= 600) return esc(n); return `<details class="note-fold"><summary>${esc(n.slice(0, 300).replace(/\s+\S*$/, ''))}&hellip; <span class="more">show more (${n.length} chars)</span></summary>${esc(n)}</details>`; };
   const updates = (t.updates || []).map(u => `<div class="update">${fmtDate(u.at)} <b>${esc(u.by)}</b> ${foldNote(u.note)}</div>`).join('');
@@ -1907,11 +1957,18 @@ function openTicketModal(id) {
   if (t.status === 'proposed') {
     // EDIT is available pre-approval to anyone (proposer or reviewer); the CLI enforces proposed-only.
     let html = `<button onclick="openEditModal('${escJ(t.id)}')">Edit</button>`;
-    if (currentRole === 'human') {
+    if (t.changes) html = `<span class="note">Changes asked for by ${esc(t.changes.by)} on version ${esc(t.changes.version)}${t.changes.note ? ': ' + esc(t.changes.note) : ''}. Waiting for a new version.</span>` + html;   // T-0189
+    if (t.reviewer) html = `<span class="note">Reviewer: ${esc(t.reviewer)}</span>` + html;
+    if (Array.isArray(t.approvals) && t.approvals.length) html = `<span class="note">Approved by ${t.approvals.map(a => esc(a.by)).join(', ')} (${t.approvals.length} of ${esc(t.approvals_needed || 2)}). Waits for another person to approve.</span>` + html;   // T-0190
+    if (currentRole === 'human' && window.meCanApprove === false) html = `<span class="note">The owner's approval rules do not let you approve here.</span>` + html;
+    else if (currentRole === 'human') {
       // Humans additionally get approve/reject on a proposed ticket.
       html += forFlipBtn(t) + `
       <button class="danger" onclick="ticketReject('${escJ(t.id)}')">Reject</button>
       <button class="primary" onclick="ticketAction('${escJ(t.id)}','approve')">Approve</button>`;
+      if (t.hasDiff && !t.changes) html += `<button onclick="askForChanges('${escJ(t.id)}')">Ask for changes</button>`;   // T-0189
+      if (t.changes) html += `<button onclick="withdrawChanges('${escJ(t.id)}')">Withdraw request</button>`;
+      if (t.hasDiff && currentWsRole !== 'viewer') html += `<button onclick="setReviewer('${escJ(t.id)}')">${t.reviewer ? 'Change reviewer' : 'Name a reviewer'}</button>`;
     } else {
       html = `<span class="note">Awaiting human approval.</span>` + html;
     }
@@ -1926,6 +1983,12 @@ function openTicketModal(id) {
       <button onclick="ticketUpdate('${escJ(t.id)}')">Add note</button>
       <button class="primary" onclick="ticketAction('${escJ(t.id)}','close')">Mark done</button>`;   // T-0143: humans can release or cancel a stuck ticket
   }
+  if (t.changes) actions.querySelectorAll('button').forEach(b => { if (/,'approve'\)/.test(b.getAttribute('onclick') || '')) b.remove(); });   // T-0189: nothing to approve until the new version arrives
+  if (currentWsRole === 'viewer') actions.querySelectorAll('button').forEach(b => { if (!/,'approve'\)|ticketReject\(|askForChanges\(/.test(b.getAttribute('onclick') || '')) b.remove(); });   // T-0199: a viewer keeps only Approve / Reject
+  if (t.pr && /^https:\/\//.test(t.pr.url || '')) actions.insertAdjacentHTML('afterbegin', `<a class="btn" href="${esc(t.pr.url)}" target="_blank" rel="noopener">Pull request #${Number(t.pr.number)} (${esc(t.pr.state)})</a>`);   // T-0191
+  if (t.standing) actions.insertAdjacentHTML('afterbegin', `<span class="note">Approved in advance by standing approval ${esc(t.standing.id)} (set up by ${esc(t.standing.by)}): "${esc(t.standing.what)}". Done by ${esc(t.standing.agent)} only, as a pull request a person merges, at most ${Number(t.standing.maxFiles)} file${t.standing.maxFiles === 1 ? '' : 's'}${(t.standing.paths || []).length ? ', only in ' + t.standing.paths.map(esc).join(', ') : ''}.</span>`);   // T-0200
+  else if (t.standing_was && t.status === 'proposed') actions.insertAdjacentHTML('afterbegin', `<span class="note">Started under standing approval ${esc(t.standing_was.id)}, then went outside it (see Updates), so it waits for a person.</span>`);
+  if (currentWsRole !== 'requester') actions.insertAdjacentHTML('afterbegin', `<a class="btn" href="${API}/api/tickets/${encodeURIComponent(t.id)}/evidence" target="_blank" rel="noopener" title="Everything about this ticket in one place: request, approvals, change, commands run, result, record. Printable; the data version can be checked offline.">Evidence pack</a>`);   // T-0204
   renderRunLog(t);                                                                                             // T-0143
   clearInterval(runlogTimer);
   if (t.status === 'in_progress') runlogTimer = setInterval(async () => {                                      // T-0143: live while someone works it
@@ -2180,7 +2243,24 @@ function openAgentWizard() {
 function closeAgentWizard() { document.getElementById('agent-wizard').classList.remove('show'); clearInterval(awTimer); awTimer = null; }
 function awRender() {
   const kind = awKind(), name = document.getElementById('aw-name').value.trim() || (kind === 'worker' ? 'chamber-worker' : 'my-agent');
-  document.getElementById('aw-connector-fields').hidden = kind !== 'connector'; document.getElementById('aw-worker-fields').hidden = kind !== 'worker';
+  document.getElementById('aw-connector-fields').hidden = kind === 'worker' || kind === 'mcp'; document.getElementById('aw-worker-fields').hidden = kind !== 'worker';
+  if (kind === 'mcp') {                                                        // T-0198: an MCP server for an AI tool the person already uses; no root, the key in a file only they can read
+    const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN';
+    document.getElementById('aw-cmd').textContent = `curl -fsSLo ~/.local/bin/chamber-mcp --create-dirs ${location.origin}/chamber-mcp.py && chmod +x ~/.local/bin/chamber-mcp \\\n    && ~/.local/bin/chamber-mcp --setup --url ${location.origin} --token ${awQ(token)}`;
+    document.getElementById('aw-where').textContent = '(in a terminal on the computer where your AI tool runs, as yourself, no sudo; it needs python3)';
+    document.getElementById('aw-signin').innerHTML = 'It checks the key, saves it in a file only you can read, and prints the line that adds it to Claude Code, Codex or Cursor. Your AI can then read rooms and tickets, post, propose tickets and add notes, never approve. Everything it does is on the record under this name, and it shows as online while your AI tool is in use.';
+    document.getElementById('aw-copied').textContent = ''; return;
+  }
+  if (kind === 'laptop') {                                                     // T-0186: no root, everything in the user's home folder
+    const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN', cmd = document.getElementById('aw-commanders').value.trim(), rooms = document.getElementById('aw-rooms').value.trim(), be = document.getElementById('aw-backend').value, model = document.getElementById('aw-model').value.trim();
+    const lp = ['cd /path/to/your/project', `curl -fsSL ${location.origin}/laptop.sh | sh -s -- --token ${awQ(token)}`];
+    if (cmd) lp.push(`--commanders ${awQ(cmd)}`); if (rooms && rooms !== 'general') lp.push(`--rooms ${awQ(rooms)}`); if (be !== 'claude') lp.push(`--backend ${be}`); if (model) lp.push(`--model ${awQ(model)}`);
+    document.getElementById('aw-cmd').textContent = lp[0] + '\n' + lp.slice(1).join(' \\\n    ');
+    document.getElementById('aw-where').textContent = '(in a terminal on your Mac or Linux computer, as yourself, no sudo. Change the first line to your project folder. Add --background to keep it running after you close the terminal.)';
+    document.getElementById('aw-signin').innerHTML = 'It uses the Claude Code that is already signed in on that computer. If it is not signed in yet, run <code>claude</code> there once and log in.';
+    document.getElementById('aw-copied').textContent = ''; return;
+  }
+  document.getElementById('aw-where').textContent = '(as a user who can sudo; the installer refuses to run without root)';
   const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN';
   const parts = [`curl -fsSL ${location.origin}/install.sh | sudo bash -s --`, `--role ${kind}`, `--token ${awQ(token)}`];
   if (kind === 'connector') {
@@ -2192,7 +2272,10 @@ function awRender() {
       : `This backend has no tool sandbox: the agent answers from the conversation plus any read-only commands you list in <code>CHAMBER_CONTEXT_CMDS</code> in <code>/etc/chamber-agent.env</code>.`;
   } else {
     const repo = document.getElementById('aw-repo').value.trim(), svc = document.getElementById('aw-service').value.trim(), health = document.getElementById('aw-health').value.trim(), appr = document.getElementById('aw-approvers').value.trim();
-    parts.push(`--repo ${awQ(repo || '/path/to/live/repo')}`, `--service ${awQ(svc || 'your-service')}`); if (health) parts.push(`--health ${awQ(health)}`); if (appr) parts.push(`--approvers ${awQ(appr)}`);
+    const wmode = document.getElementById('aw-wmode').value;                   // T-0191: pull-request mode needs no service and gets no root right
+    if (wmode === 'pr') { const b = document.getElementById('aw-base').value.trim(), par = Math.max(1, Math.min(5, parseInt(document.getElementById('aw-par').value, 10) || 1));
+      parts.push('--mode pr', `--repo ${awQ(repo || '/path/to/a/clone')}`, '--github-token PASTE_A_GITHUB_TOKEN'); if (b) parts.push(`--base ${awQ(b)}`); if (par > 1) parts.push(`--parallel ${par}`); if (appr) parts.push(`--approvers ${awQ(appr)}`); }
+    else { parts.push(`--repo ${awQ(repo || '/path/to/live/repo')}`, `--service ${awQ(svc || 'your-service')}`); if (health) parts.push(`--health ${awQ(health)}`); if (appr) parts.push(`--approvers ${awQ(appr)}`); }
     const scope = document.getElementById('aw-scope').value.trim(); if (scope) parts.push(`--scope ${awQ(scope)}`);   // T-0151
     document.getElementById('aw-signin').innerHTML = `The worker makes its changes with Claude Code, so it needs the same sign-in: add <code>--oauth-token …</code> (from <code>claude setup-token</code>) or put <code>CLAUDE_CODE_OAUTH_TOKEN=…</code> in <code>/etc/chamber-worker.env</code> afterwards. Root-owned files, secrets, databases and <code>backups/</code> in the repo are deliberately left out of the write grant.`;
   }
@@ -2216,8 +2299,8 @@ function awWatch() {
   awTimer = setInterval(async () => {
     try { const d = await (await fetch(`${API}/api/presence`)).json(); const p = (d.presence || []).find(x => x.username.toLowerCase() === name.toLowerCase());
       if (p && p.state !== 'offline') { clearInterval(awTimer); awTimer = null; st.innerHTML = `<span style="color:var(--ok,#2a9d5b)">✓ ${esc(name)} is online</span>${p.agent && p.agent.version ? ` · v${esc(p.agent.version)}` : ''}${p.agent && p.agent.rooms ? ` · watching #${esc(p.agent.rooms.join(', #'))}` : ''}`;
-        document.getElementById('aw-test-row').hidden = awKind() !== 'connector'; document.getElementById('aw-watch-btn').disabled = false; if (awKind() === 'worker') st.innerHTML += ' · now approve a small [agent] ticket and watch for Starting → Done'; loadPresence(); }
-      else if (Date.now() - awSeenAt > 240000) { clearInterval(awTimer); awTimer = null; st.textContent = `still not online after 4 minutes. On the machine: journalctl -u chamber-${awKind() === 'worker' ? 'worker' : 'agent'} -n 30`; document.getElementById('aw-watch-btn').disabled = false; }
+        document.getElementById('aw-test-row').hidden = awKind() === 'worker' || awKind() === 'mcp'; if (awKind() === 'mcp') st.innerHTML += ' · now ask your AI tool to read the general room in Chamber'; document.getElementById('aw-watch-btn').disabled = false; if (awKind() === 'worker') st.innerHTML += ' · now approve a small [agent] ticket and watch for Starting → Done'; loadPresence(); }
+      else if (Date.now() - awSeenAt > 240000) { clearInterval(awTimer); awTimer = null; st.textContent = (awKind() === 'laptop' ? 'still not online after 4 minutes. Look at the terminal where you pasted the command: it says what went wrong.' : `still not online after 4 minutes. On the machine: journalctl -u chamber-${awKind() === 'worker' ? 'worker' : 'agent'} -n 30`); document.getElementById('aw-watch-btn').disabled = false; }
     } catch {}
   }, 4000);
 }
@@ -2250,6 +2333,7 @@ async function ticketAction(id, action) {
   }));
   if (r.ok) {
     closeTicketModal();
+    if (action === 'approve') { try { const d = await r.clone().json(); if (/waits for another person/.test(d.message || '')) toast(d.message); } catch {} }   // T-0190
     await loadTickets(); toast(`${id}: ${PAST[action] || 'Done ✓'}`); flashCard(id);
   } else {
     const data = await r.json().catch(() => ({}));
@@ -2281,6 +2365,99 @@ async function ticketUpdate(id) {
   else { const data = await r.json().catch(() => ({})); toast('Update failed: ' + (data.error || r.statusText), 'err'); }
 }
 
+// ── T-0188: questions from agents (Allow once / Deny) ──
+let asksCache = [], asksTimer = null;
+async function loadAsks() {
+  if (currentWsRole === 'requester') return;
+  try { const r = await fetch(`${API}/api/asks?status=waiting`); if (!r.ok) return; asksCache = (await r.json()).asks || []; } catch { return; }
+  renderAsks();
+  clearInterval(asksTimer); asksTimer = asksCache.length ? setInterval(askTick, 1000) : null;
+}
+function askLeft(a) { const s = Math.max(0, Math.round((a.expiresAt - Date.now()) / 1000)); return s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : `${s}s`; }
+function askTick() {                                                          // the countdown only; the buttons are not redrawn under a finger
+  document.querySelectorAll('#ask-bar [data-left]').forEach(el => { const a = asksCache.find(x => x.id === el.dataset.left); if (a) el.textContent = askLeft(a); });
+  if (asksCache.some(a => a.expiresAt <= Date.now())) loadAsks();
+}
+function renderAsks() {
+  const bar = document.getElementById('ask-bar'); if (!bar) return;
+  const list = asksCache.filter(a => a.room === currentRoom && a.status === 'waiting' && a.expiresAt > Date.now());
+  bar.hidden = !list.length;
+  bar.innerHTML = list.map(a => `<div class="ask-item" data-ask="${esc(a.id)}">
+    <div><b>${esc(a.agent)}</b> asks to ${a.tool === 'Bash' ? 'run this command:' : esc(a.summary)}</div>${a.tool === 'Bash' ? `<pre>${esc(a.summary.replace(/^run this command: /, ''))}</pre>` : ''}
+    <div class="ask-btns">${a.canAnswer ? `<button class="btn btn-primary btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','allow')">Allow once</button><button class="btn btn-sm" type="button" onclick="answerAsk('${escJ(a.id)}','deny')">Deny</button>` : '<span class="dim small">Waiting for someone who may approve.</span>'}
+    <span class="dim small">${esc(a.id)} · no answer in <span data-left="${esc(a.id)}">${askLeft(a)}</span> means no</span></div></div>`).join('');
+}
+async function answerAsk(id, decision) {
+  document.querySelectorAll(`#ask-bar [data-ask="${CSS.escape(id)}"] button`).forEach(b => { b.disabled = true; });
+  try {
+    const r = await fetch(`${API}/api/asks/${encodeURIComponent(id)}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) toast(d.error || 'Could not answer', 'err'); else toast(decision === 'allow' ? 'Allowed once' : 'Said no');
+  } catch { toast('Network error: nothing was answered.', 'err'); }
+  loadAsks();
+}
+
+// ── T-0200: standing approvals ──
+let standingCache = { standing: [], canManage: false, agents: [] };
+async function loadStanding() {
+  try { const r = await fetch(`${API}/api/standing`); if (!r.ok) return; standingCache = await r.json(); } catch { return; }
+  const n = (standingCache.standing || []).filter(s => s.state === 'active').length, c = document.getElementById('standing-count');
+  if (c) { c.hidden = !n; c.textContent = n; }
+}
+const STANDING_STATE = { active: 'Active', waiting: 'Waits for a second approver', withdrawn: 'Withdrawn', ended: 'Ended' };
+function standingItemHtml(s) {
+  const live = s.state === 'active' || s.state === 'waiting', can = standingCache.canManage;
+  return `<div class="sa-item${live ? '' : ' sa-off'}">
+    <div><b>${esc(s.id)}</b> ${esc(s.what)} <span class="pill${s.state === 'active' ? ' ok' : s.state === 'waiting' ? ' warn' : ''}">${esc(STANDING_STATE[s.state] || s.state)}</span></div>
+    <div class="dim small">Done by ${esc(s.agent)} only · as a pull request a person merges · at most ${Number(s.maxFiles)} file${s.maxFiles === 1 ? '' : 's'} per job${(s.paths || []).length ? ' · only in ' + s.paths.map(esc).join(', ') : ''} · at most ${Number(s.perWeek)} a week (${Number(s.usedThisWeek)} in the last 7 days, ${Number(s.usedTotal)} in all) · until ${esc(s.until)}</div>
+    <div class="dim small">Set up by ${esc(s.by)} ${fmtDate(s.at)}${s.confirmedBy ? ' · confirmed by ' + esc(s.confirmedBy) : ''}${s.withdrawn ? ' · withdrawn by ' + esc(s.withdrawn.by) + ' ' + fmtDate(s.withdrawn.at) : ''}</div>
+    ${can && live ? `<div class="sa-btns">${s.state === 'waiting' && s.by !== currentUser ? `<button class="btn btn-sm" type="button" onclick="standingAct('${escJ(s.id)}','confirm')">Confirm</button>` : ''}<button class="btn btn-sm" type="button" onclick="standingAct('${escJ(s.id)}','withdraw')">Withdraw</button></div>` : ''}
+  </div>`;
+}
+async function openStanding() {
+  await loadStanding();
+  const list = standingCache.standing || [], can = !!standingCache.canManage;
+  document.getElementById('sa-list').innerHTML = list.length ? list.map(standingItemHtml).join('') : '<p class="dim">None yet: every ticket waits for a person to approve it.</p>';
+  document.getElementById('sa-new').hidden = !can; document.getElementById('sa-save').hidden = !can; document.getElementById('sa-cant').hidden = can;
+  if (can) {
+    const sel = document.getElementById('sa-agent'), agents = standingCache.agents || [], keep = sel.value;
+    sel.innerHTML = agents.length ? agents.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('') : '<option value="">No agents in this workspace yet</option>';
+    if (agents.includes(keep)) sel.value = keep;
+    const day = n => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10), u = document.getElementById('sa-until');
+    u.min = day(0); u.max = day(standingCache.maxDays || 90); if (!u.value || u.value < u.min || u.value > u.max) u.value = day(30);
+    document.getElementById('sa-never').textContent = 'Never covered, whatever you set: ' + (standingCache.never || []).join(', ') + '. Changes to those always wait for a person.';
+  }
+  document.getElementById('standing-modal').classList.add('show');
+}
+function closeStanding() { document.getElementById('standing-modal').classList.remove('show'); }
+async function saveStanding() {
+  const v = id => document.getElementById(id).value.trim(), err = document.getElementById('sa-error'), btn = document.getElementById('sa-save');
+  err.textContent = ''; btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/api/standing`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what: v('sa-what'), agent: v('sa-agent'), paths: v('sa-paths'), maxFiles: v('sa-files'), perWeek: v('sa-week'), until: v('sa-until') }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { err.textContent = d.error || 'Could not set it up.'; return; }
+    toast(d.message || 'Set up ✓'); document.getElementById('sa-what').value = ''; document.getElementById('sa-paths').value = ''; openStanding();
+  } catch { err.textContent = 'Network error: nothing was saved. Try again.'; }
+  finally { btn.disabled = false; }
+}
+async function standingAct(id, what) {                                       // one tap: withdraw (or confirm, under the two-person rule)
+  try {
+    const r = await fetch(`${API}/api/standing/${encodeURIComponent(id)}/${what}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || 'Failed', 'err'); return; }
+    toast(d.message || 'Done ✓'); loadTickets(); openStanding();
+  } catch { toast('Network error: nothing changed.', 'err'); }
+}
+function fillPropStanding() {                                                // the propose form offers the active standing approvals when an agent does the job
+  const wrap = document.getElementById('prop-standing-wrap'), sel = document.getElementById('prop-standing'); if (!wrap || !sel) return;
+  const forV = document.querySelector('input[name="prop-for"]:checked')?.value, act = (standingCache.standing || []).filter(s => s.state === 'active');
+  const show = proposeMode === 'propose' && forV === 'agent' && act.length > 0, keep = sel.value;
+  wrap.hidden = !show;
+  sel.innerHTML = '<option value="">No: wait for a person to approve it</option>' + act.map(s => `<option value="${esc(s.id)}">${esc(s.id)}: ${esc(s.what)} (${esc(s.agent)}, until ${esc(s.until)})</option>`).join('');
+  sel.value = show && act.some(s => s.id === keep) ? keep : '';
+}
+
 function openProposeModal() {
   proposeMode = 'propose';           // reset shared modal to create-new mode
   proposeEditId = null;
@@ -2290,6 +2467,7 @@ function openProposeModal() {
   document.getElementById('prop-type').value = 'task';
   document.getElementById('prop-priority').value = 'normal';
   for (const r of document.querySelectorAll('input[name="prop-for"]')) r.checked = false;   // T-0155: no default, the person chooses
+  fillPropStanding(); loadStanding().then(fillPropStanding);   // T-0200
   document.getElementById('prop-error').textContent = '';
   document.getElementById('propose-modal').classList.add('show');
   document.getElementById('prop-title').focus();
@@ -2307,6 +2485,7 @@ function openEditModal(id) {
   document.getElementById('prop-type').value = t.type || 'task';
   document.getElementById('prop-priority').value = t.priority || 'normal';
   for (const r of document.querySelectorAll('input[name="prop-for"]')) r.checked = (r.value === forOf(t));   // T-0155
+  fillPropStanding();   // T-0200: hidden while editing
   document.getElementById('prop-error').textContent = '';
   closeTicketModal();                // close the detail view behind the editor
   document.getElementById('propose-modal').classList.add('show');
@@ -2675,9 +2854,10 @@ async function submitPropose() {
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ by: currentUser, title, body, type, priority, for: forV })   // T-0155
+      body: JSON.stringify({ by: currentUser, title, body, type, priority, for: forV, standing: proposeMode === 'propose' && forV === 'agent' ? (document.getElementById('prop-standing')?.value || undefined) : undefined })   // T-0155
     });
-    if (r.ok) { closeProposeModal(); loadTickets(); toast(proposeMode === 'edit' ? 'Saved \u2713' : 'Proposed \u2713'); }
+    if (r.ok) { const d = await r.json().catch(() => ({})); closeProposeModal(); loadTickets(); const sa = proposeMode === 'propose' ? d.standing : null;   // T-0200: say whether the standing approval covered it
+      toast(proposeMode === 'edit' ? 'Saved \u2713' : !sa ? 'Proposed \u2713' : sa.ok ? `Proposed and approved at once by standing approval ${sa.id} \u2713` : `Proposed. ${sa.id || 'The standing approval'} does not cover it (${sa.why}), so it waits for a person.`, sa && !sa.ok ? 'err' : 'ok'); }
     else { const data = await r.json().catch(() => ({})); errEl.textContent = data.error || 'failed'; }
   } catch (e) {
     errEl.textContent = 'Network error \u2014 nothing was submitted. Try again.';   // [new] T-0116: this used to throw unhandled
@@ -3052,7 +3232,43 @@ async function togglePlain() {
   myPrefs = (await r.json()).prefs || {}; updatePlainState(); toast(myPrefs.plain ? 'Agents will answer you in plain language.' : 'Plain-language replies off.');
 }
 // The diff panel on a ticket: plain words first (from the agent's PLAIN line, or a summary built from the patch itself), the raw diff on the second tab.
-function renderDiffPanel(t, d) {
+function loadTicketDiff(t, version) {                                         // T-0189: one version of the change, with the comments on it
+  const dv = document.getElementById('tm-diff');
+  Promise.all([fetch(`${API}/api/tickets/${t.id}/diff${version ? '?version=' + version : ''}`).then(r => r.json()), fetch(`${API}/api/tickets/${t.id}/comments`).then(r => r.json()).catch(() => ({ comments: [] }))])
+    .then(([d, c]) => { if (openTicketId !== t.id) return; const v = (d.meta && d.meta.version) || 1;
+      dv.innerHTML = renderDiffPanel(t, d, (c.comments || []).filter(x => x.version === v)); dv.dataset.version = v; dv.dataset.ticket = t.id;
+      if (version) { const b = dv.querySelector('.tabs-mini button:nth-child(2)'); if (b) miniTab(b, 'df'); } })
+    .catch(() => { dv.innerHTML = ''; });
+}
+function loadTicketDiffById(id, version) { const t = ticketsCache.find(x => x.id === id); if (t) loadTicketDiff(t, version); }
+async function addDiffComment(id) {                                           // T-0189
+  const dv = document.getElementById('tm-diff'), line = document.getElementById('dv-line').value, text = document.getElementById('dv-text').value.trim();
+  if (!line || !text) { toast('Pick a line (tap it in the diff) and write the comment.', 'err'); return; }
+  const r = await withBusy(() => fetch(`${API}/api/tickets/${id}/comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ line: Number(line), text, version: Number(dv.dataset.version) }) }));
+  const d = await r.json().catch(() => ({})); if (!r.ok) { toast(d.error || 'Could not add the comment.', 'err'); return; }
+  loadTicketDiffById(id, Number(dv.dataset.version));
+}
+async function askForChanges(id) {                                            // T-0189
+  const note = await askDialog({ title: `Ask for changes on ${id}`, label: 'What should change', hint: 'The agent gets this together with your comments on lines, and sends a new version of the change. You can leave this empty if your line comments say it all.', min: 0, ok: 'Ask for changes' });
+  if (note === null || note === undefined) return;
+  const r = await withBusy(() => fetch(`${API}/api/tickets/${id}/changes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note }) }));
+  const d = await r.json().catch(() => ({})); if (!r.ok) { toast(d.error || 'Could not ask for changes.', 'err'); return; }
+  toast(d.agentWillAct ? `Sent to ${d.agent} in #${d.room}. Its new version will show up on ${id}.` : d.agent ? `Recorded. ${d.agent} only takes instructions from its commanders, so ask one of them to pass it on.` : `Recorded on ${id}. No agent made this change, so whoever proposed it sends the new version.`);
+  closeTicketModal(); loadTickets();
+}
+async function withdrawChanges(id) {                                          // T-0189
+  const r = await withBusy(() => fetch(`${API}/api/tickets/${id}/changes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ withdraw: true }) }));
+  const d = await r.json().catch(() => ({})); if (!r.ok) { toast(d.error || 'Could not withdraw it.', 'err'); return; }
+  closeTicketModal(); loadTickets();
+}
+async function setReviewer(id) {                                              // T-0189
+  const name = await askDialog({ title: `Reviewer for ${id}`, label: 'Username', hint: 'Someone who may approve here. They get a mention in chat. Leave empty to clear.', min: 0, ok: 'Save' });
+  if (name === null || name === undefined) return;
+  const r = await withBusy(() => fetch(`${API}/api/tickets/${id}/reviewer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewer: name.trim() }) }));
+  const d = await r.json().catch(() => ({})); if (!r.ok) { toast(d.error || 'Could not set the reviewer.', 'err'); return; }
+  closeTicketModal(); loadTickets();
+}
+function renderDiffPanel(t, d, comments) {
   const m = d.meta || {}, files = m.files || [], n = files.length, pl = m.plain || {};
   const lvl = ['low', 'medium', 'high'].includes(String(pl.level || '').toLowerCase()) ? String(pl.level).toLowerCase() : (n > 5 || (m.added || 0) + (m.removed || 0) > 200 ? 'medium' : 'low');
   const pill = `<span class="pill ${lvl === 'low' ? 'ok' : lvl === 'medium' ? 'warn' : 'bad'}" title="${pl.level ? 'rated by the agent' : 'estimated from the size of the change'}">risk: ${lvl}${pl.level ? '' : ' (est.)'}</span>`;
@@ -3065,7 +3281,12 @@ function renderDiffPanel(t, d) {
   const head = `<span class="section-title">Proposed change</span> <span class="dim small">${n ? n + ' file' + (n === 1 ? '' : 's') + ', ' : ''}<span class="d-add" style="width:auto">+${m.added || 0}</span> <span class="d-del" style="width:auto">-${m.removed || 0}</span>${m.repo ? ' in ' + esc(m.repo) : ''}${m.by ? ' · by ' + esc(m.by) : ''}</span> ${pill}`;
   const tabs = `<div class="tabs-mini" role="tablist"><button class="on" role="tab" onclick="miniTab(this,'pw')">Plain words</button><button role="tab" onclick="miniTab(this,'df')">Diff</button></div>`;
   const plain = `<div class="pane pw on">${row('what', 'What changes')}${row('try', 'How to try it')}${row('risk', 'What could go wrong')}${row('undo', 'How to undo')}</div>`;
-  const diff = `<div class="pane df">${renderCodeBlock('diff', d.diff || '')}</div>`;
+  const ver = m.version || 1, latest = d.current || ver;                                                     // T-0189
+  const vs = Array.isArray(d.versions) && d.versions.length > 1 ? `<div class="dv-vers">Version: ${d.versions.map(v => `<button class="btn btn-sm${v.version === ver ? ' on' : ''}" onclick="loadTicketDiffById('${escJ(t.id)}', ${Number(v.version)})">${Number(v.version)}${v.current ? ' (latest)' : ''}</button>`).join(' ')}</div>` : '';
+  const cm = (comments || []).length ? `<div class="dv-comments"><span class="section-title">Comments on version ${ver}</span>${comments.map(c => `<div class="update"><b>${esc(c.by)}</b> on line ${Number(c.line)}${c.file ? ' of ' + esc(c.file) : ''}: ${esc(c.text)}<div class="dim small" style="font-family:var(--font);overflow-wrap:anywhere">${esc(c.code)}</div></div>`).join('')}</div>` : '';
+  const canComment = t.status === 'proposed' && ver === latest && !['viewer', 'requester'].includes(currentWsRole);
+  const form = canComment ? `<div class="dv-form"><label class="dim small">Line <input id="dv-line" type="number" min="1" inputmode="numeric" style="width:72px"></label><input id="dv-text" maxlength="2000" placeholder="Comment on that line (tap a line in the diff to pick it)" style="flex:1;min-width:160px"><button class="btn btn-sm" onclick="addDiffComment('${escJ(t.id)}')">Comment</button></div>` : '';
+  const diff = `<div class="pane df">${vs}${renderCodeBlock('diff', d.diff || '', { numbered: true, open: true })}${cm}${form}</div>`;
   const note = t.status === 'proposed' ? '<div class="dim small" style="margin-top:4px">Approving this ticket tells the agent to apply exactly this patch on its own branch. Reject if anything looks wrong.</div>' : '';
   return head + tabs + plain + diff + note;
 }
