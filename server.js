@@ -164,7 +164,7 @@ function reachOf(r) {
 // Everything is worked out from what the caller may already see: tickets and reviews, agent answers and busy spells in rooms
 // they can see, people joining. Nothing here reads the who-did-what record (that stays on the account page).
 // Busy spells are found in the last 1000 messages only (what loadDataFull holds), so in an old period they can be incomplete.
-const ACT_WORDS = { ticket_proposed: 'ticket proposed', ticket_approved: 'ticket approved', ticket_rejected: 'ticket rejected', ticket_claimed: 'ticket started', ticket_closed: 'ticket done',
+const ACT_WORDS = { ticket_proposed: 'ticket proposed', ticket_approved: 'ticket approved', ticket_rejected: 'ticket rejected', ticket_claimed: 'ticket started', ticket_closed: 'ticket done', ticket_checked: 'ticket checked', ticket_sent_back: 'ticket sent back',
   review_submitted: 'review submitted', review_approved: 'review approved', review_rejected: 'review rejected', agent_run: 'agent answer', message_burst: 'busy chat', user_joined: 'joined' };
 const ACT_EXPORT_MAX = 50000;
 function activityEvents(sess, from, to) {
@@ -175,6 +175,7 @@ function activityEvents(sess, from, to) {
     if (t.approved_at && inR(T(t.approved_at))) events.push({ ts: T(t.approved_at), kind: 'ticket_approved', actor: t.approved_by, ref: t.id, title: t.title, meta: { seconds: Math.max(0, Math.round((T(t.approved_at) - p) / 1000)) } });
     if (t.rejected_at && inR(T(t.rejected_at))) events.push({ ts: T(t.rejected_at), kind: 'ticket_rejected', actor: t.rejected_by, ref: t.id, title: t.title, meta: { reason: t.reject_reason } });
     if (t.claimed_at && inR(T(t.claimed_at))) events.push({ ts: T(t.claimed_at), kind: 'ticket_claimed', actor: t.assignee, ref: t.id, title: t.title });
+    if (t.check && !t.check.bulk && inR(T(t.check.at))) events.push({ ts: T(t.check.at), kind: t.check.state === 'back' ? 'ticket_sent_back' : 'ticket_checked', actor: t.check.by, ref: t.id, title: t.title, meta: t.check.state === 'back' ? { reason: t.check.note, followup: t.check.followup } : {} });   // T-0223: a person's check of finished work
     if (t.closed_at && inR(T(t.closed_at))) events.push({ ts: T(t.closed_at), kind: 'ticket_closed', actor: t.closed_by || t.assignee || t.proposed_by, ref: t.id, title: t.title, meta: { seconds: Math.max(0, Math.round((T(t.closed_at) - p) / 1000)) } });
   }
   for (const r of (loadReviews().reviews || [])) {
@@ -206,6 +207,7 @@ function activityDetails(e) {
   const m = e.meta || {};
   if (e.kind === 'ticket_proposed') return [m.type, m.priority].filter(Boolean).join(', ');
   if (e.kind === 'ticket_rejected' || e.kind === 'review_rejected') return m.reason || '';
+  if (e.kind === 'ticket_sent_back') return `${m.reason || ''}${m.followup ? ' (follow-up ' + m.followup + ')' : ''}`;
   if (e.kind === 'review_submitted') return `${m.files || 0} file${m.files === 1 ? '' : 's'}${m.ticket ? ', ' + m.ticket : ''}`;
   if (e.kind === 'agent_run') return m.state && m.state !== 'done' ? m.state : '';
   if (e.kind === 'message_burst') return `${m.count} messages in ${m.span_sec} seconds`;
@@ -1571,7 +1573,7 @@ async function handleRequest(req, res, sess) {                              // [
   if (url.pathname.startsWith('/api/') && accounts.enabled && sess && !sess.agent) {
     const gr = accounts.sessionRole(sess);
     if (gr === 'requester' && !/^\/api\/(requests|requests\/mail|requests\/answer|requests\/files|requests\/files\/[a-f0-9]{24}|health)$/.test(url.pathname)) return json(res, 403, { error: 'You are a requester in this workspace: you can send requests and follow your own, nothing else.' });
-    if (gr === 'viewer' && method !== 'GET' && !/^\/api\/(ping|me\/prefs|tickets\/[A-Za-z0-9-]+\/(approve|reject|changes)|standing|standing\/S-\d{1,5}\/(withdraw|confirm)|asks\/A-\d{1,6}\/answer)$/.test(url.pathname)) return json(res, 403, { error: 'You are a viewer in this workspace: you can read, not change anything.' });
+    if (gr === 'viewer' && method !== 'GET' && !/^\/api\/(ping|me\/prefs|tickets\/[A-Za-z0-9-]+\/(approve|reject|changes|check)|tickets\/check-all|standing|standing\/S-\d{1,5}\/(withdraw|confirm)|asks\/A-\d{1,6}\/answer)$/.test(url.pathname)) return json(res, 403, { error: 'You are a viewer in this workspace: you can read, not change anything.' });
   }
   if (url.pathname.startsWith('/api/') && accounts.enabled && method !== 'GET' && url.pathname !== '/api/ping' && accounts.sessionReadOnly(sess)) {   // [new] T-0028
     return json(res, 402, { error: accounts.billingFor(sess)?.trialOver ? 'The free trial has ended. This workspace is read-only until its owner subscribes. Nothing was deleted.' : 'This workspace is read-only until its billing is fixed.', billing: 'readonly' });
@@ -2889,6 +2891,46 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
     audit(sess, { action: 'standing-check', ticket: id, standing: s.id, files: files.length }, true);
     return json(res, 200, { ok: true });
   }
+  // ── T-0223: checking finished work (the Reviews tab) ──────────────────────────────────────────────────────────────────────
+  // A finished ticket waits for a person's check. "Looks good" marks it; "send back" needs a reason and makes a follow-up ticket
+  // in the same step (proposed by the person who sent it back; the app then asks the normal approve route to start it, so the
+  // owner's approval rules still decide). Only people who may approve tickets here can check, and nobody checks their own work.
+  const checkM = url.pathname.match(/^\/api\/tickets\/(T-\d{4,6})\/check$/);
+  if ((checkM || url.pathname === '/api/tickets/check-all') && method === 'POST') {
+    if (!TICKETS_WRITE_ENABLED) return json(res, 501, { error: 'tickets integration not configured' });
+    const who = sess?.username ? loadData().users[sess.username] : null;
+    if (!who || who.role !== 'human' || sess.agent || sess.role === 'ai') { audit(sess, { action: 'ticket-check-refused', ticket: checkM ? checkM[1] : undefined }, true); return json(res, 403, { error: 'only a person can check finished work; an agent cannot' }); }
+    if (accounts.enabled && !accounts.canApprove(sess)) return json(res, 403, { error: 'Only people who may approve tickets here can check finished work (the owner\'s approval rules).' });
+    const body = (await parseBody(req, sess).catch(() => null)) || {};
+    if (!checkM) {                                                               // "start fresh": everything finished before a date
+      const before = parseInt(body.before, 10);
+      if (!Number.isFinite(before) || before > Date.now() + 1000) return json(res, 400, { error: 'before must be a time that has passed' });
+      const r = await runTicketsCLI(['check', '--by', sess.username, '--before', new Date(before).toISOString()]);
+      if (!r.ok) return json(res, 400, { error: r.stderr || 'check failed' });
+      const n = parseInt((r.stdout.match(/Checked (\d+)/) || [])[1], 10) || 0;
+      audit(sess, { action: 'tickets-checked-all', count: n, before: new Date(before).toISOString() }, true);
+      return json(res, 200, { ok: true, checked: n });
+    }
+    const id = checkM[1], state = body.undo === true ? 'undo' : body.ok === true ? 'ok' : body.ok === false ? 'back' : null, note = String(body.note || '').trim().slice(0, 4000);
+    if (!state) return json(res, 400, { error: 'send ok: true (looks good), ok: false with a note (send back), or undo: true' });
+    if (state === 'back' && note.length < 5) return json(res, 400, { error: 'Say what is wrong or missing, so whoever takes the follow-up knows what to do.' });
+    const before = (loadTickets().tickets || []).find(x => x.id === id);
+    const r = await runTicketsCLI(['check', id, '--by', sess.username, '--state', state, ...(note ? ['--note', note] : [])]);
+    if (!r.ok) return json(res, 400, { error: r.stderr || 'check failed' });
+    const followup = (r.stdout.match(/follow-up (T-\d+)/) || [])[1] || null;
+    audit(sess, { action: state === 'ok' ? 'ticket-checked' : state === 'back' ? 'ticket-sent-back' : 'ticket-check-undone', ticket: id, followup: followup || undefined, note: note ? note.slice(0, 200) : undefined }, true);
+    if (state === 'back' && before) {
+      try {                                                                      // tell the room, under the system name (agents do not take it as an instruction; the follow-up ticket is the instruction)
+        const data = loadData(), room = data.rooms[ticketRoomOf(before)] ? ticketRoomOf(before) : (data.rooms.general ? 'general' : Object.keys(data.rooms)[0]);
+        if (room && !(Object.hasOwn(data.users, REMINDER_BOT) && data.users[REMINDER_BOT].role !== 'ai')) {
+          if (!Object.hasOwn(data.users, REMINDER_BOT)) data.users[REMINDER_BOT] = { username: REMINDER_BOT, role: 'ai', lastSeen: Date.now() };
+          postMessage(data, { username: REMINDER_BOT, room, source: 'check', text: `${before.closed_by && data.users[before.closed_by] ? '@' + before.closed_by + ' ' : ''}${sess.username} checked ${id} (${String(before.title || '').slice(0, 80)}) and sent it back:\n> ${note.replace(/@/g, '(at)').replace(/\n/g, '\n> ').slice(0, 600)}\nThe follow-up is ${followup}.` });
+        }
+      } catch (e) { console.error('[check] could not tell the room:', e.message); }
+    }
+    return json(res, 200, { ok: true, state, followup, message: r.stdout });
+  }
+
   const ticketActionMatch = url.pathname.match(/^\/api\/tickets\/([A-Za-z0-9-]+)\/(approve|reject|claim|update|close|edit|release|cancel|log|for)$/);   // T-0143: + release, cancel, log; T-0155: + for
   if (ticketActionMatch && method === 'POST') {
     if (!TICKETS_WRITE_ENABLED) return json(res, 501, { error: 'tickets integration not configured' });  // [new] clean "off" reply

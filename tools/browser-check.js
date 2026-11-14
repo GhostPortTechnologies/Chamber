@@ -316,6 +316,35 @@ async function run(size) {
       let left = 9; for (let i = 0; i < 20 && left; i++) { await sleep(150); left = asks(await notes()).length; }
       check(`${size}: a question answered in the app takes its notification off this device`, before === 1 && left === 0, JSON.stringify({ before, left }));
     });
+    await step('reviews: finished work lands in To check; pick a ticket, looks good, send back', async () => {   // T-0223
+      const made = await page.evaluate(async size => {                           // two tickets asked by the person and finished by an agent
+        const me = currentUser, ah = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + sessionStorage.getItem('bcAsker') }, uh = { 'Content-Type': 'application/json' };
+        const bot = (await (await fetch('/api/me', { headers: ah })).json()).username, post = (p, h, b) => fetch(p, { method: 'POST', headers: h, body: JSON.stringify(b) });
+        const one = async title => { const id = ((await (await post('/api/tickets', uh, { by: me, title, body: 'Please make the shop page show the new price list.', for: 'agent' })).text()).match(/T-\d{4}/) || [])[0];
+          await post(`/api/tickets/${id}/approve`, uh, { by: me }); await post(`/api/tickets/${id}/claim`, ah, { by: bot }); const c = await post(`/api/tickets/${id}/close`, ah, { by: bot, note: '1. price list on the shop page: done, opened once on a phone-size screen.' }); return c.ok ? id : null; };
+        const a = await one(`[agent] Price list for the ${size} check`), b = await one(`[agent] Opening hours for the ${size} check`); await loadTickets(); return { a, b, bot };
+      }, size);
+      await page.click('.tab[data-view="reviews"]'); await page.waitForSelector('#reviews-view.active', { state: 'visible' });
+      await page.locator(`#rvcol-todo [data-check="${made.a}"]`).waitFor(); const badge = await page.locator('#review-badge').innerText();
+      await page.fill('#rv-find', made.b.replace('T-', '')); const found = await page.locator(`#rv-found [data-found="${made.b}"]`).innerText(); const cards = await page.locator('#rvcol-todo .check-card').count(), seen = await page.evaluate(() => { const c = [...document.querySelectorAll('#rvcol-todo .check-card')].pop().getBoundingClientRect(), col = document.getElementById('rvcol-todo').getBoundingClientRect(); return c.bottom <= col.bottom + 1 && c.height > 30; }); await shot('reviews-to-check');
+      await page.fill('#rv-find', 'opening hours ' + size); const byWords = await page.locator('#rv-found .rv-row').first().innerText(); await page.fill('#rv-find', '');
+      await page.click('#rv-next'); await page.locator('#check-modal.show').waitFor();
+      const first = await page.evaluate(() => ({ id: document.getElementById('ck-title').textContent, asked: document.getElementById('ck-asked').innerText, done: document.getElementById('ck-done').innerText, pos: document.getElementById('ck-pos').textContent, meta: document.getElementById('ck-meta').innerText,
+        sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth })); await shot('reviews-check-one');
+      check(`${size}: finished work shows up in To check by itself, a ticket is found by its number or by words, and Check next opens the oldest with what was asked and what was done`, Number(badge) >= 2 && cards >= 2 && seen && /to check/.test(found) && byWords.includes(made.b) && first.id === made.a
+        && /new price list/.test(first.asked) && /opened once on a phone-size screen/.test(first.done) && /left to check/.test(first.pos) && first.meta.includes(made.bot) && first.sw <= first.cw + 1, JSON.stringify({ badge, cards, seen, found, first }).slice(0, 400));
+      await page.click('#ck-ok'); await page.waitForFunction(id => document.getElementById('ck-title').textContent === id && document.getElementById('check-modal').classList.contains('show'), made.b);
+      await page.click('#ck-send-back'); await page.click('#ck-send'); const need = await page.locator('#ck-error').innerText();
+      await page.fill('#ck-reason', 'The hours for Sunday are missing.'); await page.click('#ck-send');
+      await page.locator(`#rvcol-back [data-check="${made.b}"]`).waitFor(); await page.locator(`#rvcol-ok [data-check="${made.a}"]`).waitFor();
+      await page.waitForFunction(id => { const b = ticketsCache.find(x => x.id === id), f = b && b.check && ticketsCache.find(x => x.id === b.check.followup); return !!f && f.status === 'approved' && !/proposed/.test(document.querySelector(`#rvcol-back [data-check="${id}"]`).innerText); }, made.b);   // the follow-up is approved a moment after the send-back itself
+      const end = await page.evaluate(ids => { const t = id => ticketsCache.find(x => x.id === id) || {}, b = t(ids.b), f = t(b.check && b.check.followup);
+        return { a: t(ids.a).check && t(ids.a).check.state, b: b.check && b.check.state, fTitle: f.title, fStatus: f.status, back: document.querySelector(`#rvcol-back [data-check="${ids.b}"]`).innerText, todo: !!document.querySelector(`#rvcol-todo [data-check="${ids.a}"], #rvcol-todo [data-check="${ids.b}"]`) }; }, made);
+      await shot('reviews-after');
+      check(`${size}: Looks good moves the ticket to Checked and opens the next one; Send back asks for a reason, makes a follow-up that is started right away, and shows it under Sent back`, /wrong or missing/.test(need) && end.a === 'ok' && end.b === 'back'
+        && /^\[agent\] Follow-up to T-\d{4}: The hours for Sunday are missing\.$/.test(end.fTitle) && end.fStatus === 'approved' && /approved/.test(end.back) && end.todo === false, JSON.stringify({ need, end }).slice(0, 400));
+      await page.evaluate(() => closeCheck());
+    });
     await step('a scheduled message says it was scheduled', async () => {                              // T-0214
       const made = await page.evaluate(async () => {
         const r = await fetch('/account/workspace/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ spec: '* * * * *', tz: 'UTC', room: 'general', text: 'Scheduled check: is everything still running?' }) });

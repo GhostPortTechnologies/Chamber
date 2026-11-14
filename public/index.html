@@ -302,6 +302,21 @@
   .rdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #8a8f98; margin-right: 5px; } .rdot.on { background: #2fbf71; } .fl-err { color: #e5484d; }
   .fl-wrap { overflow-x: auto; } .fl-table { width: 100%; border-collapse: collapse; font-size: 13px; } .fl-table td, .fl-table th { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
   .kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; flex: 1; overflow: hidden; min-height: 0; }
+  /* T-0223: the Reviews tab as the checking station */
+  .rv-bar { flex-wrap: wrap; gap: 8px; } #rv-find { flex: 1 1 220px; max-width: 420px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--r); padding: 7px 10px; font: inherit; font-size: 13px; }
+  .rv-found { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; } .rv-found[hidden] { display: none; }
+  .rv-row { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; font-size: 12px; text-align: left; color: var(--text); width: 100%; font: inherit; } .rv-row:hover { border-color: var(--accent-line); }
+  .rv-row .id { color: var(--text-dim); flex-shrink: 0; } .rv-row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rv-fresh { margin: 0 0 8px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r); color: var(--text-dim); line-height: 1.7; } .rv-fresh a { color: var(--accent); }
+  .rv-pasted { margin-top: 8px; flex-shrink: 0; } .rv-pasted > summary { cursor: pointer; font-size: 12px; color: var(--text-dim); padding: 4px 2px; } .rv-pasted .toolbar { margin: 6px 0; flex-wrap: wrap; gap: 8px; }
+  .rv-old { height: 30vh; flex: none; } .check-card .ttl { font-size: 12px; color: var(--text); margin: 2px 0 5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ck-name { font-size: 15px; color: var(--text); margin-bottom: 4px; overflow-wrap: anywhere; } .ck-text { max-height: 30vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; background: var(--bg); }
+  .ck-state { margin-top: 10px; font-size: 13px; color: var(--text); } .ck-state:empty { display: none; } #ck-reason { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 8px 10px; font: inherit; font-size: 13px; }
+  #check-modal .modal-head { gap: 10px; } #check-modal .modal-head .close-x { margin-left: auto; }
+  @media (max-width: 760px) {                                                  /* on a phone the whole tab scrolls and To check gets room first */
+    #reviews-view.active { display: block; overflow-y: auto; } #reviews-view .reviews-grid { overflow: visible; margin-bottom: 8px; } #reviews-view .review-col { max-height: 60vh; } .rv-old { height: auto; }
+    #rv-find { max-width: none; flex-basis: 150px; }
+  }
   .reviews-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; flex: 1; overflow: hidden; min-height: 0; }
   .kanban-col, .review-col { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
   .kanban-col h3, .review-col h3 { padding: 9px 12px; color: var(--text-dim); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; flex-shrink: 0; }
@@ -677,17 +692,28 @@
 </div>
 
 <div id="reviews-view" class="view" role="tabpanel">
-  <div class="toolbar">
-    <button class="btn" onclick="reviewNext()">Review next →</button>
-    <button class="btn btn-primary" onclick="openNewReview()">+ New review</button>
+  <div class="toolbar rv-bar">
+    <input id="rv-find" type="search" placeholder="Find a ticket: number or words" aria-label="Find a ticket to review" oninput="rvFind()" autocomplete="off">
+    <button class="btn btn-primary" id="rv-next" onclick="checkNext()">Check next →</button>
     <span class="spacer"></span>
-    <span class="dim small">Paste a diff or a file; a human approves or rejects it here.</span>
+    <span class="dim small">Finished work lands here by itself. Look at it, then: looks good, or send it back.</span>
   </div>
+  <div id="rv-found" class="rv-found" hidden></div>
+  <div id="rv-fresh" class="rv-fresh small" hidden></div>
   <div class="reviews-grid">
-    <div class="review-col"><h3>Pending <span class="count" id="rcount-pending">0</span></h3><div class="review-cards" id="rcol-pending"></div></div>
-    <div class="review-col"><h3>Approved <span class="count" id="rcount-approved">0</span></h3><div class="review-cards" id="rcol-approved"></div></div>
-    <div class="review-col"><h3>Rejected <span class="count" id="rcount-rejected">0</span></h3><div class="review-cards" id="rcol-rejected"></div></div>
+    <div class="review-col"><h3>To check <span class="count" id="rvcount-todo">0</span></h3><div class="review-cards" id="rvcol-todo"></div></div>
+    <div class="review-col"><h3>Checked <span class="count" id="rvcount-ok">0</span></h3><div class="review-cards" id="rvcol-ok"></div></div>
+    <div class="review-col"><h3>Sent back <span class="count" id="rvcount-back">0</span></h3><div class="review-cards" id="rvcol-back"></div></div>
   </div>
+  <details class="rv-pasted" id="rv-pasted"><summary>Changes and pasted reviews: <span id="rv-pasted-n">0</span> waiting</summary>
+    <div class="toolbar"><button class="btn btn-sm" onclick="reviewNext()">Review next →</button><button class="btn btn-sm" onclick="openNewReview()">+ New pasted review</button><span class="dim small">Paste a diff or a file and a person approves or rejects it. A change attached to a ticket is reviewed in that ticket's window.</span></div>
+    <div id="rv-changes" class="rv-found"></div>
+    <div class="reviews-grid rv-old">
+      <div class="review-col"><h3>Pending <span class="count" id="rcount-pending">0</span></h3><div class="review-cards" id="rcol-pending"></div></div>
+      <div class="review-col"><h3>Approved <span class="count" id="rcount-approved">0</span></h3><div class="review-cards" id="rcol-approved"></div></div>
+      <div class="review-col"><h3>Rejected <span class="count" id="rcount-rejected">0</span></h3><div class="review-cards" id="rcol-rejected"></div></div>
+    </div>
+  </details>
 </div>
 
 <div id="files-view" class="view" role="tabpanel">
@@ -831,6 +857,24 @@
       <div id="nr-error" class="err"></div>
     </div>
     <div class="actions"><button onclick="closeNewReview()">Cancel</button><button class="primary" onclick="submitNewReview()">Submit for review</button></div>
+  </div>
+</div>
+
+<div id="check-modal" class="modal" onclick="if(event.target===this)closeCheck()" role="dialog" aria-modal="true" aria-labelledby="ck-title">
+  <div class="modal-box wide">
+    <div class="modal-head"><h2 id="ck-title">T-0000</h2><span class="dim small" id="ck-pos"></span><button class="close-x" aria-label="Close" onclick="closeCheck()">×</button></div>
+    <div class="modal-body">
+      <div class="ck-name" id="ck-name"></div>
+      <div class="dim small" id="ck-meta"></div>
+      <span class="section-title">What was asked</span><div class="body ck-text" id="ck-asked"></div>
+      <span class="section-title">What was done</span><div class="body ck-text" id="ck-done"></div>
+      <div class="dim small" style="margin-top:8px"><a href="#" onclick="event.preventDefault();ckOpenTicket()">Open the full ticket</a> for every step, the run log and files.</div>
+      <div id="ck-state" class="ck-state"></div>
+      <div id="ck-back" hidden><label for="ck-reason" class="section-title">What is wrong or missing?</label><textarea id="ck-reason" rows="3" maxlength="4000" placeholder="Say it the way you would tell a person. It becomes a follow-up ticket for whoever did the work."></textarea>
+        <label class="dim small" style="display:block;margin-top:6px"><input type="checkbox" id="ck-start" checked> Start the follow-up right away (approve it)</label></div>
+      <div id="ck-error" class="err"></div>
+    </div>
+    <div class="actions" id="ck-actions"></div>
   </div>
 </div>
 
@@ -1266,7 +1310,7 @@ async function saveNotify() {
     enterChamber(me.username, me.role);
     showBilling(me.billing);                                                // T-0028
     if (me.budget && me.budget.monthlyCents) { const bl = document.getElementById('budget-line'); if (bl) { bl.hidden = false; bl.textContent = `AI budget: $${(me.budget.spentCents / 100).toFixed(2)} of $${(me.budget.monthlyCents / 100).toFixed(2)} used this month${me.budget.over ? ' (used up)' : ''}`; } }   // T-0203: the board shows what is left
-    window.meCanApprove = me.canApprove;                                     // T-0190: read by the ticket window
+    window.meCanApprove = me.canApprove; renderCheck();                      // T-0190: read by the ticket window; T-0223: and by the Reviews tab
     if (currentWsRole === 'viewer') {                                         // T-0199: a viewer reads everything and, when named, approves; nothing else
       const input = document.getElementById('msg-input'); input.disabled = true; input.placeholder = 'You are a viewer here: you can read, not post';
       const at = document.getElementById('attach-btn'); if (at) at.disabled = true; updateSendState();
@@ -1653,7 +1697,7 @@ function switchView(view) {
   document.querySelectorAll('nav.tabs .tab').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === view + '-view'));
   if (view === 'activity') loadActivity();
-  if (view === 'reviews') loadReviews();
+  if (view === 'reviews') { loadReviews(); loadTickets(); }                     // T-0223
   if (view === 'files') loadFiles();
   if (view === 'terminal') terminalInit();                                             // T-0064/T-0065
   closeSidebar();
@@ -1880,7 +1924,7 @@ async function loadTickets() {
     const r = await fetch(`${API}/api/tickets`);
     const data = await r.json();
     ticketsCache = data.tickets || [];
-    renderTickets(); renderStart();
+    renderTickets(); renderStart(); renderCheck();                            // T-0223: finished tickets land on the Reviews tab
   } catch {}
 }
 
@@ -1907,7 +1951,7 @@ function ticketCardHtml(t) {
         <span class="pri-${esc(t.priority)}">● ${esc(t.priority)}</span>
         <span>${esc(t.type)}</span>
         <span>${esc(t.proposed_by)}</span>
-        <span${t.status === 'proposed' ? ' title="waiting for approval"' : ''}>${t.status === 'proposed' ? 'waiting ' : ''}${ageStr(t.proposed_at)}</span>${t.changes && t.status === 'proposed' ? '<span class="pill warn">changes asked</span>' : ''}${(t.files || []).length ? `<span class="pill" title="Sent with the request">${t.files.length} file${t.files.length === 1 ? '' : 's'}</span>` : ''}${t.draft && t.status === 'proposed' ? `<span class="pill" title="An agent drafted a plan for this request. Open it to read the suggestion.">${t.draft.used ? 'draft added' : 'draft ready'}</span>` : ''}${(t.client_questions || []).length ? `<span class="pill" title="A question was sent to the person who made this request">${t.client_questions.some(q => !q.answer) ? 'asked the requester' : 'requester answered'}</span>` : ''}${t.reviewer && t.status === 'proposed' ? `<span>review: ${esc(t.reviewer)}</span>` : ''}${t.github ? `<span class="pill" title="From GitHub issue #${Number(t.github.number)} in ${esc(t.github.repo)}">GitHub #${Number(t.github.number)}</span>` : ''}${t.standing ? `<span class="pill ok" title="Approved in advance by standing approval ${esc(t.standing.id)}: ${esc(t.standing.what)}">standing ${esc(t.standing.id)}</span>` : ''}${t.pr ? `<span class="pill${t.pr.state === 'merged' ? ' ok' : ''}">PR #${Number(t.pr.number)} ${esc(t.pr.state)}</span>` : ''}${t.status === 'proposed' && Array.isArray(t.approvals) && t.approvals.length ? `<span title="approved by ${esc(t.approvals.map(a => a.by).join(', '))}">✓ ${t.approvals.length} of ${esc(t.approvals_needed || 2)}</span>` : ''}
+        <span${t.status === 'proposed' ? ' title="waiting for approval"' : ''}>${t.status === 'proposed' ? 'waiting ' : ''}${ageStr(t.proposed_at)}</span>${t.changes && t.status === 'proposed' ? '<span class="pill warn">changes asked</span>' : ''}${t.status === 'done' && t.check ? (t.check.state === 'back' ? '<span class="pill bad" title="A person checked it and sent it back">sent back</span>' : '<span class="pill ok" title="A person checked it">checked</span>') : ''}${(t.files || []).length ? `<span class="pill" title="Sent with the request">${t.files.length} file${t.files.length === 1 ? '' : 's'}</span>` : ''}${t.draft && t.status === 'proposed' ? `<span class="pill" title="An agent drafted a plan for this request. Open it to read the suggestion.">${t.draft.used ? 'draft added' : 'draft ready'}</span>` : ''}${(t.client_questions || []).length ? `<span class="pill" title="A question was sent to the person who made this request">${t.client_questions.some(q => !q.answer) ? 'asked the requester' : 'requester answered'}</span>` : ''}${t.reviewer && t.status === 'proposed' ? `<span>review: ${esc(t.reviewer)}</span>` : ''}${t.github ? `<span class="pill" title="From GitHub issue #${Number(t.github.number)} in ${esc(t.github.repo)}">GitHub #${Number(t.github.number)}</span>` : ''}${t.standing ? `<span class="pill ok" title="Approved in advance by standing approval ${esc(t.standing.id)}: ${esc(t.standing.what)}">standing ${esc(t.standing.id)}</span>` : ''}${t.pr ? `<span class="pill${t.pr.state === 'merged' ? ' ok' : ''}">PR #${Number(t.pr.number)} ${esc(t.pr.state)}</span>` : ''}${t.status === 'proposed' && Array.isArray(t.approvals) && t.approvals.length ? `<span title="approved by ${esc(t.approvals.map(a => a.by).join(', '))}">✓ ${t.approvals.length} of ${esc(t.approvals_needed || 2)}</span>` : ''}
       </div>
     </div>`;
 }
@@ -2607,10 +2651,7 @@ function renderReviews() {
     document.getElementById(colId).innerHTML = list.map(reviewCardHtml).join('') || '<div class="empty">Nothing here</div>';
     document.getElementById(cntId).textContent = list.length;
   }
-  const pendingCount = (buckets.pending || []).length;
-  const badge = document.getElementById('review-badge');
-  if (pendingCount > 0) { badge.style.display = 'inline-block'; badge.textContent = pendingCount; }
-  else { badge.style.display = 'none'; }
+  renderCheck();                                                              // T-0223: the number on the tab counts finished work waiting for a check too
 }
 
 function reviewCardHtml(r) {
@@ -2631,6 +2672,108 @@ function reviewCardHtml(r) {
         <span>${ageStr(r.proposed_at)}</span>
       </div>
     </div>`;
+}
+
+// ── T-0223: the Reviews tab is the checking station. A finished ticket lands in "To check" by itself; a person who may approve
+// tickets looks at what was asked and what was done, and says "looks good" or sends it back with a reason (that makes a follow-up
+// ticket). Nobody checks work they finished themselves. "Check next" walks the queue oldest first, one ticket at a time.
+let checkId = null, checkLine = false; const checkSkipped = new Set();
+const ckDoneNote = t => { const u = [...(t.updates || [])].reverse().find(x => String(x.note || '').startsWith('CLOSED: ')); return u ? u.note.slice(8) : ''; };
+const ckCan = () => window.meCanApprove !== false;
+function checkQueue() { return ticketsCache.filter(t => t.status === 'done' && !t.check && t.closed_by !== currentUser).sort((a, b) => (String(a.closed_at) < String(b.closed_at) ? -1 : 1)); }
+function checkCardHtml(t) {
+  const c = t.check, f = c && c.followup ? ticketsCache.find(x => x.id === c.followup) : null;
+  const line = !c ? `done ${ageStr(t.closed_at)} · ${esc(t.closed_by || '?')}` : c.state === 'back' ? `sent back ${ageStr(c.at)} · ${esc(c.by)}${c.followup ? ` · ${esc(c.followup)}${f ? ' ' + esc(f.status.replace('_', ' ')) : ''}` : ''}` : `checked ${ageStr(c.at)} · ${esc(c.by)}${c.bulk ? ' · start fresh' : ''}`;
+  return `<div class="review-card check-card" data-check="${escA(t.id)}" onclick="openCheck('${escJ(t.id)}')"><div class="id">${esc(t.id)}</div><div class="ttl">${esc(t.title)}</div><div class="meta"><span>${line}</span></div></div>`;
+}
+function renderCheck() {
+  if (!document.getElementById('rvcol-todo')) return;
+  const todo = checkQueue(), ok = ticketsCache.filter(t => t.check && t.check.state === 'ok').sort((a, b) => (a.check.at < b.check.at ? 1 : -1)), back = ticketsCache.filter(t => t.check && t.check.state === 'back').sort((a, b) => (a.check.at < b.check.at ? 1 : -1));
+  const put = (col, cnt, list, shown, empty) => { document.getElementById(col).innerHTML = shown.map(checkCardHtml).join('') + (list.length > shown.length ? `<div class="empty">and ${list.length - shown.length} more</div>` : '') || `<div class="empty">${empty}</div>`; document.getElementById(cnt).textContent = list.length; };
+  put('rvcol-todo', 'rvcount-todo', todo, todo.slice(0, 60), 'Nothing waiting. Finished tickets show up here by themselves.');
+  put('rvcol-ok', 'rvcount-ok', ok, ok.slice(0, 30), 'Nothing checked yet');
+  put('rvcol-back', 'rvcount-back', back, back.slice(0, 30), 'Nothing sent back');
+  document.getElementById('rv-next').disabled = !todo.length || !ckCan();
+  const fresh = document.getElementById('rv-fresh'), now = Date.now(), olderThan = d => todo.filter(t => Date.parse(t.closed_at) < now - d * 864e5).length;
+  if (todo.length > 15 && ckCan()) {                                           // a backlog from before this tab worked this way: offer to start fresh, never do it unasked
+    const opt = (label, d) => { const n = olderThan(d); return n ? `<a href="#" onclick="event.preventDefault();checkFresh(${d}, ${n})">${label} (${n})</a>` : ''; };
+    const links = [opt('everything finished more than 7 days ago', 7), opt('more than a day ago', 1), opt('everything up to now', 0)].filter(Boolean).join(' · ');
+    fresh.innerHTML = `${todo.length} finished tickets are waiting, most from before this tab worked this way. Go through them with <b>Check next</b>, or start fresh and mark as checked without looking: ${links}`; fresh.hidden = !links;
+  } else fresh.hidden = true;
+  const changes = ticketsCache.filter(t => t.hasDiff && t.status === 'proposed'), box = document.getElementById('rv-changes');
+  box.innerHTML = changes.map(t => `<button class="rv-row" onclick="openTicketModal('${escJ(t.id)}')"><span class="id">${esc(t.id)}</span><span class="t">${esc(t.title)}</span><span class="pill warn">change to review</span></button>`).join('');
+  const waiting = changes.length + reviewsCache.filter(r => r.status === 'pending').length; document.getElementById('rv-pasted-n').textContent = waiting;
+  reviewBadge(); rvFind();
+}
+function reviewBadge() {                                                       // the number on the tab: what waits for THIS person
+  const n = (ckCan() ? checkQueue().length : 0) + reviewsCache.filter(r => r.status === 'pending').length, badge = document.getElementById('review-badge');
+  if (n > 0) { badge.style.display = 'inline-block'; badge.textContent = n > 99 ? '99+' : n; } else badge.style.display = 'none';
+}
+function rvFind() {                                                            // pick any ticket that already exists, by number or by words
+  const box = document.getElementById('rv-found'), q = (document.getElementById('rv-find').value || '').trim().toLowerCase(); if (!box) return;
+  if (!q) { box.hidden = true; box.innerHTML = ''; return; }
+  const num = (q.match(/^t?-?0*(\d{1,6})$/) || [])[1], words = q.split(/\s+/);
+  let hits = num ? ticketsCache.filter(t => parseInt(String(t.id).replace(/^T-/, ''), 10) === Number(num)) : [];
+  if (!hits.length) hits = ticketsCache.filter(t => { const hay = `${t.id} ${t.title} ${t.body || ''}`.toLowerCase(); return words.every(w => hay.includes(w)); }).sort((a, b) => (String(a.closed_at || a.proposed_at) < String(b.closed_at || b.proposed_at) ? 1 : -1));
+  const state = t => t.status !== 'done' ? `<span class="pill">${esc(t.status.replace('_', ' '))}</span>` : !t.check ? '<span class="pill warn">to check</span>' : t.check.state === 'back' ? '<span class="pill bad">sent back</span>' : '<span class="pill ok">checked</span>';
+  box.innerHTML = hits.slice(0, 8).map(t => `<button class="rv-row" data-found="${escA(t.id)}" onclick="openCheck('${escJ(t.id)}')"><span class="id">${esc(t.id)}</span><span class="t">${esc(t.title)}</span>${state(t)}</button>`).join('') + (hits.length > 8 ? `<div class="dim small">and ${hits.length - 8} more: add a word to narrow it down</div>` : '') || '<div class="dim small">No ticket matches that.</div>';
+  box.hidden = false;
+}
+function openCheck(id, line) {
+  const t = ticketsCache.find(x => x.id === id); if (!t) { toast('That ticket is not here any more', 'err'); return; }
+  checkId = id; checkLine = line === true;
+  const q = checkQueue().filter(x => !checkSkipped.has(x.id)), c = t.check, took = t.closed_at ? actTook(Math.max(0, Math.round((Date.parse(t.closed_at) - Date.parse(t.proposed_at)) / 1000))) : '';
+  document.getElementById('ck-title').textContent = t.id; document.getElementById('ck-name').textContent = t.title;
+  document.getElementById('ck-pos').textContent = checkLine ? `${q.length} left to check` : '';
+  document.getElementById('ck-meta').innerHTML = `asked by ${esc(t.proposed_by || '?')}${t.closed_at ? ` · done ${fmtDate(t.closed_at)} by ${esc(t.closed_by || '?')}${took ? ` · ${took} from request to done` : ''}` : ` · ${esc(t.status.replace('_', ' '))}`}`;
+  document.getElementById('ck-asked').innerHTML = renderText(t.body || '(nothing was written beyond the title)', { noCollapse: true });
+  const done = ckDoneNote(t); document.getElementById('ck-done').innerHTML = renderText(done || (t.status === 'done' ? '(no closing note)' : 'Not finished yet.'), { noCollapse: true });
+  document.getElementById('ck-back').hidden = true; document.getElementById('ck-reason').value = ''; document.getElementById('ck-error').textContent = '';
+  const state = document.getElementById('ck-state'), act = document.getElementById('ck-actions'), f = c && c.followup ? ticketsCache.find(x => x.id === c.followup) : null;
+  let s = '', b = '';
+  if (t.status !== 'done') s = `This ticket is not finished yet (${esc(t.status.replace('_', ' '))}), so there is nothing to check.`;
+  else if (c && c.state === 'back') s = `<b>Sent back</b> by ${esc(c.by)} ${ageStr(c.at)}: ${esc(c.note)}${c.followup ? ` The follow-up is <a href="#" onclick="event.preventDefault();openCheck('${escJ(c.followup)}')">${esc(c.followup)}</a>${f ? ` (${esc(f.status.replace('_', ' '))})` : ''}.` : ''}`;
+  else if (c) { s = `<b>Checked</b> by ${esc(c.by)} ${ageStr(c.at)}${c.bulk ? ', marked without looking (start fresh)' : ''}${c.note ? ': ' + esc(c.note) : ''}.`; if (ckCan()) b = `<button onclick="checkSend('undo')">Take the check back</button>`; }
+  else if (t.closed_by === currentUser) s = 'You finished this one yourself, so it needs no check from you.';
+  else if (!ckCan()) s = 'Only people who may approve tickets here can check finished work.';
+  else b = `${checkLine ? '<button onclick="checkSkip()">Skip</button>' : ''}<button class="danger" id="ck-send-back" onclick="checkBack()">Send back</button><button class="primary" id="ck-ok" onclick="checkSend(true)">Looks good</button>`;
+  state.innerHTML = s; act.innerHTML = b;
+  document.getElementById('check-modal').classList.add('show');
+}
+function closeCheck() { document.getElementById('check-modal').classList.remove('show'); checkId = null; checkLine = false; }
+function ckOpenTicket() { const id = checkId; closeCheck(); openTicketModal(id); }
+function checkBack() {
+  document.getElementById('ck-back').hidden = false; document.getElementById('ck-reason').focus();
+  document.getElementById('ck-actions').innerHTML = `<button onclick="openCheck('${escJ(checkId)}', ${checkLine})">Cancel</button><button class="primary" id="ck-send" onclick="checkSend(false)">Send it back</button>`;
+}
+function checkSkip() { checkSkipped.add(checkId); checkNext(); }
+function checkNext() {
+  const q = checkQueue().filter(t => !checkSkipped.has(t.id));
+  if (!q.length) { const had = checkSkipped.size; checkSkipped.clear(); closeCheck(); toast(had ? `End of the line. ${had} skipped: press Check next to see them again.` : 'All caught up: nothing left to check ✓'); return; }
+  openCheck(q[0].id, true);
+}
+async function checkSend(what) {
+  const id = checkId, line = checkLine, err = document.getElementById('ck-error'), note = what === false ? document.getElementById('ck-reason').value.trim() : '';
+  if (what === false && note.length < 5) { err.textContent = 'Say what is wrong or missing, so whoever takes the follow-up knows what to do.'; return; }
+  const post = (path, body) => fetch(`${API}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const busy = on => document.querySelectorAll('#ck-actions button').forEach(b => { b.disabled = on; });   // one tap, one answer
+  err.textContent = ''; busy(true);
+  try {
+    const r = await post(`/api/tickets/${id}/check`, what === 'undo' ? { undo: true } : { ok: what, note }), d = await r.json().catch(() => ({}));
+    if (!r.ok) { err.textContent = d.error || 'That did not work'; busy(false); return; }
+    if (what === false && d.followup && document.getElementById('ck-start').checked) {
+      const a = await post(`/api/tickets/${d.followup}/approve`, { by: currentUser }), ad = a.ok ? {} : await a.json().catch(() => ({}));
+      toast(a.ok ? `${id} sent back. ${d.followup} is approved and ready to be picked up.` : `${id} sent back. ${d.followup} waits for approval: ${ad.error || 'it could not be approved from here'}`);
+    } else toast(what === true ? `${id} checked ✓` : what === 'undo' ? `${id} is back in To check` : `${id} sent back. ${d.followup} waits for approval.`);
+    await loadTickets();
+    if (line && what !== 'undo') checkNext(); else closeCheck();
+  } catch (e) { err.textContent = 'That did not work: ' + e.message; busy(false); }
+}
+async function checkFresh(days, n) {
+  if (!confirm(`Mark ${n} finished ticket${n === 1 ? '' : 's'} as checked without looking at ${n === 1 ? 'it' : 'them'}? They move to Checked, marked "start fresh".`)) return;
+  try { const r = await fetch(`${API}/api/tickets/check-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ before: Date.now() - days * 864e5 }) }), d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || 'That did not work', 'err'); return; }
+    toast(`${d.checked} ticket${d.checked === 1 ? '' : 's'} marked as checked`); await loadTickets(); } catch (e) { toast('That did not work', 'err'); }
 }
 
 function openNewReview() { document.getElementById('newreview-modal').classList.add('show'); document.getElementById('nr-note').focus(); }
@@ -2834,7 +2977,7 @@ let activityTimer = null;
 
 const EV_ICONS = {
   ticket_proposed: '📋', ticket_approved: '✓', ticket_rejected: '✗',
-  ticket_claimed: '⚙', ticket_closed: '✓',
+  ticket_claimed: '⚙', ticket_closed: '✓', ticket_checked: '✓', ticket_sent_back: '↩',
   review_submitted: '📝', review_approved: '✓', review_rejected: '✗',
   message_burst: '💬', user_joined: '➕', agent_run: '🤖',
 };
@@ -2865,6 +3008,8 @@ function actEventHtml(e) {
     case 'ticket_rejected':  text = `<b>${esc(e.actor || 'someone')}</b> rejected <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;
     case 'ticket_claimed':   text = `<b>${esc(e.actor || 'someone')}</b> started <span class="ref">${esc(e.ref)}</span>`; break;
     case 'ticket_closed':    text = `<b>${esc(e.actor || 'someone')}</b> finished <span class="ref">${esc(e.ref)}</span>${took ? ` <span class="ref">(${took} from request to done)</span>` : ''}`; break;
+    case 'ticket_checked':   text = `<b>${esc(e.actor || 'someone')}</b> checked <span class="ref">${esc(e.ref)}</span>: looks good`; break;
+    case 'ticket_sent_back': text = `<b>${esc(e.actor || 'someone')}</b> sent <span class="ref">${esc(e.ref)}</span> back — ${esc(e.meta?.reason || '')}${e.meta?.followup ? ` <span class="ref">(follow-up ${esc(e.meta.followup)})</span>` : ''}`; break;
     case 'review_submitted': text = `<b>${esc(e.actor)}</b> submitted review <span class="ref">${esc(e.ref)}</span> (${e.meta?.files} file${e.meta?.files === 1 ? '' : 's'}${e.meta?.ticket ? ', ' + esc(e.meta.ticket) : ''})`; break;
     case 'review_approved':  text = `<b>${esc(e.actor)}</b> approved review <span class="ref">${esc(e.ref)}</span>`; break;
     case 'review_rejected':  text = `<b>${esc(e.actor)}</b> rejected review <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;

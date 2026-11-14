@@ -229,6 +229,52 @@ switch (verb) {                                                               //
     t[flags.set] = value;
     save(data); console.log(`Set ${flags.set} on ${t.id}`); break;
   }
+  case 'check': {                                                             // T-0223: a person's check of finished work (the Reviews tab)
+    // check <id> --by X --state ok [--note ..]      looks good
+    // check <id> --by X --state back --note ..      sent back: the note says what is wrong, and a follow-up ticket is made in the same step
+    // check <id> --by X --state undo                takes a "looks good" back
+    // check --by X --before <ISO date>              every finished ticket closed before then is marked checked ("start fresh")
+    // Nobody checks work they finished themselves. The server decides who may call this at all (people who may approve).
+    if (!flags.by) fail('check requires --by');
+    if (flags.before) {
+      const cut = Date.parse(flags.before); if (!Number.isFinite(cut)) fail('check --before needs a date');
+      let n = 0;
+      for (const t of data.tickets) if (t.status === 'done' && !t.check && t.closed_by !== flags.by && Date.parse(t.closed_at) < cut) { t.check = { state: 'ok', by: flags.by, at: nowISO(), bulk: true }; n++; }
+      save(data); console.log(`Checked ${n}`); break;
+    }
+    const t = findTicket(pos[1] || fail('check requires a ticket id'));
+    t.updates = t.updates || [];
+    if (flags.state === 'undo') {
+      if (!t.check) fail(`${t.id} has no check to take back`);
+      if (t.check.state === 'back') fail(`${t.id} was sent back and its follow-up ${t.check.followup || ''} exists; reject or finish the follow-up instead`);
+      delete t.check; t.updates.push({ at: nowISO(), by: flags.by, note: 'CHECK taken back' });
+      save(data); console.log(`Unchecked ${t.id}`); break;
+    }
+    if (t.status !== 'done') fail(`only a finished ticket can be checked (${t.id} is ${t.status})`);
+    if (t.check) fail(`${t.id} was already checked by ${t.check.by}`);
+    if (t.closed_by === flags.by) fail(`${t.id} was finished by ${flags.by}; someone else checks it`);
+    const note = String(flags.note || '').trim();
+    if (flags.state === 'ok') {
+      t.check = { state: 'ok', by: flags.by, at: nowISO(), ...(note ? { note } : {}) };
+      t.updates.push({ at: nowISO(), by: flags.by, note: 'CHECKED: looks good' + (note ? '. ' + note : '') });
+      save(data); console.log(`Checked ${t.id}`); break;
+    }
+    if (flags.state !== 'back') fail('check --state must be ok, back or undo');
+    if (note.length < 5) fail('sending a ticket back needs --note saying what is wrong or missing');
+    const fid = fmtId(data.next_id), tag = (String(t.title).match(/^\s*(\[[A-Za-z-]{1,12}\])/) || [])[1];   // the follow-up stays in the same lane ([agent], [human], [product] ...)
+    const closed = [...t.updates].reverse().find(u => String(u.note || '').startsWith('CLOSED: '));
+    data.tickets.push({
+      id: fid, title: `${tag ? tag + ' ' : ''}Follow-up to ${t.id}: ${note.replace(/\s+/g, ' ').slice(0, 90)}`,
+      body: `Sent back by ${flags.by} after checking ${t.id} ("${t.title}").\n\nWHAT IS WRONG OR MISSING\n${note}\n\nWHAT WAS ASKED (${t.id})\n${String(t.body || '(no text)').slice(0, 3000)}\n\nWHAT WAS REPORTED AS DONE\n${closed ? closed.note.slice(8, 3008) : '(no closing note)'}`,
+      type: t.type === 'request' ? 'task' : (t.type || 'task'), priority: t.priority || 'normal', for: t.for || null, followup_of: t.id,
+      status: 'proposed', proposed_by: flags.by, proposed_at: nowISO(), approved_by: null, approved_at: null, rejected_by: null, rejected_at: null, reject_reason: null,
+      assignee: null, claimed_at: null, closed_by: null, closed_at: null, updates: [],
+    });
+    data.next_id++;
+    t.check = { state: 'back', by: flags.by, at: nowISO(), note, followup: fid };
+    t.updates.push({ at: nowISO(), by: flags.by, note: `SENT BACK: ${note} (follow-up ${fid})` });
+    save(data); console.log(`Sent back ${t.id}, follow-up ${fid}`); break;
+  }
   case 'changes': {                                                           // T-0189: a reviewer asks for changes to the proposed change (or withdraws that)
     const t = findTicket(pos[1] || fail('changes requires a ticket id'));
     if (!flags.by) fail('changes requires --by');
