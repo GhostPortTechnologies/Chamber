@@ -22,7 +22,19 @@ const store = require('./store');                                            // 
 const { makeLimiter } = require('./limits');                                 // [new] T-0033: per-user write limiter
 const cron = require('./cron');
 const wslock = require('./wslock'), wscrypt = require('./wscrypt'), wsfiles = require('./wsfiles');            // T-0222: the owner lock (which workspaces are locked, their keys) and its encryption
-const { pipeline: streamPipeline } = require('stream/promises');                                              // [new] T-0058: schedules
+const { pipeline: streamPipeline } = require('stream/promises');
+store.setCodec({                                                               // T-0222: what people wrote is sealed in the chat database too while the owner lock is on
+  active: ws => !!wslock.state(ws),
+  enc: (ws, where, v) => wsfiles.sealing(ws) ? wscrypt.encText(wslock.key(ws), v, `chat:${ws}:${where}`) : v,
+  dec: (ws, where, v) => {
+    if (typeof v !== 'string' || !wscrypt.isEnc(v)) return v;
+    const dk = wslock.key(ws); if (!dk) { if (wslock.state(ws)) throw new wslock.LockedError(ws); return v; }
+    try { return wscrypt.decText(dk, v, `chat:${ws}:${where}`); } catch { return '(this does not open with the workspace key)'; }
+  },
+  opens: (ws, where, v) => { try { wscrypt.decText(wslock.key(ws), v, `chat:${ws}:${where}`); return true; } catch { return false; } },
+  seal: (ws, where, v) => wscrypt.encText(wslock.key(ws), v, `chat:${ws}:${where}`),
+  open: (ws, where, v) => wscrypt.decText(wslock.key(ws), v, `chat:${ws}:${where}`),
+});                                              // [new] T-0058: schedules
 
 // Minimal zero-dep .env loader — reads KEY=VALUE lines from ./.env if present,   [new] lets `node server.js` be configured
 // without overriding anything already set in the real environment.             without systemd or a dotenv package.
@@ -790,17 +802,24 @@ async function lockConvert(ws, direction) {
         if (out === 'error') return { error: `archive ${meta.id}` }; if (out === 'resealed') archives++;
       }
       const wdir = path.dirname(F().data); let state = 0;                            // T-0222 part 4: the workspace's own files and the record
-      const own = ['reviews.json', 'memory.json', 'asks.json', 'standing.json', 'ask-config.json', 'audit.json'].map(n => path.join(wdir, n));
+      const own = ['reviews.json', 'memory.json', 'asks.json', 'standing.json', 'ask-config.json', 'audit.json', 'chamber.json.migrated'].map(n => path.join(wdir, n));   // .migrated: the chat file from before the database (T-0017)
       try { for (const n of fs.readdirSync(diffDir())) if (!n.includes('.tmp') && !n.endsWith('.lock-tmp')) own.push(path.join(diffDir(), n)); } catch { /* no changes attached yet */ }
       for (const f of own) if (wsfiles.convertFile(ws, f, direction) === 'done') state++;
       if (withTicketsLock(F().tickets, () => wsfiles.convertFile(ws, F().tickets, direction)) === 'done') state++;
       for (const n of fs.readdirSync(wdir)) if (/^audit-\d{4}-\d{2}\.jsonl$/.test(n) && wsfiles.convertLines(ws, path.join(wdir, n), direction) === 'done') state++;
-      return { files, archives, state };
+      let chat = 0;                                                              // T-0222 part 5: the chat database, 500 rows at a time
+      for (let after = 0; ;) {
+        if (!wslock.key(ws)) return { stopped: true };
+        const b = store.convertChatBatch(F().data, direction, after, 500); chat += b.changed; after = b.last; if (b.done) break;
+        await new Promise(r => setImmediate(r));
+      }
+      chat += store.convertChatRest(F().data, direction);
+      return { files, archives, state, chat };
     });
     if (!r || r.stopped || r.error) { if (r && r.error) console.error(`[lock] ${ws}: ${direction} stopped at ${r.error}; it is tried again in the hourly pass`); return r || null; }
-    withWorkspace(ws, () => audit({ username: 'chamber' }, { action: direction === 'seal' ? 'lock-sealed' : 'lock-unsealed', files: r.files, archives: r.archives, state: r.state }, true));
+    withWorkspace(ws, () => audit({ username: 'chamber' }, { action: direction === 'seal' ? 'lock-sealed' : 'lock-unsealed', files: r.files, archives: r.archives, state: r.state, chat: r.chat }, true));
     accounts.lockConverted(ws, direction);
-    console.log(`[lock] ${ws}: ${direction === 'seal' ? 'sealed' : 'unsealed'} ${r.files} file(s), ${r.archives} archive(s) and ${r.state} other file(s)`);
+    console.log(`[lock] ${ws}: ${direction === 'seal' ? 'sealed' : 'unsealed'} ${r.files} file(s), ${r.archives} archive(s), ${r.state} other file(s) and ${r.chat} chat value(s)`);
     return r;
   } catch (e) { if (!e.locked) console.error(`[lock] ${ws}: ${direction}: ${e.message}`); return null; }
   finally {
