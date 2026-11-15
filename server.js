@@ -21,7 +21,7 @@ const accounts = require('./accounts');                                      // 
 const store = require('./store');                                            // [new] T-0017: SQLite chat store (node:sqlite, zero deps)
 const { makeLimiter } = require('./limits');                                 // [new] T-0033: per-user write limiter
 const cron = require('./cron');
-const wslock = require('./wslock'), wscrypt = require('./wscrypt');            // T-0222: the owner lock (which workspaces are locked, their keys) and its encryption
+const wslock = require('./wslock'), wscrypt = require('./wscrypt'), wsfiles = require('./wsfiles');            // T-0222: the owner lock (which workspaces are locked, their keys) and its encryption
 const { pipeline: streamPipeline } = require('stream/promises');                                              // [new] T-0058: schedules
 
 // Minimal zero-dep .env loader — reads KEY=VALUE lines from ./.env if present,   [new] lets `node server.js` be configured
@@ -84,6 +84,22 @@ function withWorkspace(ws, fn, extra) {                                       //
   return reqScope.run({ ws, ...(mine ? { request: true } : {}), ...(extra || {}) }, fn);
 }
 function curWs() { return reqScope.getStore()?.ws || null; }
+// T-0222: a workspace's own files, opened if sealed and sealed while the owner lock is on (wsfiles.js)
+function wsRead(file) { return wsfiles.readText(curWs(), file); }
+function wsEnc(file, data) { return wsfiles.encode(curWs(), file, data); }
+function wsWriteFile(file, data, opts) { fs.writeFileSync(file, wsEnc(file, data), opts); }
+function auditLine(dir, f, line) { return wsfiles.decLine(path.basename(dir), path.join(dir, f), line); }
+function withTicketsLock(store, fn) {                                          // the same lock tickets-cli.js takes, so a sealing pass never overwrites a ticket write
+  const lock = store + '.lock', until = Date.now() + 4000;
+  for (;;) {
+    try { fs.mkdirSync(lock); break; } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > 30000) { fs.rmdirSync(lock); continue; } } catch { continue; }
+      if (Date.now() > until) throw new Error('the ticket store is busy'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+  try { return fn(); } finally { try { fs.rmdirSync(lock); } catch { /* gone */ } }
+}
 function lockedBody() { return { error: 'This workspace is locked by its owner. It opens again when the owner unlocks it on the Account page.', locked: true }; }
 function lockedRouteOk(p) {                                                   // T-0222: what a locked workspace's people may still reach: who they are, sign-in, billing, the unlock itself
   if (p === '/api/me' || p === '/api/health') return true;
@@ -130,7 +146,7 @@ function auditRepair(dir) {
     const headFile = path.join(dir, 'audit-head.json'); let head; try { head = JSON.parse(fs.readFileSync(headFile, 'utf8')); } catch { return null; }
     const files = fs.readdirSync(dir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort(); if (!files.length) return null;
     const lines = fs.readFileSync(path.join(dir, files[files.length - 1]), 'utf8').split('\n').filter(Boolean); if (!lines.length) return null;
-    let r; try { r = JSON.parse(lines[lines.length - 1]); } catch { return null; }
+    let r; try { r = JSON.parse(auditLine(dir, files[files.length - 1], lines[lines.length - 1])); } catch { return null; }
     if (!r || !Number.isInteger(head.n) || r.n !== head.n + 1 || (r.prev || null) !== (head.h || null) || auditChain.hash(r) !== r.h) return null;
     const tmp = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify({ ...head, n: r.n, h: r.h, since: head.since || r.ts }), { mode: 0o600 }); fs.renameSync(tmp, headFile);
     auditAppend(dir, { ts: Date.now(), actor: 'chamber', kind: 'system', action: 'record-repaired', entry: r.n, note: 'the server stopped between writing this entry and its check value; the check value was restored when the server started again' });
@@ -143,12 +159,12 @@ function auditAppend(dir, rec) {                                              //
   fs.mkdirSync(dir, { recursive: true });
   const headFile = path.join(dir, 'audit-head.json'); let head = {}; try { head = JSON.parse(fs.readFileSync(headFile, 'utf8')); } catch { /* first chained entry */ }   // T-0194
   rec.n = (head.n || 0) + 1; rec.prev = head.h || null; rec.h = auditChain.hash(rec);
-  fs.appendFileSync(path.join(dir, `audit-${new Date(rec.ts).toISOString().slice(0, 7)}.jsonl`), JSON.stringify(rec) + '\n', { mode: 0o600 });
+  { const af = path.join(dir, `audit-${new Date(rec.ts).toISOString().slice(0, 7)}.jsonl`); fs.appendFileSync(af, wsfiles.encLine(path.basename(dir), af, JSON.stringify(rec)) + '\n', { mode: 0o600 }); }   // T-0222: one sealed line per entry while the lock is on
   { const tmpH = headFile + '.tmp.' + process.pid; fs.writeFileSync(tmpH, JSON.stringify({ ...head, n: rec.n, h: rec.h, since: head.since || rec.ts }), { mode: 0o600 }); fs.renameSync(tmpH, headFile); }   // T-0219: ...head keeps what the head remembers besides (trimmed)
-  let log = []; try { log = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first entry */ }
+  let log = []; try { log = JSON.parse(wsfiles.readText(path.basename(dir), file)); } catch (e) { if (e.locked) throw e; /* first entry */ }
   log.push(rec);
   if (log.length > AUDIT_RECENT) log = log.slice(-AUDIT_RECENT);
-  const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(log)); fs.renameSync(tmp, file);
+  const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, wsfiles.encode(path.basename(dir), file, JSON.stringify(log))); fs.renameSync(tmp, file);
 }
 const auditChain = require('./auditchain');                                   // T-0194: tamper-evident activity record
 const records = require('./records');                                         // T-0219: how long the record is kept; sealed copies for the owner
@@ -156,15 +172,15 @@ function verifyAudit(dir) {                                                   //
   auditRepair(dir);                                                           // T-0217
   let files = []; try { files = fs.readdirSync(dir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort(); } catch { /* no record yet */ }
   const entries = [];
-  for (const f of files) fs.readFileSync(path.join(dir, f), 'utf8').split('\n').forEach((line, i) => { if (!line) return; let r; try { r = JSON.parse(line); } catch { r = null; } entries.push(r && typeof r === 'object' ? { ...r, _where: { file: f, line: i + 1 } } : null); });
+  for (const f of files) fs.readFileSync(path.join(dir, f), 'utf8').split('\n').forEach((line, i) => { if (!line) return; let r; try { r = JSON.parse(auditLine(dir, f, line)); } catch (e) { if (e.locked) throw e; r = null; } entries.push(r && typeof r === 'object' ? { ...r, _where: { file: f, line: i + 1 } } : null); });
   let head = null; try { head = JSON.parse(fs.readFileSync(path.join(dir, 'audit-head.json'), 'utf8')); } catch { /* none yet */ }
   return { ...auditChain.verify(entries, head), since: head && head.since || null, trimmed: head && head.trimmed || null };   // T-0219: trimmed = what the owner's keep-for setting removed
 }
 function auditAll(dir) {                                                       // T-0057: everything we have, oldest first (archives + recent, de-duplicated)
   const seen = new Set(), out = [];
   const files = fs.readdirSync(dir).filter(f => /^audit-\d{4}-\d{2}\.jsonl$/.test(f)).sort();
-  for (const f of files) for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) { if (!line) continue; try { const r = JSON.parse(line); const k = r.h ? 'h:' + r.h : `${r.ts}|${r.actor || r.agent}|${r.action}`; if (!seen.has(k)) { seen.add(k); out.push(r); } } catch {} }
-  try { for (const r of JSON.parse(fs.readFileSync(path.join(dir, 'audit.json'), 'utf8'))) { const k = r.h ? 'h:' + r.h : `${r.ts}|${r.actor || r.agent}|${r.action}`; if (!seen.has(k)) { seen.add(k); out.push(r); } } } catch {}
+  for (const f of files) for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) { if (!line) continue; try { const r = JSON.parse(auditLine(dir, f, line)); const k = r.h ? 'h:' + r.h : `${r.ts}|${r.actor || r.agent}|${r.action}`; if (!seen.has(k)) { seen.add(k); out.push(r); } } catch {} }
+  try { for (const r of JSON.parse(wsfiles.readText(path.basename(dir), path.join(dir, 'audit.json')))) { const k = r.h ? 'h:' + r.h : `${r.ts}|${r.actor || r.agent}|${r.action}`; if (!seen.has(k)) { seen.add(k); out.push(r); } } } catch {}
   return out.sort((a, b) => a.ts - b.ts);
 }
 
@@ -334,7 +350,7 @@ function loadTickets() {
   const file = F().tickets;                                                 // [changed] the current workspace's store
   if (!file) return { next_id: 1, tickets: [] };                            // [new] no ticket file → empty (don't read '')
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    return JSON.parse(wsRead(file));                                          // T-0222
   } catch {
     return { next_id: 1, tickets: [] };
   }
@@ -345,7 +361,8 @@ function runTicketsCLI(args) {
     if (!TICKETS_WRITE_ENABLED) {                                           // [new] no CLI configured → clean disabled reply
       return resolve({ ok: false, stdout: '', stderr: 'tickets integration not configured' });  // [new]
     }
-    const env = { ...process.env, CHAMBER_TICKETS_FILE: F().tickets };     // [new] the CLI writes the current workspace's store
+    const ws = curWs(), dk = wslock.key(ws), store = F().tickets;
+    const env = { ...process.env, CHAMBER_TICKETS_FILE: store, ...(dk ? { CHAMBER_WS_KEY: dk.toString('hex'), CHAMBER_WS_AAD: wsfiles.aadOf(ws, store), CHAMBER_WS_SEAL: wsfiles.sealing(ws) ? '1' : '0' } : {}) };   // [new] the CLI writes the current workspace's store; T-0222: with the key while the owner lock is on
     execFile(TICKETS_CLI, args, { timeout: 5000, env }, (err, stdout, stderr) => {
       if (!err) notify('tickets');                                              // [new] T-0016
       resolve({ ok: !err, stdout: (stdout || '').trim(), stderr: (stderr || '').trim() });
@@ -360,7 +377,7 @@ function runTicketsCLI(args) {
 
 function loadReviews() {
   try {
-    return JSON.parse(fs.readFileSync(F().reviews, 'utf8'));                   // [changed] per workspace
+    return JSON.parse(wsRead(F().reviews));                                   // [changed] per workspace; T-0222
   } catch {
     return { next_id: 1, reviews: [] };
   }
@@ -376,7 +393,7 @@ function saveReviews(data) {
   const tmp = file + '.tmp.' + process.pid;
   const fd = fs.openSync(tmp, 'w');
   try {
-    fs.writeSync(fd, JSON.stringify(data, null, 2));
+    fs.writeSync(fd, wsEnc(file, JSON.stringify(data, null, 2)));   // T-0222
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
@@ -461,7 +478,7 @@ function splitPatch(patch) {
 // patch or an unreviewed auto-review for this ticket already exists (a re-post of /applied must not dup it).
 function autoReviewForTicket(t, applied) {
   try {
-    let patch; try { patch = fs.readFileSync(path.join(diffDir(), t.id + '.patch'), 'utf8'); } catch { return null; }
+    let patch; try { patch = wsRead(path.join(diffDir(), t.id + '.patch')); } catch { return null; }
     const files = splitPatch(patch);
     if (!files.length) return null;
     const data = loadReviews();
@@ -772,12 +789,18 @@ async function lockConvert(ws, direction) {
         const out = direction === 'seal' ? archiveReseal(meta, archiveKeyMaster(), archiveKeyOwner(dk)) : archiveReseal(meta, archiveKeyOwner(dk), archiveKeyMaster());
         if (out === 'error') return { error: `archive ${meta.id}` }; if (out === 'resealed') archives++;
       }
-      return { files, archives };
+      const wdir = path.dirname(F().data); let state = 0;                            // T-0222 part 4: the workspace's own files and the record
+      const own = ['reviews.json', 'memory.json', 'asks.json', 'standing.json', 'ask-config.json', 'audit.json'].map(n => path.join(wdir, n));
+      try { for (const n of fs.readdirSync(diffDir())) if (!n.includes('.tmp') && !n.endsWith('.lock-tmp')) own.push(path.join(diffDir(), n)); } catch { /* no changes attached yet */ }
+      for (const f of own) if (wsfiles.convertFile(ws, f, direction) === 'done') state++;
+      if (withTicketsLock(F().tickets, () => wsfiles.convertFile(ws, F().tickets, direction)) === 'done') state++;
+      for (const n of fs.readdirSync(wdir)) if (/^audit-\d{4}-\d{2}\.jsonl$/.test(n) && wsfiles.convertLines(ws, path.join(wdir, n), direction) === 'done') state++;
+      return { files, archives, state };
     });
     if (!r || r.stopped || r.error) { if (r && r.error) console.error(`[lock] ${ws}: ${direction} stopped at ${r.error}; it is tried again in the hourly pass`); return r || null; }
-    withWorkspace(ws, () => audit({ username: 'chamber' }, { action: direction === 'seal' ? 'lock-sealed' : 'lock-unsealed', files: r.files, archives: r.archives }, true));
+    withWorkspace(ws, () => audit({ username: 'chamber' }, { action: direction === 'seal' ? 'lock-sealed' : 'lock-unsealed', files: r.files, archives: r.archives, state: r.state }, true));
     accounts.lockConverted(ws, direction);
-    console.log(`[lock] ${ws}: ${direction === 'seal' ? 'sealed' : 'unsealed'} ${r.files} file(s) and ${r.archives} archive(s)`);
+    console.log(`[lock] ${ws}: ${direction === 'seal' ? 'sealed' : 'unsealed'} ${r.files} file(s), ${r.archives} archive(s) and ${r.state} other file(s)`);
     return r;
   } catch (e) { if (!e.locked) console.error(`[lock] ${ws}: ${direction}: ${e.message}`); return null; }
   finally {
@@ -858,7 +881,8 @@ function recordRetention(s, force) {
     if (!force && head.trimmed && Date.now() - head.trimmed.at < 20 * 3600e3) return null;
     if (s.copy && !s.key) return null;                                         // the account page tells the owner why
     auditRepair(dir);
-    return records.trim(dir, Date.now() - s.days * 864e5, { days: s.days, by: s.by, workspace: s.name, copy: s.copy, ownerKey: s.key, append: rec => auditAppend(dir, rec) });
+    return records.trim(dir, Date.now() - s.days * 864e5, { days: s.days, by: s.by, workspace: s.name, copy: s.copy, ownerKey: s.key, append: rec => auditAppend(dir, rec),
+      decLine: (file, line) => wsfiles.decLine(path.basename(dir), file, line), readText: file => wsfiles.readText(path.basename(dir), file), encode: (file, text) => wsfiles.encode(path.basename(dir), file, text) });   // T-0222
   });
 }
 function maintenance(opts = {}) {
@@ -991,10 +1015,10 @@ function createArchive(sess, room, cutoff) {
 }
 
 function askConfigFile() { return path.join(path.dirname(F().data), 'ask-config.json'); }
-function loadAskConfig() { try { const c = JSON.parse(fs.readFileSync(askConfigFile(), 'utf8')); return c && typeof c === 'object' ? c : {}; } catch { return {}; } }
-function saveAskConfig(cfg) { const f = askConfigFile(); fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(cfg), { mode: 0o600 }); fs.renameSync(tmp, f); }
-function loadMemory() { try { return JSON.parse(fs.readFileSync(memoryFile(), 'utf8')); } catch { return {}; } }
-function saveMemory(mem) { const f = memoryFile(); fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(mem), { mode: 0o600 }); fs.renameSync(tmp, f); }
+function loadAskConfig() { try { const c = JSON.parse(wsRead(askConfigFile())); return c && typeof c === 'object' ? c : {}; } catch { return {}; } }
+function saveAskConfig(cfg) { const f = askConfigFile(); fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp.' + process.pid; fs.writeFileSync(tmp, wsEnc(f, JSON.stringify(cfg)), { mode: 0o600 }); fs.renameSync(tmp, f); }
+function loadMemory() { try { return JSON.parse(wsRead(memoryFile())); } catch { return {}; } }
+function saveMemory(mem) { const f = memoryFile(); fs.mkdirSync(path.dirname(f), { recursive: true }); const tmp = f + '.tmp.' + process.pid; fs.writeFileSync(tmp, wsEnc(f, JSON.stringify(mem)), { mode: 0o600 }); fs.renameSync(tmp, f); }
 function mayEditMemory(sess, agent) {
   if (!sess?.username) return false;
   if (sess.agent) return sess.username.toLowerCase() === String(agent).toLowerCase();
@@ -1176,14 +1200,14 @@ const STANDING_NEVER = ['*.key', '*.pub', '*.pem', '*.pfx', '*.p12', 'auth.json'
 const STANDING_NEVER_RE = STANDING_NEVER.map(p => new RegExp('^(?:.*/)?' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i'));
 function standingPath() { return path.join(path.dirname(F().data), 'standing.json'); }
 function loadStanding() {
-  try { const d = JSON.parse(fs.readFileSync(standingPath(), 'utf8')); if (d && Array.isArray(d.items)) return { next: Number.isInteger(d.next) ? d.next : d.items.length + 1, items: d.items }; } catch {}
+  try { const d = JSON.parse(wsRead(standingPath())); if (d && Array.isArray(d.items)) return { next: Number.isInteger(d.next) ? d.next : d.items.length + 1, items: d.items }; } catch {}
   return { next: 1, items: [] };
 }
 function saveStanding(d) {                                                   // keeps every live one and the newest ended / withdrawn ones
   const live = d.items.filter(s => ['active', 'waiting'].includes(standingState(s))), old = d.items.filter(s => !live.includes(s));
   d.items = old.slice(-Math.max(0, STANDING_KEEP - live.length)).concat(live).sort((a, b) => parseInt(a.id.slice(2), 10) - parseInt(b.id.slice(2), 10));
   const f = standingPath(), tmp = f + '.tmp'; fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(tmp, JSON.stringify(d, null, 1), { mode: 0o600 }); fs.renameSync(tmp, f);
+  fs.writeFileSync(tmp, wsEnc(f, JSON.stringify(d, null, 1)), { mode: 0o600 }); fs.renameSync(tmp, f);
 }
 function standingState(s, now = Date.now()) {                                // active | waiting (for a second approver) | withdrawn | ended
   if (s.withdrawn) return 'withdrawn';
@@ -1262,10 +1286,10 @@ const ASK_KEEP = 500, ASK_MIN_WAIT = 60, ASK_MAX_WAIT = 1800, ASK_MAX_WAITING = 
 const ASK_JOB_MS = 30 * 60e3, ASK_JOB_USES = 100;                             // T-0211: "Allow for this job" covers exactly the same thing again, for one job, 30 minutes at most
 function asksPath() { return path.join(path.dirname(F().data), 'asks.json'); }
 function loadAsks() {
-  try { const d = JSON.parse(fs.readFileSync(asksPath(), 'utf8')); if (d && Array.isArray(d.items)) return { next: Number.isInteger(d.next) ? d.next : d.items.length + 1, items: d.items }; } catch {}
+  try { const d = JSON.parse(wsRead(asksPath())); if (d && Array.isArray(d.items)) return { next: Number.isInteger(d.next) ? d.next : d.items.length + 1, items: d.items }; } catch {}
   return { next: 1, items: [] };
 }
-function saveAsks(d) { d.items = d.items.slice(-ASK_KEEP); const f = asksPath(), tmp = f + '.tmp.' + process.pid; fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(tmp, JSON.stringify(d), { mode: 0o600 }); fs.renameSync(tmp, f); }
+function saveAsks(d) { d.items = d.items.slice(-ASK_KEEP); const f = asksPath(), tmp = f + '.tmp.' + process.pid; fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(tmp, wsEnc(f, JSON.stringify(d)), { mode: 0o600 }); fs.renameSync(tmp, f); }
 function askIsAgent(sess) { return !!(sess && (sess.agent || sess.role === 'ai')); }
 function askMayAsk(sess) {                                                   // the owner's switch for this agent (off by default)
   if (!askIsAgent(sess)) return false;
@@ -2301,7 +2325,7 @@ echo "${MARK}$__rc|$PWD"`;
   }
   const diffMatch = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/diff$/);           // [new] T-0063: a proposal carries a patch
   if (diffMatch && method === 'GET') {                                          // T-0189: ?version=N reads an earlier version; versions lists them all
-    const id = diffMatch[1], rf = p => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } }, rj = p => { try { return JSON.parse(rf(p) || '{}'); } catch { return {}; } };
+    const id = diffMatch[1], rf = p => { try { return wsRead(p); } catch { return null; } }, rj = p => { try { return JSON.parse(rf(p) || '{}'); } catch { return {}; } };
     const diff = rf(path.join(diffDir(), id + '.patch'));
     if (diff === null) return json(res, 404, { error: 'this ticket has no diff' });
     const meta = rj(path.join(diffDir(), id + '.json')), cur = Number.isInteger(meta.version) ? meta.version : 1;
@@ -2346,7 +2370,7 @@ echo "${MARK}$__rc|$PWD"`;
       version = ov + 1;
     }
     meta.version = version;
-    fs.writeFileSync(path.join(diffDir(), id + '.patch'), diff, { mode: 0o600 }); fs.writeFileSync(path.join(diffDir(), id + '.json'), JSON.stringify(meta), { mode: 0o600 });
+    wsWriteFile(path.join(diffDir(), id + '.patch'), diff, { mode: 0o600 }); wsWriteFile(path.join(diffDir(), id + '.json'), JSON.stringify(meta), { mode: 0o600 });
     audit(sess, { action: 'ticket-diff', ticket: id, files: files.length, added, removed, version }, true);
     if (version > 1 && TICKETS_WRITE_ENABLED) await runTicketsCLI(['revised', id, '--by', sess.username, '--version', String(version)]);   // T-0189: on the record; a request for changes is answered
     notify('tickets', { diff: id });
@@ -2357,9 +2381,9 @@ echo "${MARK}$__rc|$PWD"`;
   // request and tells the agent in chat (as the person who asked, so it is their instruction); and a named reviewer.
   const lcU = s => String(s || '').toLowerCase();
   const ticketRoom = t => ((String(t.body || '').match(/ in #([\w-]{1,40})\.\s*$/) || [])[1]) || 'general';
-  const readDiffMeta = id => { try { return JSON.parse(fs.readFileSync(path.join(diffDir(), id + '.json'), 'utf8')); } catch { return {}; } };
+  const readDiffMeta = id => { try { return JSON.parse(wsRead(path.join(diffDir(), id + '.json'))); } catch { return {}; } };
   const commentsFile = id => path.join(diffDir(), id + '.comments.json');
-  const readComments = id => { try { const a = JSON.parse(fs.readFileSync(commentsFile(id), 'utf8')); return Array.isArray(a) ? a : []; } catch { return []; } };
+  const readComments = id => { try { const a = JSON.parse(wsRead(commentsFile(id))); return Array.isArray(a) ? a : []; } catch { return []; } };
   const commentsMatch = url.pathname.match(/^\/api\/tickets\/(T-\d{4})\/comments$/);
   if (commentsMatch) {
     const id = commentsMatch[1];
@@ -2374,13 +2398,13 @@ echo "${MARK}$__rc|$PWD"`;
     if (!Number.isInteger(version) || version < 1 || version > cur) return json(res, 400, { error: `version must be between 1 and ${cur}` });
     const text = String(body?.text || '').trim();
     if (!text || text.length > 2000) return json(res, 400, { error: 'a comment is 1 to 2000 characters' });
-    let dt = ''; try { dt = fs.readFileSync(path.join(diffDir(), version === cur ? id + '.patch' : `${id}.v${version}.patch`), 'utf8'); } catch { return json(res, 404, { error: `version ${version} is no longer kept` }); }
+    let dt = ''; try { dt = wsRead(path.join(diffDir(), version === cur ? id + '.patch' : `${id}.v${version}.patch`)); } catch { return json(res, 404, { error: `version ${version} is no longer kept` }); }
     const lines = dt.split('\n'), line = parseInt(body?.line, 10);
     if (!Number.isInteger(line) || line < 1 || line > lines.length) return json(res, 400, { error: `line must be between 1 and ${lines.length} (the line numbers of the diff)` });
     let file = ''; for (let i = line - 1; i >= 0; i--) { const m = lines[i].match(/^\+\+\+ (?:b\/)?(.+)$/); if (m) { file = m[1].trim(); break; } }
     const list = readComments(id); if (list.length >= 500) return json(res, 409, { error: 'this ticket has 500 comments already' });
     const c = { id: crypto.randomBytes(5).toString('hex'), version, line, file: file.slice(0, 200), code: lines[line - 1].slice(0, 300), text, by: sess.username, at: Date.now() };
-    list.push(c); fs.mkdirSync(diffDir(), { recursive: true }); fs.writeFileSync(commentsFile(id), JSON.stringify(list), { mode: 0o600 });
+    list.push(c); fs.mkdirSync(diffDir(), { recursive: true }); wsWriteFile(commentsFile(id), JSON.stringify(list), { mode: 0o600 });
     audit(sess, { action: 'ticket-comment', ticket: id, version, line }, true); notify('tickets', { diff: id });
     return json(res, 201, { ok: true, comment: c, comments: list });
   }
@@ -2472,7 +2496,7 @@ echo "${MARK}$__rc|$PWD"`;
     if (!mayRevert(sess)) return json(res, 403, { error: 'only a commander, the owner or an admin can ask for a revert (and not an agent)' });
     if (!t.applied) return json(res, 409, { error: 'that ticket was never applied, so there is nothing to undo' });
     if (t.reverted_by) return json(res, 409, { error: `a revert is already proposed: ${t.reverted_by}` });
-    let diff; try { diff = fs.readFileSync(path.join(diffDir(), id + '.patch'), 'utf8'); } catch { return json(res, 409, { error: 'that ticket has no stored patch to reverse' }); }
+    let diff; try { diff = wsRead(path.join(diffDir(), id + '.patch')); } catch { return json(res, 409, { error: 'that ticket has no stored patch to reverse' }); }
     const rev = reverseDiff(diff), agent = t.applied.by;
     const title = String(t.title).replace(/^(\[agent\]\s*)+/i, '').slice(0, 70);
     const text = `Undo the change made by ${id} (${title}). It was applied by ${agent} on branch ${t.applied.branch || '?'}${t.applied.sha ? ` (${t.applied.sha})` : ''}.\n\nApproving this ticket tells ${agent} to apply the reverse of that patch on its own branch and report back. Nothing changes until you approve. If ${id} was never merged, the agent says so and leaves everything as it is.`;
@@ -2482,8 +2506,8 @@ echo "${MARK}$__rc|$PWD"`;
     const files = [...rev.matchAll(/^\+\+\+ (?:b\/)?(.+)$/gm)].map(m => m[1].trim()).filter(f => f !== '/dev/null');
     const added = (rev.match(/^\+(?!\+\+)/gm) || []).length, removed = (rev.match(/^-(?!--)/gm) || []).length;
     fs.mkdirSync(diffDir(), { recursive: true });
-    fs.writeFileSync(path.join(diffDir(), nid + '.patch'), rev, { mode: 0o600 });
-    fs.writeFileSync(path.join(diffDir(), nid + '.json'), JSON.stringify({ by: sess.username, at: Date.now(), repo: t.applied.repo || '', files, added, removed, reverts: id,
+    wsWriteFile(path.join(diffDir(), nid + '.patch'), rev, { mode: 0o600 });
+    wsWriteFile(path.join(diffDir(), nid + '.json'), JSON.stringify({ by: sess.username, at: Date.now(), repo: t.applied.repo || '', files, added, removed, reverts: id,
       plain: { what: `Puts back what ${id} changed in ${files.length} file${files.length === 1 ? '' : 's'}.`, try: 'Approve it; the agent applies the undo on a branch and reports here.',
                risk: 'Low if nothing else touched those files since. The agent refuses a patch that no longer applies and tells you.', undo: `Approve ${id} again, or ask the agent in chat.`, level: 'low' } }), { mode: 0o600 });
     await runTicketsCLI(['meta', nid, '--by', sess.username, '--set', 'reverts', '--json', JSON.stringify(id)]);
@@ -2741,7 +2765,7 @@ echo "${MARK}$__rc|$PWD"`;
     const record = auditAll(dir).filter(e => e.ticket && ids.has(e.ticket));
     const earliest = Math.min(...pick.map(t => at(t.proposed_at)).filter(isFinite), Date.now());
     const runs = store.runsSince(F().data, earliest - 864e5).filter(m => m.run && canSeeRoom(data, m.room, sess.username));
-    const rf = p => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } }, rj = p => { try { return JSON.parse(rf(p) || 'null'); } catch { return null; } };
+    const rf = p => { try { return wsRead(p); } catch { return null; } }, rj = p => { try { return JSON.parse(rf(p) || 'null'); } catch { return null; } };
     const closeNote = t => { const c = (t.updates || []).filter(u => /^CLOSED\b/.test(u.note || '')).pop(); return c ? String(c.note).replace(/^CLOSED:?\s*/, '') : null; };
     const asksAll = loadAsks().items;                                          // T-0212: questions an agent asked a person while working a ticket
     const tickets = pick.map(t => {
@@ -3049,7 +3073,7 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
     }
     let approveDiff = null;                                                                                   // review 2026-11-13: the change that is approved is the version the person was shown
     if (action === 'approve') {
-      try { const dm = JSON.parse(fs.readFileSync(path.join(diffDir(), ticketId + '.json'), 'utf8')), patch = fs.readFileSync(path.join(diffDir(), ticketId + '.patch'), 'utf8');
+      try { const dm = JSON.parse(wsRead(path.join(diffDir(), ticketId + '.json'))), patch = wsRead(path.join(diffDir(), ticketId + '.patch'));
             approveDiff = { version: Number.isInteger(dm.version) ? dm.version : 1, sha256: crypto.createHash('sha256').update(patch).digest('hex') }; } catch { /* this ticket carries no change */ }
       if (approveDiff && body.version !== undefined && body.version !== null && Number(body.version) !== approveDiff.version) return json(res, 409, { error: `The change on ${ticketId} was replaced by version ${approveDiff.version} after you opened it. Look at version ${approveDiff.version} first, then approve.` });
     }

@@ -26,7 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https'); const http = require('http');
 const records = require('./records');
-const wslock = require('./wslock'), wscrypt = require('./wscrypt');           // T-0222: the owner lock
+const wslock = require('./wslock'), wscrypt = require('./wscrypt'), wsfiles = require('./wsfiles');           // T-0222: the owner lock
 const LOCK_FEATURE = process.env.CHAMBER_OWNER_LOCK === '1';                 // T-0222: switched on for tests only until the owner lock is finished                             // T-0219: sealed copies of the activity record, and its keep-for limits
 const fleet = require('./fleet');                                             // T-0153: GhostPort fleet link (router status, read-only)
 const { execFile, execFileSync } = require('child_process');      // T-0010: /source archive via git; T-0036: changelog
@@ -1043,7 +1043,7 @@ async function handle(req, res, url, ctx0) {
   if (p === '/account/export' && m === 'GET') {                   // owner only: everything in the workspace, as one JSON file
     if (!me || !myWs) return ctx.json(res, 401, { error: 'not signed in' }), true;
     if (!amOwner) return ctx.json(res, 403, { error: 'Only the workspace owner can export.' }), true;
-    const dir = path.join(DATA_DIR, 'ws', myWs.id); const read = n => { try { return JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch { return null; } };
+    const dir = path.join(DATA_DIR, 'ws', myWs.id); const read = n => { try { return JSON.parse(wsfiles.readText(myWs.id, path.join(dir, n))); } catch { return null; } };   // T-0222: opened if sealed
     const out = { exported_at: new Date().toISOString(), workspace: { id: myWs.id, name: myWs.name, members: members(store, myWs.id).map(a => ({ username: a.username, role: a.email === myWs.owner ? 'owner' : 'member' })) },
                   chat: ctx.withWorkspace(myWs.id, () => { const d = ctx.loadDataFull(); return { users: d.users, rooms: d.rooms, messages: d.messages }; }),   // T-0017: from SQLite
                   tickets: read('tickets.json'), reviews: read('reviews.json'), agent_audit: read('audit.json'), agent_memory: read('memory.json'),   // T-0059
@@ -1081,7 +1081,7 @@ async function handle(req, res, url, ctx0) {
     fs.mkdirSync(dir, { recursive: true });
     const staged = [];   // [tmpPath, finalPath]
     try {
-      const stage = (name, val, pretty) => { if (val === undefined || val === null) return; const tmp = path.join(dir, name + '.importtmp'); fs.writeFileSync(tmp, JSON.stringify(val, null, pretty ? 2 : 0)); staged.push([tmp, path.join(dir, name)]); };
+      const stage = (name, val, pretty) => { if (val === undefined || val === null) return; const tmp = path.join(dir, name + '.importtmp'); fs.writeFileSync(tmp, wsfiles.encode(myWs.id, path.join(dir, name), JSON.stringify(val, null, pretty ? 2 : 0))); staged.push([tmp, path.join(dir, name)]); };   // T-0222
       stage('tickets.json', exp.tickets, true); stage('reviews.json', exp.reviews, true);
       stage('memory.json', exp.agent_memory, false); stage('audit.json', exp.agent_audit, false);
     } catch (e) { for (const [tmp] of staged) { try { fs.unlinkSync(tmp); } catch {} } return ctx.json(res, 500, { error: 'Import failed while staging data: ' + (e.message || 'unknown error') }), true; }
@@ -1206,7 +1206,7 @@ async function handle(req, res, url, ctx0) {
         const rows = all.map(r => { const { ts, actor: a, agent, kind, action: act, rid, ip, ...rest } = r; const target = rest.ticket || rest.id || rest.room || rest.review || rest.username || rest.target || ''; return [ts, new Date(ts).toISOString(), a || agent || '', kind || (agent ? 'agent' : 'human'), act || '', target, JSON.stringify(rest), rid || '', ip || ''].map(cell).join(','); });
         res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` }); res.end(cols.join(',') + '\n' + rows.join('\n') + '\n'); return true;
       }
-      let log = []; try { log = JSON.parse(fs.readFileSync(path.join(dir, 'audit.json'), 'utf8')); } catch { /* none yet */ }
+      let log = []; try { log = JSON.parse(wsfiles.readText(myWs.id, path.join(dir, 'audit.json'))); } catch { /* none yet */ }   // T-0222: opened if sealed
       const filtered = log.filter(match);
       return ctx.json(res, 200, { audit: filtered.slice(-300).reverse(), total: filtered.length, actors: [...new Set(log.map(r => r.actor || r.agent).filter(Boolean))].sort() }), true;
     }

@@ -21,7 +21,11 @@
 const fs = require('fs');                                                     // [new] file reads/writes for the JSON store
 const path = require('path');                                                 // [new] dirname() for the store folder
 
-const STORE = process.env.CHAMBER_TICKETS_FILE || '';                         // [new] store path comes from the same env var Chamber reads
+const STORE = process.env.CHAMBER_TICKETS_FILE || '';
+// T-0222: with the owner lock on, the server hands this one call the workspace key: the store is opened with it, and written sealed
+// when CHAMBER_WS_SEAL=1. Without a key a sealed store is refused (nothing is changed).
+const WSKEY = /^[a-f0-9]{64}$/i.test(process.env.CHAMBER_WS_KEY || '') ? Buffer.from(process.env.CHAMBER_WS_KEY, 'hex') : null, WSAAD = process.env.CHAMBER_WS_AAD || '', WSSEAL = process.env.CHAMBER_WS_SEAL === '1' && !!WSKEY;
+let wsc = null; const crypt = () => wsc || (wsc = require('./wscrypt'));                         // [new] store path comes from the same env var Chamber reads
 if (!STORE) { console.error('CHAMBER_TICKETS_FILE not set'); process.exit(1); } // [new] refuse to guess a path
 
 // One writer at a time. Every verb is load -> change -> save, so two overlapping runs  [new] store lock
@@ -53,11 +57,16 @@ function acquireLock() {                                                       /
 // hand-edit typo made the next write save a blank board and reissue T-0001.
 function load() {                                                             // [new] read the store
   let raw;                                                                    // [fix] file text; read and parse are separate steps so each failure gets its own message
-  try { raw = fs.readFileSync(STORE, 'utf8'); }                               // [fix] read the file
+  try { raw = fs.readFileSync(STORE); }                                       // [fix] read the file (T-0222: as bytes, it may be sealed)
   catch (e) {                                                                 // [fix] the read failed: find out why
     if (e.code === 'ENOENT') return { next_id: 1, tickets: [] };              // [fix] no file yet (first run): the one case that starts empty
     fail(`cannot read ticket store ${STORE}: ${e.message}\nNothing was changed.`);  // [fix] permissions or disk error: refuse rather than overwrite the board
   }
+  if (raw.length && crypt().isEncBytes(raw)) {                                // T-0222: sealed by the owner lock
+    if (!WSKEY) fail(`ticket store ${STORE} is sealed (owner lock) and no key was given.\nNothing was changed.`);
+    try { raw = crypt().decBytes(WSKEY, raw, WSAAD); } catch { fail(`ticket store ${STORE} does not open with the key given.\nNothing was changed.`); }
+  }
+  raw = raw.toString('utf8');
   if (!raw.trim()) return { next_id: 1, tickets: [] };                        // [fix] an empty file (e.g. made with touch) holds no tickets, so starting fresh loses nothing
   let data;                                                                   // [fix] parsed store
   try { data = JSON.parse(raw); }                                             // [fix] parse the JSON
@@ -70,7 +79,7 @@ function load() {                                                             //
 function save(data) {                                                         // [new] write the store without ever leaving a half-written file
   const tmp = STORE + '.tmp.' + process.pid;                 // atomic: temp + fsync + rename
   const fd = fs.openSync(tmp, 'w');                                           // [new] open the temp file
-  fs.writeSync(fd, JSON.stringify(data, null, 2));                            // [new] pretty-printed so diffs and hand edits stay readable
+  fs.writeSync(fd, WSSEAL ? crypt().encBytes(WSKEY, Buffer.from(JSON.stringify(data, null, 2)), WSAAD) : JSON.stringify(data, null, 2));   // T-0222: sealed while the owner lock is on                            // [new] pretty-printed so diffs and hand edits stay readable
   fs.fsyncSync(fd);                                                           // [new] flush to disk before the rename
   fs.closeSync(fd);                                                           // [new] done with the temp file
   fs.renameSync(tmp, STORE);                                                  // [new] atomic swap: readers see the old or the new file, never a mix

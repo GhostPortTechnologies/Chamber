@@ -73,7 +73,7 @@ function trim(dir, cutoffTs, opts) {
   for (const f of files) {
     const lines = fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean), keep = [];
     for (const line of lines) {
-      let r = null; if (cutting) { try { r = JSON.parse(line); } catch { r = null; } }
+      let r = null; if (cutting) { try { r = JSON.parse(opts.decLine ? opts.decLine(path.join(dir, f), line) : line); } catch { r = null; } }   // T-0222: a sealed line is opened to read its time
       if (cutting && r && typeof r.ts === 'number' && r.ts < cutoffTs) gone.push(r); else { cutting = false; keep.push(line); }
     }
     kept.set(f, { keep, changed: keep.length !== lines.length });
@@ -86,7 +86,7 @@ function trim(dir, cutoffTs, opts) {
     chain: upto !== null ? { ok: true, n: upto, head: numbered[numbered.length - 1].h, trimmed_upto: was, how: 'node tools/verify-audit.js <this file> checks it without the server' } : { partial: true } }).name;
   if (upto !== null) writeAtomic(headFile, JSON.stringify({ ...head, trimmed: { upto, before: cutoffTs, at: Date.now() } }));   // first: from here on these entries are allowed to be missing
   for (const [f, k] of kept) { if (!k.changed) continue; if (k.keep.length) writeAtomic(path.join(dir, f), k.keep.join('\n') + '\n'); else fs.unlinkSync(path.join(dir, f)); }
-  try { const removed = new Set(gone.map(keyOf)), recent = path.join(dir, 'audit.json'); const log = JSON.parse(fs.readFileSync(recent, 'utf8')).filter(r => !removed.has(keyOf(r))); writeAtomic(recent, JSON.stringify(log), 0o644); } catch { /* no recent list */ }
+  try { const removed = new Set(gone.map(keyOf)), recent = path.join(dir, 'audit.json'); const log = JSON.parse(opts.readText ? opts.readText(recent) : fs.readFileSync(recent, 'utf8')).filter(r => !removed.has(keyOf(r))); writeAtomic(recent, opts.encode ? opts.encode(recent, JSON.stringify(log)) : JSON.stringify(log), 0o644); } catch { /* no recent list */ }
   opts.append({ ts: Date.now(), actor: 'chamber', kind: 'system', action: 'record-trimmed', removed: gone.length, first, upto, before: new Date(cutoffTs).toISOString(), days: opts.days, setting_by: opts.by || null, copy });
   return { removed: gone.length, first, upto, copy };
 }
