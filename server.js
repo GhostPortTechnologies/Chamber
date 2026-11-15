@@ -179,6 +179,7 @@ function auditAppend(dir, rec) {                                              //
   const tmp = file + '.tmp.' + process.pid; fs.writeFileSync(tmp, wsfiles.encode(path.basename(dir), file, JSON.stringify(log))); fs.renameSync(tmp, file);
 }
 const auditChain = require('./auditchain');                                   // T-0194: tamper-evident activity record
+const tasks = require('./tasks');                                             // T-0224: the Tasks tab (recurring checklist)
 const records = require('./records');                                         // T-0219: how long the record is kept; sealed copies for the owner
 function verifyAudit(dir) {                                                   // T-0194: walk the record as written and recompute every check value
   auditRepair(dir);                                                           // T-0217
@@ -210,7 +211,7 @@ function reachOf(r) {
 // Everything is worked out from what the caller may already see: tickets and reviews, agent answers and busy spells in rooms
 // they can see, people joining. Nothing here reads the who-did-what record (that stays on the account page).
 // Busy spells are found in the last 1000 messages only (what loadDataFull holds), so in an old period they can be incomplete.
-const ACT_WORDS = { ticket_proposed: 'ticket proposed', ticket_approved: 'ticket approved', ticket_rejected: 'ticket rejected', ticket_claimed: 'ticket started', ticket_closed: 'ticket done', ticket_checked: 'ticket checked', ticket_sent_back: 'ticket sent back',
+const ACT_WORDS = { ticket_proposed: 'ticket proposed', ticket_approved: 'ticket approved', ticket_rejected: 'ticket rejected', ticket_claimed: 'ticket started', ticket_closed: 'ticket done', task_done: 'task ticked off', ticket_checked: 'ticket checked', ticket_sent_back: 'ticket sent back',
   review_submitted: 'review submitted', review_approved: 'review approved', review_rejected: 'review rejected', agent_run: 'agent answer', message_burst: 'busy chat', user_joined: 'joined' };
 const ACT_EXPORT_MAX = 50000;
 function activityEvents(sess, from, to) {
@@ -229,6 +230,7 @@ function activityEvents(sess, from, to) {
     if (inR(T(r.proposed_at))) events.push({ ts: T(r.proposed_at), kind: 'review_submitted', actor: r.by, ref: r.id, title, meta: { ticket: r.ticket_id, files: (r.files || []).length } });
     if (r.reviewed_at && inR(T(r.reviewed_at))) events.push({ ts: T(r.reviewed_at), kind: r.status === 'approved' ? 'review_approved' : 'review_rejected', actor: r.reviewed_by, ref: r.id, title, meta: { reason: r.reject_reason } });
   }
+  if (taskPerson(sess)) for (const t of loadTaskStore().items) for (const x of t.done || []) if (inR(x.at)) events.push({ ts: x.at, kind: 'task_done', actor: x.by, title: t.title, meta: { every: t.every } });   // T-0224: a task ticked off
   const chamber = loadDataFull(), who = sess && sess.username, roomName = k => String(k).startsWith('dm:') ? 'a private conversation' : '#' + k;
   for (const m of store.runsSince(F().data, from)) {                           // agent answers, with how long each took
     if (!inR(m.ts) || !m.run || m.run.state === 'running' || !canSeeRoom(chamber, m.room, who)) continue;
@@ -802,7 +804,7 @@ async function lockConvert(ws, direction) {
         if (out === 'error') return { error: `archive ${meta.id}` }; if (out === 'resealed') archives++;
       }
       const wdir = path.dirname(F().data); let state = 0;                            // T-0222 part 4: the workspace's own files and the record
-      const own = ['reviews.json', 'memory.json', 'asks.json', 'standing.json', 'ask-config.json', 'audit.json', 'chamber.json.migrated'].map(n => path.join(wdir, n));   // .migrated: the chat file from before the database (T-0017)
+      const own = ['reviews.json', 'memory.json', 'asks.json', 'standing.json', 'tasks.json', 'ask-config.json', 'audit.json', 'chamber.json.migrated'].map(n => path.join(wdir, n));   // .migrated: the chat file from before the database (T-0017)
       try { for (const n of fs.readdirSync(diffDir())) if (!n.includes('.tmp') && !n.endsWith('.lock-tmp')) own.push(path.join(diffDir(), n)); } catch { /* no changes attached yet */ }
       for (const f of own) if (wsfiles.convertFile(ws, f, direction) === 'done') state++;
       if (withTicketsLock(F().tickets, () => wsfiles.convertFile(ws, F().tickets, direction)) === 'done') state++;
@@ -1207,6 +1209,24 @@ function weeklyReportMail(now = new Date()) {                                   
 // tickets (claims answer 402; connector 3.21 also stops starting new answers). An agent that has reported no cost in the last 90 days
 // (a local model) is never blocked: money other agents spent is not a reason to stop it.
 function monthStartOf(d) { const x = new Date(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), 1)); }
+// ── T-0224: Tasks, a checklist for people that resets itself (logic in tasks.js) ───────────────────────────────────────────
+// Kept per workspace in tasks.json next to the tickets, sealed like the rest while the owner lock is on. People add tasks and
+// tick them off; a viewer only looks; agents are not part of it. A task is changed or removed by whoever added it, or by the
+// owner and admins. Each tick is on the record (audit) and in the Activity tab.
+function tasksPath() { return path.join(path.dirname(F().data), 'tasks.json'); }
+function loadTaskStore() {
+  try { const d = JSON.parse(wsRead(tasksPath())); if (d && Array.isArray(d.items)) return d; } catch { /* none yet */ }
+  return { items: [] };
+}
+function saveTaskStore(d) {
+  const f = tasksPath(), tmp = f + '.tmp'; fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(tmp, wsEnc(f, JSON.stringify(d)), { mode: 0o600 }); fs.renameSync(tmp, f);
+}
+function taskPerson(sess) { return !!sess && !!sess.username && !sess.agent && sess.role !== 'ai'; }
+function taskRole(sess) { return accounts.enabled ? accounts.sessionRole(sess) : 'member'; }
+function taskCanManage(sess, t) { const r = taskRole(sess); return r === 'owner' || r === 'admin' || (!!t && String(t.by).toLowerCase() === String(sess.username).toLowerCase()); }
+const TASKS_PEOPLE = 'Tasks are a checklist for the people in this workspace; agents do not use them.';
+
 // ── T-0200: standing approvals ─────────────────────────────────────────────────────────────────────────────────────────────
 // Someone who may approve says once, in advance: "this kind of job, done by this agent, is fine within these limits, until this
 // date". A ticket that names one (the app's propose form, a "standing" field, or [standing:S-1] in its title) is approved by the
@@ -2958,6 +2978,47 @@ ${tickets.map(sec).join('') || '<p>No tickets in this range.</p>'}
     return json(res, 200, { ok: true });
   }
   // T-0200: standing approvals. Read: everyone in the workspace (agents too, so they can name one). Set up, confirm, withdraw: people who may approve.
+  // T-0224: the Tasks tab
+  if (url.pathname === '/api/tasks' && method === 'GET') {
+    if (!taskPerson(sess)) return json(res, 403, { error: TASKS_PEOPLE });
+    const now = Date.now(), d = loadTaskStore(), role = taskRole(sess);
+    return json(res, 200, { tasks: d.items.map(t => ({ ...tasks.view(t, now), canManage: role !== 'viewer' && taskCanManage(sess, t) })), due: tasks.countDue(d.items, now), canAdd: role !== 'viewer', max: tasks.MAX_TASKS });
+  }
+  if (url.pathname === '/api/tasks' && method === 'POST') {
+    if (!taskPerson(sess)) return json(res, 403, { error: TASKS_PEOPLE });
+    const body = await parseBody(req, sess).catch(() => null), c = tasks.clean(body);
+    if (c.error) return json(res, 400, { error: c.error });
+    const d = loadTaskStore();
+    if (d.items.length >= tasks.MAX_TASKS) return json(res, 400, { error: `A workspace keeps up to ${tasks.MAX_TASKS} tasks. Remove one you no longer need first.` });
+    const t = { id: crypto.randomBytes(4).toString('hex'), ...c, by: sess.username, at: Date.now(), done: [] };
+    d.items.push(t); saveTaskStore(d);
+    audit(sess, { action: 'task-add', task: t.id, title: t.title.slice(0, 80), every: t.every, day: t.day }, true); notify('tasks');
+    return json(res, 201, { ok: true, task: { ...tasks.view(t, Date.now()), canManage: true } });
+  }
+  const taskM = url.pathname.match(/^\/api\/tasks\/([a-f0-9]{8})(?:\/(done|undo|remove))?$/);
+  if (taskM && method === 'POST') {
+    if (!taskPerson(sess)) return json(res, 403, { error: TASKS_PEOPLE });
+    const body = await parseBody(req, sess).catch(() => null);
+    const d = loadTaskStore(), t = d.items.find(x => x.id === taskM[1]), act = taskM[2] || 'edit', now = Date.now();
+    if (!t) return json(res, 404, { error: 'No such task here. Someone may have removed it.' });
+    if (act === 'done' || act === 'undo') {
+      const changed = act === 'done' ? tasks.tick(t, sess.username, now) : tasks.untick(t, now);
+      if (changed) { saveTaskStore(d); audit(sess, { action: act === 'done' ? 'task-done' : 'task-undo', task: t.id, title: t.title.slice(0, 80), period: tasks.periodOf(t.every, now, t.tz) }, true); notify('tasks'); }
+      return json(res, 200, { ok: true, changed, task: { ...tasks.view(t, now), canManage: taskCanManage(sess, t) } });
+    }
+    if (!taskCanManage(sess, t)) return json(res, 403, { error: `Only ${t.by}, who added this task, or the owner and admins can change or remove it.` });
+    if (act === 'remove') {
+      d.items = d.items.filter(x => x !== t); saveTaskStore(d);
+      audit(sess, { action: 'task-remove', task: t.id, title: t.title.slice(0, 80) }, true); notify('tasks');
+      return json(res, 200, { ok: true, removed: t.id });
+    }
+    const c = tasks.clean(body, t); if (c.error) return json(res, 400, { error: c.error });
+    const periodWas = tasks.periodOf(t.every, now, t.tz);
+    Object.assign(t, c, { editedBy: sess.username, editedAt: now });
+    if (tasks.periodOf(t.every, now, t.tz) !== periodWas) t.done = [];                // a different rhythm: earlier ticks counted for other periods
+    saveTaskStore(d); audit(sess, { action: 'task-edit', task: t.id, title: t.title.slice(0, 80), every: t.every, day: t.day }, true); notify('tasks');
+    return json(res, 200, { ok: true, task: { ...tasks.view(t, now), canManage: true } });
+  }
   if (url.pathname === '/api/standing' && method === 'GET') {
     const tickets = loadTickets().tickets || [], now = Date.now(), person = !sess?.agent && sess?.role !== 'ai';
     const items = loadStanding().items.slice().reverse().map(s => ({ ...s, state: standingState(s, now), usedThisWeek: standingUses(s, tickets, now), usedTotal: tickets.filter(t => t.standing && t.standing.id === s.id).length }));

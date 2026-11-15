@@ -1584,6 +1584,21 @@ function markPaid(...emails) {                                   // simulate a p
           fs.rmSync(d2, { recursive: true, force: true }); }
       } finally { srv9.kill(); try { fs.rmSync(dir9, { recursive: true, force: true }); } catch {} }
     }
+    console.log('tasks: a checklist that resets itself (T-0224)');
+    { const k = require(path.join(APP, 'tasks.js')), T = s => Date.parse(s), wed = T('2026-11-18T12:00:00Z'), mk = (every, day, tz = 'UTC') => ({ id: 'aaaaaaaa', title: 'x', every, day, tz, done: [] });
+      check('T-0224: periods: ISO weeks across the new year, a day in the task\'s own time zone, and the period before each kind',
+        k.periodOf('week', T('2027-01-01T12:00:00Z'), 'UTC') === '2026-W53' && k.periodOf('week', T('2026-01-01T12:00:00Z'), 'UTC') === '2026-W01' && k.periodOf('day', T('2026-11-16T03:00:00Z'), 'America/Los_Angeles') === '2026-11-15' && k.periodOf('day', T('2026-11-16T03:00:00Z'), 'UTC') === '2026-11-16'
+        && k.prevPeriod('week', '2026-W01') === '2025-W52' && k.prevPeriod('week', '2027-W01') === '2026-W53' && k.prevPeriod('day', '2026-03-01') === '2026-02-28' && k.prevPeriod('month', '2026-01') === '2025-12');
+      const wk = mk('week', 1); for (const d of ['2026-11-02', '2026-11-09', '2026-11-16']) k.tick(wk, 'ann', T(d + 'T09:00:00Z'));
+      const st = [k.status(mk('week', 1), wed).due, k.status(mk('week', 3), wed).due, k.status(mk('week', 5), wed).due, k.status(mk('month', 31), T('2026-11-30T12:00:00Z')).due, k.status(mk('month', 31), T('2026-11-30T12:00:00Z')).dueOn, k.status(mk('day', null), wed).due];
+      const again = k.tick(wk, 'bob', wed), s1 = k.streak(wk, wed), back = k.untick(wk, wed), s2 = k.streak(wk, wed), after = k.status(wk, wed).due;
+      check('T-0224: due today, later or late by the weekday or day of the month (the 31st is the last day of a short month); one tick per period; the streak counts periods in a row; a tick taken back makes it late again',
+        JSON.stringify(st) === JSON.stringify(['late', 'today', 'later', 'today', 30, 'today']) && again === false && s1 === 3 && back === true && s2 === 2 && after === 'late', JSON.stringify({ st, again, s1, back, s2, after }));
+      const bad = [k.clean({ title: 'x', every: 'day' }), k.clean({ title: 'Pay it', every: 'year' }), k.clean({ title: 'Pay it', every: 'week', day: 9 }), k.clean({ title: 'Pay it', every: 'month', day: 0 }), k.clean({ title: 'Pay it', every: 'day', tz: 'Mars/Base' })];
+      const good = k.clean({ title: '  Pay   the bill ', every: 'month', day: 31, tz: 'Europe/Berlin' });
+      const san = k.sanitize({ items: [{ id: 'abcdef12', title: 'Pay the bill', every: 'month', day: 1, tz: 'UTC', by: 'ann', at: 1, done: [{ p: '2026-10', by: 'ann', at: 2 }, { p: '<script>', at: 3 }], extra: 'x' }, { id: '../etc', title: 'bad id', every: 'day' }, { id: 'abcdef13', title: 'Bad rhythm', every: 'year' }] });
+      check('T-0224: what a person may set is checked (title length, rhythm, weekday, day of the month, time zone), and an imported list keeps only well-formed tasks with the fields Chamber writes',
+        bad.every(c => c.error) && good.title === 'Pay the bill' && good.day === 31 && san.items.length === 1 && san.items[0].done.length === 1 && !('extra' in san.items[0]), JSON.stringify({ bad, good, san })); }
     console.log('finished work is checked on the Reviews tab (T-0223)');
     { const port10 = await freePort(), B10 = `http://127.0.0.1:${port10}`; const dir10 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-check-'));
       const env10 = { ...env, CHAMBER_PUBLIC_URL: B10, CHAMBER_PORT: String(port10), CHAMBER_DATA: path.join(dir10, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir10, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir10, 'tickets.json') };
@@ -1639,6 +1654,48 @@ function markPaid(...emails) {                                   // simulate a p
           const own = cli('check', 'T-0001', '--by', 'bob', '--state', 'ok'), sent = cli('check', 'T-0001', '--by', 'ann', '--state', 'back', '--note', 'Prices are missing for drinks'), again = cli('check', 'T-0001', '--by', 'ann', '--state', 'ok'), st2 = JSON.parse(fs.readFileSync(tf2, 'utf8'));
           check('T-0223: the ticket tool itself holds the rules (own work, once only), and a request from a client that is sent back becomes an ordinary follow-up task, not a second client request',
             /ERR .*finished by bob; someone else checks it/.test(own) && sent === 'Sent back T-0001, follow-up T-0002' && /ERR .*already checked by ann/.test(again) && st2.tickets[1].type === 'task' && st2.tickets[1].title === 'Follow-up to T-0001: Prices are missing for drinks' && st2.tickets[1].followup_of === 'T-0001' && st2.next_id === 3, JSON.stringify({ own, sent, again })); }
+        { // T-0224: the Tasks tab, through the server
+          const TK = (m, p, tok, body) => c10(m, '/api/tasks' + p, { token: tok, body }), wsd = path.dirname(tf);
+          const V = await su10('view10', { join: code10 }), roleV = await c10('POST', '/account/workspace/role', { token: O.token, body: { username: 'view10', role: 'viewer' } });
+          const O2 = await su10('own10b', { invite: INVITE }); { const l = (log10.match(/\[accounts\] verify link for own10b: (\S+)/) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); }
+          { const s = JSON.parse(fs.readFileSync(f10, 'utf8')); Object.assign(s.accounts['own10b@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f10, JSON.stringify(s)); }
+          const today = ((new Date().getUTCDay() + 6) % 7) + 1;
+          const add = await TK('POST', '', M.token, { title: 'SECRET-CHORE check the backup restores', every: 'week', day: today, tz: 'UTC' }), id = add.json?.task?.id;
+          const bad = [await TK('POST', '', M.token, { title: 'x', every: 'week', day: 1 }), await TK('POST', '', M.token, { title: 'Pay it', every: 'year' }), await TK('POST', '', M.token, { title: 'Pay it', every: 'month', day: 40 })];
+          const byBot = [await TK('GET', '', bot), await TK('POST', '', bot, { title: 'agent chore', every: 'day' }), await TK('POST', `/${id}/done`, bot, {})];
+          const byViewer = { get: await TK('GET', '', V.token), add: await TK('POST', '', V.token, { title: 'viewer chore', every: 'day' }), tick: await TK('POST', `/${id}/done`, V.token, {}) };
+          check('T-0224: a member adds a weekly task; bad input is refused with a reason; agents get no tasks at all; a viewer sees the list but cannot add or tick',
+            roleV.status === 200 && add.status === 201 && /^[a-f0-9]{8}$/.test(id || '') && add.json.task.due === 'today' && bad.every(r => r.status === 400 && r.json?.error) && byBot.every(r => r.status === 403)
+            && byViewer.get.status === 200 && byViewer.get.json.canAdd === false && byViewer.get.json.tasks.length === 1 && byViewer.get.json.tasks[0].canManage === false && byViewer.add.status === 403 && byViewer.tick.status === 403,
+            JSON.stringify({ role: roleV.status, add: add.status, bad: bad.map(r => r.status), bot: byBot.map(r => r.status), v: [byViewer.get.status, byViewer.add.status, byViewer.tick.status] }));
+          const other = await TK('GET', '', O2.token), otherTick = await TK('POST', `/${id}/done`, O2.token, {}), otherRm = await TK('POST', `/${id}/remove`, O2.token, {});
+          check('T-0224: another workspace sees none of these tasks and cannot tick or remove them', other.status === 200 && other.json.tasks.length === 0 && otherTick.status === 404 && otherRm.status === 404 && fs.existsSync(path.join(wsd, 'tasks.json')),
+            JSON.stringify({ other: other.status, n: other.json?.tasks?.length, t: otherTick.status, r: otherRm.status }));
+          const due0 = (await TK('GET', '', M.token)).json.due, t1 = await TK('POST', `/${id}/done`, O.token, {}), t2 = await TK('POST', `/${id}/done`, M.token, {}), l1 = (await TK('GET', '', M.token)).json, rec = fs.readFileSync(path.join(wsd, 'audit.json'), 'utf8');
+          check('T-0224: a task is ticked off once per week: a second tick changes nothing, the list says who did it, the number on the tab drops, and the record has it',
+            due0 === 1 && t1.status === 200 && t1.json.changed === true && t2.json.changed === false && l1.tasks[0].done && l1.tasks[0].done.by === 'own10' && l1.due === 0 && /"task-done"/.test(rec) && /"task-add"/.test(rec),
+            JSON.stringify({ due0, t1: t1.json, t2: t2.json?.changed, due: l1.due }));
+          const own2 = (await TK('POST', '', O.token, { title: 'Owner only chore', every: 'month', day: 31, tz: 'UTC' })).json?.task?.id;
+          const editM = await TK('POST', `/${id}`, M.token, { title: 'Check the backup restores', every: 'week', day: today }), editO = await TK('POST', `/${id}`, O.token, { title: 'Check the backup restores (owner)' });
+          const editOther = await TK('POST', `/${own2}`, M.token, { title: 'taken over' }), rmOther = await TK('POST', `/${own2}/remove`, M.token, {}), tickOther = await TK('POST', `/${own2}/done`, M.token, {});
+          const undo = await TK('POST', `/${id}/undo`, M.token, {}), l2 = (await TK('GET', '', O.token)).json, kept = l2.tasks.find(t => t.id === id);
+          check('T-0224: whoever added a task, or the owner, changes it (a new title keeps this week\'s tick); another member cannot change or remove it but can tick it off and take a tick back',
+            editM.status === 200 && editM.json.task.done && editO.status === 200 && kept.title === 'Check the backup restores (owner)' && editOther.status === 403 && rmOther.status === 403 && tickOther.json?.changed === true
+            && undo.json?.changed === true && !kept.done && l2.tasks.find(t => t.id === own2).title === 'Owner only chore',
+            JSON.stringify({ editM: editM.status, editO: editO.status, editOther: editOther.status, rmOther: rmOther.status, tickOther: tickOther.status, undo: undo.json }));
+          const rhythm = await TK('POST', `/${own2}`, O.token, { every: 'day' });
+          const ev = ((await c10('GET', `/api/activity?from=${Date.now() - DAY}&to=${Date.now() + 1000}&limit=500`, { token: O.token })).json?.events || []).filter(e => e.kind === 'task_done');
+          const evBot = ((await c10('GET', `/api/activity?from=${Date.now() - DAY}&to=${Date.now() + 1000}&limit=500`, { token: bot })).json?.events || []).filter(e => e.kind === 'task_done');
+          const csv = (await c10('GET', `/api/activity?from=${Date.now() - DAY}&to=${Date.now() + 1000}&format=csv`, { token: O.token })).text, exp = (await c10('GET', '/account/export', { token: O.token })).json;
+          check('T-0224: a new rhythm clears the old ticks; ticks show on the Activity timeline and in its spreadsheet export (not to agents), and the workspace export carries the task list',
+            rhythm.status === 200 && rhythm.json.task.every === 'day' && !rhythm.json.task.done && ev.length === 0 && evBot.length === 0 && exp && exp.tasks && exp.tasks.items.length === 2,
+            JSON.stringify({ rhythm: rhythm.json?.task, ev: ev.length, evBot: evBot.length, exp: exp?.tasks?.items?.length }));
+          const t3 = await TK('POST', `/${id}/done`, M.token, {}), ev2 = ((await c10('GET', `/api/activity?from=${Date.now() - DAY}&to=${Date.now() + 1000}&limit=500`, { token: O.token })).json?.events || []).filter(e => e.kind === 'task_done');
+          const csv2 = (await c10('GET', `/api/activity?from=${Date.now() - DAY}&to=${Date.now() + 1000}&format=csv`, { token: O.token })).text;
+          const rm = await TK('POST', `/${own2}/remove`, O.token, {}), l3 = (await TK('GET', '', O.token)).json, rec2 = fs.readFileSync(path.join(wsd, 'audit.json'), 'utf8');
+          check('T-0224: a tick is on the Activity timeline with who did it, and in the spreadsheet; the owner removes a task, and the record says so',
+            t3.json?.changed === true && ev2.length === 1 && ev2[0].actor === 'mem10' && ev2[0].title === 'Check the backup restores (owner)' && /task ticked off,mem10/.test(csv2) && rm.status === 200 && l3.tasks.length === 1 && /"task-remove"/.test(rec2),
+            JSON.stringify({ ev2, rm: rm.status, n: l3.tasks.length, csv: csv2.split('\n').filter(x => /task/.test(x)) })); void csv; }
       } finally { srv10.kill(); try { fs.rmSync(dir10, { recursive: true, force: true }); } catch {} }
     }
     console.log('the owner lock: encryption building blocks and the key keeper (T-0222)');
@@ -1711,6 +1768,7 @@ function markPaid(...emails) {                                   // simulate a p
         const down = async (id, tok = O.token) => c11('GET', `/api/files/${id}?download=1`, { token: tok });
         const f1 = await up(plain1, 'plan.bin');
         await c11('POST', '/api/messages', { token: O.token, body: { text: 'SECRET-MINUTES of the board meeting' } });
+        const tk11 = (await c11('POST', '/api/tasks', { token: O.token, body: { title: 'SECRET-CHORE water the plants', every: 'week', day: 3, tz: 'UTC' } })).json?.task?.id;   // T-0224
         const arc = (await c11('POST', '/api/archives', { token: O.token, body: { room: 'general', before: Date.now() + 1000 } })).json?.archive?.id, arcFile = path.join(wsDir, 'archives', arc + '.arc'), arcBefore = fs.readFileSync(arcFile);
         const lockGet = async (tok = O.token) => (await c11('GET', '/account/workspace/lock', { token: tok })).json || {};
         const noKey = await c11('POST', '/account/workspace/lock', { token: O.token, body: { on: true } }), byMem = await c11('POST', '/account/workspace/lock', { token: M.token, body: { on: true } });
@@ -1733,6 +1791,9 @@ function markPaid(...emails) {                                   // simulate a p
         check('T-0222: switched on, the workspace\'s existing files and archives are sealed with its key in the background; on disk they hold none of what was in them, and everyone still reads them as before',
           on.status === 200 && on.json.state === 'sealing' && on.json.open === true && typeof on.json.wrapped === 'string' && done1.state === 'on' && wcr.isEncStream(disk1) && !disk1.includes(MARK) && got1.status === 200 && got1.buf.equals(plain1)
           && !arcAfter.equals(arcBefore) && arcAfter.length === arcBefore.length && arcRead.status === 200 && JSON.stringify(arcRead.json.messages).includes('SECRET-MINUTES') && /\[lock\] \S+: sealed 1 file\(s\), 1 archive\(s\), \d+ other file\(s\) and \d+ chat value\(s\)/.test(log11), JSON.stringify({ on: on.status, st: done1.state, got: got1.status, arc: arcRead.status }));
+        { const disk = fs.readFileSync(path.join(wsDir, 'tasks.json'), 'utf8'), seen = (await c11('GET', '/api/tasks', { token: M.token })).json?.tasks || [];
+          check('T-0224: with the owner lock on, the task list is sealed on disk too, and people still read it as before', !!tk11 && !disk.includes('SECRET-CHORE') && seen.some(t => t.title === 'SECRET-CHORE water the plants'),
+            JSON.stringify({ tk11, plainOnDisk: disk.includes('SECRET-CHORE'), n: seen.length })); }
         const plain2 = Buffer.from('second file ' + MARK.repeat(3)), f2 = await up(plain2, 'notes.txt'), sent2 = await c11('POST', '/api/messages', { token: O.token, body: { text: 'the notes', attachments: [f2] } }), disk2 = fs.readFileSync(path.join(wsDir, 'files', f2)), got2 = await down(f2, M.token);
         const wsFiles = fs.readdirSync(path.join(wsDir, 'files'));
         check('T-0222: a file uploaded while the lock is on arrives sealed on disk, and a member downloads it as it was sent; no half-written file is left over',

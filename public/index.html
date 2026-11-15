@@ -302,6 +302,22 @@
   .rdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #8a8f98; margin-right: 5px; } .rdot.on { background: #2fbf71; } .fl-err { color: #e5484d; }
   .fl-wrap { overflow-x: auto; } .fl-table { width: 100%; border-collapse: collapse; font-size: 13px; } .fl-table td, .fl-table th { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
   .kanban { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; flex: 1; overflow: hidden; min-height: 0; }
+  /* T-0224: the Tasks tab, a checklist that resets itself */
+  #tasks-view.active { display: block; overflow-y: auto; } #tasks-view [hidden] { display: none !important; }   /* .tk-form and its labels set display, which would beat [hidden] */ .tk-bar { margin-bottom: 10px; }
+  .tk-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; padding: 12px; margin: 0 0 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
+  .tk-form label { display: flex; flex-direction: column; gap: 4px; } .tk-f-title { flex: 1 1 260px; }
+  .tk-form input, .tk-form select { background: var(--bg); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 7px 9px; font: inherit; font-size: 13px; }
+  .tk-f-acts { display: flex; gap: 8px; } .tk-f-msg { flex-basis: 100%; color: var(--danger); } .tk-f-msg:empty { display: none; }
+  .tk-sec { margin: 0 0 16px; } .tk-sec h3 { display: flex; gap: 8px; align-items: baseline; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); margin: 0 0 6px; font-weight: 600; }
+  .tk-sec h3 .count { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .tk-row { display: flex; gap: 10px; align-items: center; padding: 9px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); margin-bottom: 6px; }
+  .tk-row.late { border-color: rgba(255, 107, 107, .45); } .tk-row.done .tk-title { color: var(--text-dim); text-decoration: line-through; text-decoration-color: var(--line-strong); }
+  .tk-box { flex: none; width: 26px; height: 26px; border-radius: 6px; border: 2px solid var(--line-strong); background: var(--bg); color: transparent; cursor: pointer; font-size: 15px; line-height: 1; display: grid; place-items: center; padding: 0; }
+  .tk-box:hover:not(:disabled) { border-color: var(--accent); } .tk-box[aria-checked=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #04170c); } .tk-box:disabled { cursor: default; opacity: .7; }
+  .tk-main { flex: 1; min-width: 0; } .tk-title { font-size: 14px; color: var(--text); overflow-wrap: anywhere; } .tk-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .tk-meta .late { color: var(--danger); } .tk-meta .today { color: var(--warn); } .tk-meta .ok { color: var(--accent); }
+  .tk-acts { display: flex; gap: 6px; flex: none; } .tk-empty { padding: 18px; border: 1px dashed var(--line-strong); border-radius: var(--r); color: var(--text-dim); line-height: 1.7; max-width: 640px; }
+  @media (max-width: 600px) { .tk-row { flex-wrap: wrap; } .tk-acts { width: 100%; justify-content: flex-end; } .tk-bar .dim.small { flex-basis: 100%; } }
   /* T-0223: the Reviews tab as the checking station */
   .rv-bar { flex-wrap: wrap; gap: 8px; } #rv-find { flex: 1 1 220px; max-width: 420px; background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--r); padding: 7px 10px; font: inherit; font-size: 13px; }
   .rv-found { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; } .rv-found[hidden] { display: none; }
@@ -615,6 +631,7 @@
   <button class="tab active" data-view="chat" role="tab" aria-selected="true" aria-controls="chat-view" onclick="switchView('chat')">Chat</button>
   <button class="tab" data-view="tickets" role="tab" aria-selected="false" aria-controls="tickets-view" onclick="switchView('tickets')">Tickets <span id="ticket-badge" class="badge" style="display:none">0</span></button>
   <button class="tab" data-view="reviews" role="tab" aria-selected="false" aria-controls="reviews-view" onclick="switchView('reviews')">Reviews <span id="review-badge" class="badge" style="display:none">0</span></button>
+  <button class="tab" data-view="tasks" role="tab" aria-selected="false" aria-controls="tasks-view" onclick="switchView('tasks')">Tasks <span id="task-badge" class="badge" style="display:none">0</span></button>
   <button class="tab" data-view="files" role="tab" aria-selected="false" aria-controls="files-view" onclick="switchView('files')">Files</button>
   <button class="tab" data-view="activity" role="tab" aria-selected="false" aria-controls="activity-view" onclick="switchView('activity')">Activity</button>
   <button class="tab" data-view="code" role="tab" aria-selected="false" aria-controls="code-view" onclick="switchView('code')">Code</button>
@@ -714,6 +731,23 @@
       <div class="review-col"><h3>Rejected <span class="count" id="rcount-rejected">0</span></h3><div class="review-cards" id="rcol-rejected"></div></div>
     </div>
   </details>
+</div>
+
+<div id="tasks-view" class="view" role="tabpanel">
+  <div class="toolbar tk-bar">
+    <button class="btn btn-primary" id="tk-add-btn" onclick="taskForm()" hidden>+ Add a task</button>
+    <span class="spacer"></span>
+    <span class="dim small">A checklist that comes back by itself: tick a task off and it returns the next day, week or month.</span>
+  </div>
+  <form id="tk-form" class="tk-form" hidden onsubmit="taskSave(event)" autocomplete="off">
+    <label class="tk-f-title"><span class="dim small">What needs doing</span><input id="tk-title" maxlength="140" placeholder="e.g. Check that last night's backup restores" required></label>
+    <label><span class="dim small">How often</span><select id="tk-every" onchange="taskEveryShown()"><option value="day">Every day</option><option value="week" selected>Every week</option><option value="month">Every month</option></select></label>
+    <label id="tk-wday-l"><span class="dim small">On</span><select id="tk-wday"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="7">Sunday</option></select></label>
+    <label id="tk-mday-l" hidden><span class="dim small">On the</span><select id="tk-mday"></select></label>
+    <div class="tk-f-acts"><button class="btn btn-primary" type="submit" id="tk-save">Add task</button><button class="btn" type="button" onclick="taskFormClose()">Cancel</button></div>
+    <div class="tk-f-msg small" id="tk-form-msg" role="status"></div>
+  </form>
+  <div id="tk-list" class="tk-list"></div>
 </div>
 
 <div id="files-view" class="view" role="tabpanel">
@@ -1201,7 +1235,7 @@ function connectEvents() {
   es.addEventListener('shutdown', () => { toast('Chamber is restarting, reconnecting…'); });   // T-0025: server drains before a restart
   es.addEventListener('locked', () => { try { es.close(); } catch {} checkLocked(); });   // T-0222: the owner locked the workspace
   let wasDown = false; es.addEventListener('error', () => { wasDown = true; checkLocked(); });
-  es.addEventListener('open', () => { if (wasDown) { wasDown = false; poll(); loadRooms(); loadTickets(); } });   // catch up after a reconnect
+  es.addEventListener('open', () => { if (wasDown) { wasDown = false; poll(); loadRooms(); loadTickets(); loadTaskList(); } });   // catch up after a reconnect
   es.addEventListener('change', e => {
     let d = {}; try { d = JSON.parse(e.data); } catch {}
     if (d.kind === 'messages') {
@@ -1214,6 +1248,7 @@ function connectEvents() {
     else if (d.kind === 'tickets') loadTickets();
     else if (d.kind === 'asks') loadAsks();                                             // T-0188
     else if (d.kind === 'reviews') loadReviews();
+    else if (d.kind === 'tasks') loadTaskList();                                       // T-0224
   });
 }
 function enterChamber(username, role) {                                  // [new] start the app for a signed-in user
@@ -1234,6 +1269,7 @@ function enterChamber(username, role) {                                  // [new
     poll();
     loadTickets();
     loadReviews();
+    loadTaskList();                                                        // T-0224: the number on the Tasks tab
     loadPresence();
     ticketsTimer = setInterval(() => { if (!eventsLive) loadTickets(); }, 5000);   // [changed] T-0016: events drive these when live
     reviewsTimer = setInterval(() => { if (!eventsLive) loadReviews(); }, 5000);
@@ -1713,6 +1749,7 @@ function switchView(view) {
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === view + '-view'));
   if (view === 'activity') loadActivity();
   if (view === 'reviews') { loadReviews(); loadTickets(); }                     // T-0223
+  if (view === 'tasks') loadTaskList();                                          // T-0224
   if (view === 'files') loadFiles();
   if (view === 'terminal') terminalInit();                                             // T-0064/T-0065
   closeSidebar();
@@ -2791,6 +2828,94 @@ async function checkFresh(days, n) {
     toast(`${d.checked} ticket${d.checked === 1 ? '' : 's'} marked as checked`); await loadTickets(); } catch (e) { toast('That did not work', 'err'); }
 }
 
+// ── T-0224: Tasks, a checklist that resets itself ──
+// GET /api/tasks gives each task with where it stands now (done this period and by whom, due today, due later, late); the server
+// works the periods out, so the app only draws them. Re-read on a live change, when the tab opens, and every five minutes so a
+// new day, week or month shows up without a reload.
+let taskData = { tasks: [], due: 0, canAdd: false }, taskEditing = null;
+const TK_EVERY = { day: 'Every day', week: 'Every week', month: 'Every month' };
+function tkOrd(n) { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+function tkWhen(at) { return new Date(at).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+async function loadTaskList() {
+  try { const r = await fetch(`${API}/api/tasks`); if (!r.ok) return; taskData = await r.json(); } catch { return; }
+  renderTasks();
+}
+function tkDueText(t) {
+  if (t.done) return `<span class="ok">Done by ${esc(t.done.by)}, ${esc(tkWhen(t.done.at))}</span>`;
+  const on = t.every === 'week' ? t.dueOn : t.every === 'month' ? `the ${tkOrd(t.dueOn)}` : '';
+  if (t.due === 'late') return `<span class="late">late: it was due ${t.every === 'week' ? '' : 'on '}${esc(on)}</span>`;
+  if (t.due === 'today') return '<span class="today">due today</span>';
+  return `due ${t.every === 'week' ? '' : 'on '}${esc(on)}`;
+}
+function renderTasks() {
+  const badge = document.getElementById('task-badge');
+  if (badge) { badge.style.display = taskData.due ? 'inline-block' : 'none'; badge.textContent = taskData.due; badge.title = `${taskData.due} task${taskData.due === 1 ? '' : 's'} due today or late`; }
+  const list = document.getElementById('tk-list'); if (!list) return;
+  document.getElementById('tk-add-btn').hidden = !taskData.canAdd;
+  if (!taskData.tasks.length) {
+    list.innerHTML = `<div class="tk-empty">No tasks yet. Add the jobs that keep coming back: check that the backup restores every Monday, pay the hosting bill on the 1st, read the security news every day. Tick one off and it comes back by itself the next time it is due.${taskData.canAdd ? '' : '<br>You are a viewer here, so you can see the list but not change it.'}</div>`;
+    return;
+  }
+  const order = { late: 0, today: 1, later: 2, done: 3 };
+  list.innerHTML = ['day', 'week', 'month'].map(ev => {
+    const ts = taskData.tasks.filter(t => t.every === ev).sort((a, b) => order[a.due] - order[b.due] || (a.day || 0) - (b.day || 0) || a.title.localeCompare(b.title));
+    if (!ts.length) return '';
+    const done = ts.filter(t => t.done).length;
+    return `<section class="tk-sec" aria-label="${TK_EVERY[ev]}"><h3>${TK_EVERY[ev]} <span class="count">${done} of ${ts.length} done</span></h3>${ts.map(t => {
+      const last = !t.done && t.last ? ` · last done ${esc(tkWhen(t.last.at))} by ${esc(t.last.by)}` : '', streak = t.streak > 1 ? ` · ${t.streak} in a row` : '';
+      return `<div class="tk-row ${t.done ? 'done' : t.due}" data-task="${esc(t.id)}">
+        <button class="tk-box" role="checkbox" aria-checked="${t.done ? 'true' : 'false'}" aria-label="${esc(t.title)}: ${t.done ? 'done, tap to take back' : 'tick off'}" ${taskData.canAdd ? '' : 'disabled'} onclick="taskTick('${escJ(t.id)}', ${t.done ? 'false' : 'true'})"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="tk-main"><div class="tk-title">${esc(t.title)}</div><div class="tk-meta">${tkDueText(t)}${last}${streak}</div></div>
+        ${t.canManage ? `<div class="tk-acts"><button class="btn btn-sm" onclick="taskForm('${escJ(t.id)}')">Edit</button><button class="btn btn-sm" onclick="taskRemove('${escJ(t.id)}')">Remove</button></div>` : ''}
+      </div>`; }).join('')}</section>`;
+  }).join('');
+}
+async function taskTick(id, on) {
+  const row = document.querySelector(`.tk-row[data-task="${id}"] .tk-box`); if (row) row.disabled = true;
+  try {
+    const r = await fetch(`${API}/api/tasks/${id}/${on ? 'done' : 'undo'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }), d = await r.json().catch(() => ({}));
+    if (!r.ok) toast(d.error || 'That did not work', 'err');
+  } catch { toast('Could not reach Chamber', 'err'); }
+  await loadTaskList();
+}
+function taskEveryShown() {
+  const ev = document.getElementById('tk-every').value;
+  document.getElementById('tk-wday-l').hidden = ev !== 'week'; document.getElementById('tk-mday-l').hidden = ev !== 'month';
+}
+function taskForm(id) {
+  const f = document.getElementById('tk-form'), md = document.getElementById('tk-mday');
+  if (!md.options.length) md.innerHTML = Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}">${tkOrd(i + 1)}${i + 1 > 28 ? ' (or the last day)' : ''}</option>`).join('');
+  const t = id ? taskData.tasks.find(x => x.id === id) : null; taskEditing = t ? t.id : null;
+  document.getElementById('tk-title').value = t ? t.title : '';
+  document.getElementById('tk-every').value = t ? t.every : 'week';
+  document.getElementById('tk-wday').value = t && t.every === 'week' ? t.day : String(((new Date().getDay() + 6) % 7) + 1);
+  md.value = t && t.every === 'month' ? t.day : '1';
+  document.getElementById('tk-save').textContent = t ? 'Save changes' : 'Add task';
+  document.getElementById('tk-form-msg').textContent = '';
+  taskEveryShown(); f.hidden = false; document.getElementById('tk-title').focus();
+}
+function taskFormClose() { document.getElementById('tk-form').hidden = true; taskEditing = null; }
+async function taskSave(e) {
+  e.preventDefault();
+  const ev = document.getElementById('tk-every').value, msg = document.getElementById('tk-form-msg'), btn = document.getElementById('tk-save');
+  const body = { title: document.getElementById('tk-title').value, every: ev, day: ev === 'week' ? +document.getElementById('tk-wday').value : ev === 'month' ? +document.getElementById('tk-mday').value : null };
+  if (!taskEditing) { try { body.tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { body.tz = 'UTC'; } }
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${API}/api/tasks${taskEditing ? '/' + taskEditing : ''}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), d = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.textContent = d.error || 'That did not work'; return; }
+    toast(taskEditing ? 'Task changed' : 'Task added'); taskFormClose(); await loadTaskList();
+  } catch { msg.textContent = 'Could not reach Chamber'; } finally { btn.disabled = false; }
+}
+async function taskRemove(id) {
+  const t = taskData.tasks.find(x => x.id === id); if (!t) return;
+  if (!confirm(`Remove "${t.title}"? Its ticks go with it; the record keeps who removed it.`)) return;
+  const r = await fetch(`${API}/api/tasks/${id}/remove`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }), d = await r.json().catch(() => ({}));
+  if (!r.ok) toast(d.error || 'That did not work', 'err'); else toast('Task removed');
+  await loadTaskList();
+}
+setInterval(() => { if (typeof currentUser !== 'undefined' && currentUser) loadTaskList(); }, 300000);
+
 function openNewReview() { document.getElementById('newreview-modal').classList.add('show'); document.getElementById('nr-note').focus(); }
 function closeNewReview() { document.getElementById('newreview-modal').classList.remove('show'); }
 async function submitNewReview() {                                          // T-0005
@@ -2992,7 +3117,7 @@ let activityTimer = null;
 
 const EV_ICONS = {
   ticket_proposed: '📋', ticket_approved: '✓', ticket_rejected: '✗',
-  ticket_claimed: '⚙', ticket_closed: '✓', ticket_checked: '✓', ticket_sent_back: '↩',
+  ticket_claimed: '⚙', ticket_closed: '✓', ticket_checked: '✓', ticket_sent_back: '↩', task_done: '☑',
   review_submitted: '📝', review_approved: '✓', review_rejected: '✗',
   message_burst: '💬', user_joined: '➕', agent_run: '🤖',
 };
@@ -3023,6 +3148,7 @@ function actEventHtml(e) {
     case 'ticket_rejected':  text = `<b>${esc(e.actor || 'someone')}</b> rejected <span class="ref">${esc(e.ref)}</span> — ${esc(e.meta?.reason || '')}`; break;
     case 'ticket_claimed':   text = `<b>${esc(e.actor || 'someone')}</b> started <span class="ref">${esc(e.ref)}</span>`; break;
     case 'ticket_closed':    text = `<b>${esc(e.actor || 'someone')}</b> finished <span class="ref">${esc(e.ref)}</span>${took ? ` <span class="ref">(${took} from request to done)</span>` : ''}`; break;
+    case 'task_done':        text = `<b>${esc(e.actor || 'someone')}</b> ticked off a task: <span class="ref">${esc(e.title || '')}</span>`; break;
     case 'ticket_checked':   text = `<b>${esc(e.actor || 'someone')}</b> checked <span class="ref">${esc(e.ref)}</span>: looks good`; break;
     case 'ticket_sent_back': text = `<b>${esc(e.actor || 'someone')}</b> sent <span class="ref">${esc(e.ref)}</span> back — ${esc(e.meta?.reason || '')}${e.meta?.followup ? ` <span class="ref">(follow-up ${esc(e.meta.followup)})</span>` : ''}`; break;
     case 'review_submitted': text = `<b>${esc(e.actor)}</b> submitted review <span class="ref">${esc(e.ref)}</span> (${e.meta?.files} file${e.meta?.files === 1 ? '' : 's'}${e.meta?.ticket ? ', ' + esc(e.meta.ticket) : ''})`; break;

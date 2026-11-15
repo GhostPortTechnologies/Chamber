@@ -155,7 +155,7 @@ async function run(size) {
       check(`${size}: tapping a tile in the Files tab opens the preview and downloads nothing`, downloads === 0);
       await page.keyboard.press('Escape'); await sleep(200); await page.click('.tab[data-view="chat"]'); await sleep(200);
     });
-    for (const v of ['tickets', 'reviews', 'files', 'activity', 'code', 'chat']) await step(`${v} tab`, async () => {
+    for (const v of ['tickets', 'reviews', 'tasks', 'files', 'activity', 'code', 'chat']) await step(`${v} tab`, async () => {
       await page.click(`.tab[data-view="${v}"]`); await page.waitForSelector(`#${v}-view.active`, { state: 'visible' });
       const box = await page.locator(`#${v}-view`).boundingBox(); check(`${size}: the ${v} tab opens`, !!box && box.height > 100, JSON.stringify(box)); await sleep(250);
     });
@@ -344,6 +344,20 @@ async function run(size) {
       check(`${size}: Looks good moves the ticket to Checked and opens the next one; Send back asks for a reason, makes a follow-up that is started right away, and shows it under Sent back`, /wrong or missing/.test(need) && end.a === 'ok' && end.b === 'back'
         && /^\[agent\] Follow-up to T-\d{4}: The hours for Sunday are missing\.$/.test(end.fTitle) && end.fStatus === 'approved' && /approved/.test(end.back) && end.todo === false, JSON.stringify({ need, end }).slice(0, 400));
       await page.evaluate(() => closeCheck());
+    });
+    await step('tasks: add a weekly task due today, tick it off, it says who did it; take the tick back', async () => {   // T-0224
+      const name = `Check the backup restores (${size})`;
+      await page.click('.tab[data-view="tasks"]'); await page.waitForSelector('#tasks-view.active', { state: 'visible' });
+      await page.click('#tk-add-btn'); await page.fill('#tk-title', name); await page.selectOption('#tk-every', 'week');
+      await page.selectOption('#tk-wday', await page.evaluate(() => String(((new Date().getDay() + 6) % 7) + 1))); const pickers = { week: await page.locator('#tk-wday').isVisible(), month: await page.locator('#tk-mday').isVisible() };
+      await page.click('#tk-save'); const row = page.locator('.tk-row', { hasText: name }); await row.waitFor(); await sleep(200); const formShut = await page.locator('#tk-form').isHidden();
+      const before = { meta: await row.locator('.tk-meta').innerText(), badge: await page.evaluate(() => document.getElementById('task-badge').textContent) };
+      await row.locator('.tk-box').click(); await page.locator('.tk-row.done', { hasText: name }).waitFor();
+      const after = { meta: await page.locator('.tk-row.done', { hasText: name }).locator('.tk-meta').innerText(), checked: await page.locator('.tk-row.done', { hasText: name }).locator('.tk-box').getAttribute('aria-checked') };
+      const sw = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth })); await shot('tasks');
+      await page.locator('.tk-row.done', { hasText: name }).locator('.tk-box').click(); await page.locator('.tk-row.today', { hasText: name }).waitFor();
+      check(`${size}: a weekly task shows only the weekday picker; saved, the form closes; due today it says so and is counted on the tab; ticked off it shows who did it; the tick can be taken back; nothing is wider than the screen`,
+        /due today/.test(before.meta) && +before.badge >= 1 && /Done by/.test(after.meta) && after.checked === 'true' && sw.sw <= sw.cw + 1 && pickers.week && !pickers.month && formShut, JSON.stringify({ before, after, sw, pickers, formShut }));
     });
     await step('a scheduled message says it was scheduled', async () => {                              // T-0214
       const made = await page.evaluate(async () => {

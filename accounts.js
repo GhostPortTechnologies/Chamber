@@ -30,6 +30,7 @@ const wslock = require('./wslock'), wscrypt = require('./wscrypt'), wsfiles = re
 const LOCK_FEATURE = process.env.CHAMBER_OWNER_LOCK !== '0';                 // T-0222: offered to every owner; CHAMBER_OWNER_LOCK=0 takes the option away on a server                             // T-0219: sealed copies of the activity record, and its keep-for limits
 const fleet = require('./fleet');                                             // T-0153: GhostPort fleet link (router status, read-only)
 const { execFile, execFileSync } = require('child_process');      // T-0010: /source archive via git; T-0036: changelog
+const tasksMod = require('./tasks');                              // T-0224: the task list in export and import
 const cron = require('./cron');                                   // T-0058: schedules
 let changelogCache = { at: 0, html: '' };                           // T-0036
 const mail = require('./mail');                                   // T-0008: password-reset email (optional)
@@ -1046,7 +1047,7 @@ async function handle(req, res, url, ctx0) {
     const dir = path.join(DATA_DIR, 'ws', myWs.id); const read = n => { try { return JSON.parse(wsfiles.readText(myWs.id, path.join(dir, n))); } catch { return null; } };   // T-0222: opened if sealed
     const out = { exported_at: new Date().toISOString(), workspace: { id: myWs.id, name: myWs.name, members: members(store, myWs.id).map(a => ({ username: a.username, role: a.email === myWs.owner ? 'owner' : 'member' })) },
                   chat: ctx.withWorkspace(myWs.id, () => { const d = ctx.loadDataFull(); return { users: d.users, rooms: d.rooms, messages: d.messages }; }),   // T-0017: from SQLite
-                  tickets: read('tickets.json'), reviews: read('reviews.json'), agent_audit: read('audit.json'), agent_memory: read('memory.json'),   // T-0059
+                  tickets: read('tickets.json'), reviews: read('reviews.json'), agent_audit: read('audit.json'), agent_memory: read('memory.json'), tasks: read('tasks.json'),   // T-0059; T-0224 the task list
                   files: ctx.withWorkspace(myWs.id, () => ctx.listFiles()) };   // T-0064: metadata only; the bytes are in the backup's files/ directory
     res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="chamber-${myWs.name.replace(/[^A-Za-z0-9_-]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.json"` });
     res.end(JSON.stringify(out, null, 2)); return true;
@@ -1061,16 +1062,16 @@ async function handle(req, res, url, ctx0) {
     const dir = path.join(DATA_DIR, 'ws', myWs.id);
     const readJson = n => { try { return JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch { return null; } };
     const cur = ctx.withWorkspace(myWs.id, () => ctx.loadDataFull());
-    const curT = readJson('tickets.json'); const curR = readJson('reviews.json'); const curM = readJson('memory.json');
+    const curT = readJson('tickets.json'); const curR = readJson('reviews.json'); const curM = readJson('memory.json'); const curK = readJson('tasks.json');
     const memNotes = curM ? Object.values(curM).reduce((s, a) => s + (Array.isArray(a) ? a.length : 0), 0) : 0;   // T-0102 F3: agent memory counts, so import can't clobber it
     const curFiles = (() => { try { return fs.readdirSync(path.join(dir, 'files')).filter(f => !f.endsWith('.part')).length; } catch { return 0; } })();   // T-0102 F3: existing uploads count too
-    const nonEmpty = cur.messages.length > 0 || (curT && (curT.tickets || []).length > 0) || (curR && ((curR.reviews || curR || []).length) > 0) || memNotes > 0 || curFiles > 0;
+    const nonEmpty = cur.messages.length > 0 || (curT && (curT.tickets || []).length > 0) || (curR && ((curR.reviews || curR || []).length) > 0) || memNotes > 0 || curFiles > 0 || !!(curK && (curK.items || []).length);
     const counts = {
       users: Object.keys(exp.chat.users || {}).length, rooms: Object.keys(exp.chat.rooms || {}).length, messages: (exp.chat.messages || []).length,
       tickets: (exp.tickets && (exp.tickets.tickets || []).length) || 0,
       reviews: exp.reviews ? ((exp.reviews.reviews || exp.reviews || []).length || 0) : 0,
       memory_notes: exp.agent_memory ? Object.values(exp.agent_memory).reduce((s, a) => s + (Array.isArray(a) ? a.length : 0), 0) : 0,
-      files: (exp.files || []).length };
+      tasks: exp.tasks && Array.isArray(exp.tasks.items) ? exp.tasks.items.length : 0, files: (exp.files || []).length };
     if (b.dryRun) return ctx.json(res, 200, { dryRun: true, counts, empty: !nonEmpty, from: exp.workspace || null, exported_at: exp.exported_at || null,
       files_note: counts.files ? 'File references only — attachment bytes are not carried by the JSON export; restore the backup files/ directory to serve them.' : null,
       conflict: nonEmpty ? 'This workspace already has data. Import only into an empty workspace.' : null }), true;
@@ -1084,6 +1085,7 @@ async function handle(req, res, url, ctx0) {
       const stage = (name, val, pretty) => { if (val === undefined || val === null) return; const tmp = path.join(dir, name + '.importtmp'); fs.writeFileSync(tmp, wsfiles.encode(myWs.id, path.join(dir, name), JSON.stringify(val, null, pretty ? 2 : 0))); staged.push([tmp, path.join(dir, name)]); };   // T-0222
       stage('tickets.json', exp.tickets, true); stage('reviews.json', exp.reviews, true);
       stage('memory.json', exp.agent_memory, false); stage('audit.json', exp.agent_audit, false);
+      if (exp.tasks) stage('tasks.json', tasksMod.sanitize(exp.tasks), false);   // T-0224: only well-formed tasks
     } catch (e) { for (const [tmp] of staged) { try { fs.unlinkSync(tmp); } catch {} } return ctx.json(res, 500, { error: 'Import failed while staging data: ' + (e.message || 'unknown error') }), true; }
     let imported;
     try { imported = ctx.withWorkspace(myWs.id, () => ctx.importWorkspace(exp)); }
