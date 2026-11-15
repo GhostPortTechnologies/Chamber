@@ -1639,6 +1639,53 @@ function markPaid(...emails) {                                   // simulate a p
             /ERR .*finished by bob; someone else checks it/.test(own) && sent === 'Sent back T-0001, follow-up T-0002' && /ERR .*already checked by ann/.test(again) && st2.tickets[1].type === 'task' && st2.tickets[1].title === 'Follow-up to T-0001: Prices are missing for drinks' && st2.tickets[1].followup_of === 'T-0001' && st2.next_id === 3, JSON.stringify({ own, sent, again })); }
       } finally { srv10.kill(); try { fs.rmSync(dir10, { recursive: true, force: true }); } catch {} }
     }
+    console.log('the owner lock: encryption building blocks and the key keeper (T-0222)');
+    { const wc = require(path.join(APP, 'wscrypt.js')), cry = require('crypto'), { pipeline } = require('stream/promises'), { Readable, Writable } = require('stream'), tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-wscrypt-'));
+      try {
+        const k = wc.newKey(), k2 = wc.newKey(), secret = 'The merger closes on Friday. Tell nobody.';
+        const a = wc.encText(k, secret), b = wc.encText(k, secret), fails = fn => { try { fn(); return false; } catch (e) { return /does not open with the workspace key|not a sealed|no workspace key/.test(e.message); } };
+        const flipped = a.slice(0, -6) + (a.slice(-6, -5) === 'A' ? 'B' : 'A') + a.slice(-5);
+        check('T-0222: a short value is sealed with the workspace key: it opens to the same words, never looks the same twice, shows none of the words, and a wrong key, a changed byte or a value moved to another place all refuse to open',
+          wc.decText(k, a) === secret && a !== b && a.startsWith('enc:v1:') && wc.isEnc(a) && !wc.isEnc(secret) && !a.includes('merger') && !Buffer.from(a.slice(7), 'base64').toString('latin1').includes('merger')
+          && fails(() => wc.decText(k2, a)) && fails(() => wc.decText(k, flipped)) && wc.decText(k, wc.encText(k, secret, 'msg:1'), 'msg:1') === secret && fails(() => wc.decText(k, wc.encText(k, secret, 'msg:1'), 'msg:2'))
+          && fails(() => wc.decText(k, 'plain words')) && fails(() => wc.encText(Buffer.alloc(8), 'x')) && wc.decText(k, wc.encText(k, '')) === '' && wc.keyCheck(k) === wc.keyCheck(Buffer.from(k)) && wc.keyCheck(k) !== wc.keyCheck(k2) && !wc.keyCheck(k).includes(k.toString('hex').slice(0, 16)));
+        const state = Buffer.from(JSON.stringify({ tickets: [{ id: 'T-0001', title: 'Buy the competitor' }] })), box = wc.encBytes(k, state, 'tickets.json'), bad = Buffer.from(box); bad[bad.length - 20] ^= 1;
+        check('T-0222: a whole small file is sealed the same way and is tied to its name, so one sealed file cannot be put in the place of another',
+          wc.isEncBytes(box) && !wc.isEncBytes(state) && wc.decBytes(k, box, 'tickets.json').equals(state) && !box.includes('competitor') && fails(() => wc.decBytes(k, box, 'reviews.json')) && fails(() => wc.decBytes(k2, box, 'tickets.json')) && fails(() => wc.decBytes(k, bad, 'tickets.json')) && fails(() => wc.decBytes(k, state, 'tickets.json')));
+        const through = async (src, t) => { const out = []; await pipeline(Readable.from(src.length ? [src.subarray(0, Math.ceil(src.length / 3)), src.subarray(Math.ceil(src.length / 3))] : []), t, new Writable({ write(c, _e, cb) { out.push(c); cb(); } })); return Buffer.concat(out); };
+        const sizes = [0, 1, 65535, 65536, 65537, 200000], marker = Buffer.from('PAYROLL-2026-CONFIDENTIAL'); let streamsOk = true, noLeak = true, filesOk = true; const sealedBy = {};
+        for (const n of sizes) { const plain = Buffer.concat([marker, cry.randomBytes(n)]).subarray(0, n), sealed = await through(plain, wc.encryptStream(k)); sealedBy[n] = sealed;
+          const back = await through(sealed, wc.decryptStream(k)); if (!back.equals(plain) || !wc.isEncStream(sealed)) streamsOk = false; if (n >= marker.length && sealed.includes(marker)) noLeak = false;
+          const pf = path.join(tmp, `p${n}`), ef = path.join(tmp, `e${n}`), df = path.join(tmp, `d${n}`); fs.writeFileSync(pf, plain); wc.encryptFileSync(k, pf, ef); wc.decryptFileSync(k, ef, df);
+          const viaStream = await through(fs.readFileSync(ef), wc.decryptStream(k)), fromStream = path.join(tmp, `s${n}`); fs.writeFileSync(path.join(tmp, `x${n}`), sealed); wc.decryptFileSync(k, path.join(tmp, `x${n}`), fromStream);
+          if (!fs.readFileSync(df).equals(plain) || !viaStream.equals(plain) || !fs.readFileSync(fromStream).equals(plain) || !wc.isEncFileSync(ef) || wc.isEncFileSync(pf) || (n >= marker.length && fs.readFileSync(ef).includes(marker)) || (fs.statSync(ef).mode & 0o777) !== 0o600) filesOk = false; }
+        check('T-0222: a file of any size is sealed in pieces, as a stream and on disk, and both ways open what the other sealed: empty, one byte, exactly one piece, just over, and several pieces; the sealed form holds none of the content',
+          streamsOk && noLeak && filesOk, JSON.stringify({ streamsOk, noLeak, filesOk }));
+        const big = sealedBy[200000], H = 15 + 8, piece = i => { let off = H; for (let j = 0; j < i; j++) off += 4 + big.readUInt32BE(off); return [off, off + 4 + big.readUInt32BE(off)]; }, [p0a, p0b] = piece(0), [p1a, p1b] = piece(1), [p3a] = piece(3);
+        const refuses = async (buf, key = k) => { try { await through(buf, wc.decryptStream(key)); return false; } catch (e) { return true; } };
+        const refusesFile = (buf, name) => { const f = path.join(tmp, name); fs.writeFileSync(f, buf); try { wc.decryptFileSync(k, f, f + '.out'); return false; } catch { return !fs.existsSync(f + '.out'); } };
+        const cut = big.subarray(0, p3a), swapped = Buffer.concat([big.subarray(0, p0a), big.subarray(p1a, p1b), big.subarray(p0a, p0b), big.subarray(p1b)]), longer = Buffer.concat([big, big.subarray(p0a, p0b)]), flip = Buffer.from(big); flip[p1a + 30] ^= 1;
+        check('T-0222: a sealed file that was cut short, had two pieces swapped, had a piece added after its end or one byte changed is refused, as a stream and on disk, and nothing half-opened is left behind; the wrong key opens nothing',
+          await refuses(cut) && await refuses(swapped) && await refuses(longer) && await refuses(flip) && await refuses(big, k2) && await refuses(Buffer.from('just some words, never sealed')) && !(await refuses(big))
+          && refusesFile(cut, 'cut') && refusesFile(swapped, 'swapped') && refusesFile(longer, 'longer') && refusesFile(flip, 'flip') && refusesFile(Buffer.from('plain'), 'plain'));
+        // the key keeper: a separate small program that holds open keys in memory while the app restarts
+        const sock = path.join(tmp, 'keys.sock'), kk = spawn(process.execPath, [path.join(APP, 'keykeeper.js')], { env: { ...process.env, CHAMBER_KEYS_SOCKET: sock }, stdio: ['ignore', 'pipe', 'pipe'] }); let kkLog = ''; kk.stdout.on('data', d => kkLog += d); kk.stderr.on('data', d => kkLog += d);
+        const ask = req => new Promise((resolve, reject) => { const c = require('net').connect(sock); let buf = ''; c.setEncoding('utf8'); c.on('data', d => { buf += d; if (buf.includes('\n')) { c.end(); resolve(JSON.parse(buf.split('\n')[0])); } }); c.on('error', reject); c.write((typeof req === 'string' ? req : JSON.stringify(req)) + '\n'); setTimeout(() => reject(new Error('no answer')), 3000); });
+        for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise(r => setTimeout(r, 100));
+        try {
+          const ws = 'a1b2c3d4e5f60718', hex = k.toString('hex'), r = [await ask({ op: 'ping' }), await ask({ op: 'get', ws }), await ask({ op: 'put', ws, key: hex }), await ask({ op: 'get', ws }), await ask({ op: 'list' }), await ask({ op: 'put', ws, key: 'short' }), await ask({ op: 'get', ws: '../etc' }), await ask('not json'), await ask({ op: 'del', ws }), await ask({ op: 'get', ws })];
+          const second = require('child_process').spawnSync(process.execPath, [path.join(APP, 'keykeeper.js')], { env: { ...process.env, CHAMBER_KEYS_SOCKET: sock }, encoding: 'utf8', timeout: 8000 });
+          check('T-0222: the key keeper answers only on a socket its own account can open, keeps a key for exactly as long as it is told to, refuses what is not a key or a workspace, and a second keeper does not start beside a running one',
+            r[0].ok && r[0].open === 0 && r[1].ok && r[1].key === null && r[2].ok && r[3].key === hex && JSON.stringify(r[4].ws) === JSON.stringify([ws]) && r[5].ok === false && r[6].ok === false && r[7].ok === false && r[8].had === true && r[9].key === null
+            && (fs.statSync(sock).mode & 0o777) === 0o600 && second.status === 1 && /already running/.test(second.stderr) && !kkLog.includes(hex), JSON.stringify({ r: r.map(x => x.ok), mode: (fs.statSync(sock).mode & 0o777).toString(8), second: second.status, err: (second.stderr || '').slice(0, 80) }));
+          await ask({ op: 'put', ws, key: hex }); kk.kill('SIGTERM'); await new Promise(r => kk.on('exit', r));
+          const kk2 = spawn(process.execPath, [path.join(APP, 'keykeeper.js')], { env: { ...process.env, CHAMBER_KEYS_SOCKET: sock }, stdio: 'ignore' });
+          for (let i = 0; i < 50; i++) { try { await ask({ op: 'ping' }); break; } catch { await new Promise(r => setTimeout(r, 100)); } }
+          const after = await ask({ op: 'get', ws }); kk2.kill('SIGTERM');
+          check('T-0222: when the key keeper stops, the keys it held are gone: nothing was written anywhere, and a new keeper starts empty', after.ok && after.key === null && !fs.readdirSync(tmp).some(f => { try { return fs.readFileSync(path.join(tmp, f)).includes(hex); } catch { return false; } }), JSON.stringify(after));
+        } finally { try { kk.kill('SIGKILL'); } catch {} }
+      } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} }
+    }
     console.log('review that talks back (T-0189)');
     { const port8 = await freePort(), B8 = `http://127.0.0.1:${port8}`; const dir8 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-review-'));
       const env8 = { ...env, CHAMBER_PUBLIC_URL: B8, CHAMBER_PORT: String(port8), CHAMBER_DATA: path.join(dir8, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir8, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir8, 'tickets.json') };
