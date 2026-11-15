@@ -1584,6 +1584,36 @@ function markPaid(...emails) {                                   // simulate a p
           fs.rmSync(d2, { recursive: true, force: true }); }
       } finally { srv9.kill(); try { fs.rmSync(dir9, { recursive: true, force: true }); } catch {} }
     }
+    console.log('run it yourself: the download page and the Linux installer (T-0226)');
+    { const sh = await fetch(BASE + '/self-host.sh'), ps = await fetch(BASE + '/self-host.ps1'), dl = await fetch(BASE + '/download');
+      const shT = await sh.text(), psT = await ps.text(), dlT = await dl.text();
+      check('T-0226: the download page and both installers are served, the installers as plain text', sh.status === 200 && /^text\/plain/.test(sh.headers.get('content-type') || '') && /CHAMBER_SELF_HOSTED=1/.test(shT)
+        && ps.status === 200 && /^text\/plain/.test(ps.headers.get('content-type') || '') && /winget install OpenJS\.NodeJS\.LTS/.test(psT) && /CHAMBER_SELF_HOSTED=1/.test(psT) && dl.status === 200 && dlT.includes('self-host.sh | bash') && dlT.includes('self-host.ps1 | iex'),
+        JSON.stringify({ sh: sh.status, ps: ps.status, dl: dl.status }));
+      const { spawnSync } = require('child_process'), dirS = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-selfhost-')), portS = await freePort(), BS = `http://127.0.0.1:${portS}`;
+      const install = () => spawnSync('bash', [path.join(APP, 'public', 'self-host.sh'), '--from', BASE, '--dir', path.join(dirS, 'chamber'), '--port', String(portS)], { encoding: 'utf8', timeout: 120000, env: { PATH: process.env.PATH, HOME: dirS } });
+      const J1 = (m, p, tok, body) => fetch(BS + p, { method: m, headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: `Bearer ${tok}` } : {}) }, body: body ? JSON.stringify(body) : undefined }).then(async r => ({ status: r.status, json: await r.json().catch(() => null) })).catch(e => ({ status: 0, json: { error: e.message } }));
+      const J = async (...a) => { let r; for (let i = 0; i < 3; i++) { r = await J1(...a); if (r.status) return r; await new Promise(z => setTimeout(z, 300)); } return r; };   // a kept-alive connection to the copy that was replaced fails once
+      let pidS = 0;
+      try {
+        const bad = spawnSync('bash', [path.join(APP, 'public', 'self-host.sh'), '--from', 'http://example.com', '--dir', path.join(dirS, 'x'), '--no-start'], { encoding: 'utf8', timeout: 20000, env: { PATH: process.env.PATH, HOME: dirS } });
+        check('T-0226: the Linux installer refuses to download the code over plain http from another machine', bad.status !== 0 && /only downloaded over https/.test(bad.stderr) && !fs.existsSync(path.join(dirS, 'x', 'app')), bad.stderr);
+        const run = install(), h = (await J('GET', '/api/health')).json || {}, cfg = fs.existsSync(path.join(dirS, 'chamber', 'chamber.env')) ? fs.readFileSync(path.join(dirS, 'chamber', 'chamber.env'), 'utf8') : '';
+        pidS = parseInt(fs.readFileSync(path.join(dirS, 'chamber', 'chamber.pid'), 'utf8'), 10) || 0;
+        const su = await J('POST', '/account/signup', null, { email: 'me@test.invalid', username: 'me', password: 'password-for-tests' }), tok = su.json?.token;
+        const msg = await J('POST', '/api/messages', tok, { text: 'hello from my own Chamber' }), tk = await J('POST', '/api/tickets', tok, { by: 'me', title: 'First job on my own Chamber', body: 'Please do it, and say what you did.' });
+        check('T-0226: the Linux installer downloads this Chamber, starts its own copy on this computer only, and its first account can chat and file a ticket',
+          run.status === 0 && h.ok === true && /Chamber is running\. Open http:\/\/localhost:\d+/.test(run.stdout) && /^CHAMBER_HOST=127\.0\.0\.1$/m.test(cfg) && /^CHAMBER_SELF_HOSTED=1$/m.test(cfg) && pidS > 0 && !!tok && [200, 201].includes(msg.status) && [200, 201].includes(tk.status),
+          JSON.stringify({ code: run.status, out: run.stdout.slice(-300), err: run.stderr.slice(-300), h, su: su.status, msg: msg.status, tk: tk.status }));
+        const run2 = install(), pid2 = parseInt(fs.readFileSync(path.join(dirS, 'chamber', 'chamber.pid'), 'utf8'), 10) || 0;
+        let oldGone = false; try { process.kill(pidS, 0); } catch { oldGone = true; }
+        const li = await J('POST', '/account/login', null, { email: 'me@test.invalid', password: 'password-for-tests' }), ms = await J('GET', '/api/messages?room=general', li.json?.token);
+        check('T-0226: running it again updates in place: the old copy is stopped, the new one starts, settings are kept, and the account and its messages are still there',
+          run2.status === 0 && /Keeping your settings/.test(run2.stdout) && pid2 > 0 && pid2 !== pidS && oldGone && fs.existsSync(path.join(dirS, 'chamber', 'app.old')) && (ms.json?.messages || []).some(m => m.text === 'hello from my own Chamber'),
+          JSON.stringify({ code: run2.status, err: run2.stderr.slice(-300), pid2, oldGone, login: li.status, n: (ms.json?.messages || []).length }));
+        pidS = pid2;
+      } finally { try { if (pidS) process.kill(pidS); } catch {} await new Promise(r => setTimeout(r, 300)); try { fs.rmSync(dirS, { recursive: true, force: true }); } catch {} }
+    }
     console.log('tasks: a checklist that resets itself (T-0224)');
     { const k = require(path.join(APP, 'tasks.js')), T = s => Date.parse(s), wed = T('2026-11-18T12:00:00Z'), mk = (every, day, tz = 'UTC') => ({ id: 'aaaaaaaa', title: 'x', every, day, tz, done: [] });
       check('T-0224: periods: ISO weeks across the new year, a day in the task\'s own time zone, and the period before each kind',

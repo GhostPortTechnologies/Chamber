@@ -9,6 +9,19 @@ Chamber is AGPL-3.0 free software. You can run the exact code behind chamber.gho
 
 The hosted product is the second mode with Stripe billing instead of `CHAMBER_SELF_HOSTED`.
 
+## One command, no Docker (Linux, Windows)
+
+For one computer: the installer downloads the version that runs on chamber.ghostporttechnologies.com (its `/source`), needs Node.js 22.13+, no root or administrator, and starts Chamber on `http://localhost:4242` for that computer only. Run it again to update; data and settings stay.
+
+```bash
+curl -fsSL https://chamber.ghostporttechnologies.com/self-host.sh | bash                 # Linux: ~/chamber; options --dir --port --service --no-start
+```
+```powershell
+irm https://chamber.ghostporttechnologies.com/self-host.ps1 | iex                         # Windows: %LOCALAPPDATA%\Chamber, start-chamber.cmd
+```
+
+To use it from other devices, put HTTPS in front of it (Caddy, below) and set `CHAMBER_PUBLIC_URL` and `CHAMBER_SECURE_COOKIE=1`.
+
 ## One-liner (Docker)
 
 ```bash

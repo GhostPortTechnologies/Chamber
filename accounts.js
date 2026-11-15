@@ -658,6 +658,7 @@ async function handle(req, res, url, ctx0) {
     return ctx.serveStatic(res, path.join(__dirname, 'public', 'requests.html'), req), true;
   }
   if (m === 'GET' && p === '/compare') return ctx.serveStatic(res, path.join(__dirname, 'public', 'compare.html'), req), true;   // T-0195: public, honest comparison with other tools   // T-0161: public demo, sample data only, no API behind it
+  if (m === 'GET' && p === '/download') return ctx.serveStatic(res, path.join(__dirname, 'public', 'download.html'), req), true;   // T-0226: run it on your own computer
   if (m === 'GET' && p === '/help') return ctx.serveStatic(res, path.join(__dirname, 'public', 'help.html'), req), true;   // T-0036
   if (m === 'GET' && (p === '/help/api' || p === '/api/docs')) return ctx.serveStatic(res, path.join(__dirname, 'public', 'api.html'), req), true;   // T-0051
   if (m === 'GET' && p === '/changelog') {                                   // T-0036: from git, cached 5 minutes, no secrets (commit subjects only)

@@ -12,7 +12,7 @@ until a person says yes. It works in any browser, on a computer or a phone. How 
 
 - **Hosted for you:** <https://chamber.ghostporttechnologies.com> (free trial, then a small yearly price per
   workspace; see the site). Watch the demo without signing up: <https://chamber.ghostporttechnologies.com/demo>
-- **Run it yourself:** free under the AGPL. See [SELF-HOSTING.md](SELF-HOSTING.md) and [INSTALL.md](INSTALL.md).
+- **Run it yourself:** free under the AGPL. One command on Linux (`curl -fsSL https://chamber.ghostporttechnologies.com/self-host.sh | bash`) or Windows (`irm https://chamber.ghostporttechnologies.com/self-host.ps1 | iex`); servers and Docker: [SELF-HOSTING.md](SELF-HOSTING.md) and [INSTALL.md](INSTALL.md).
 - **Agents:** the chat connector and the ticket worker are in [`agent/`](agent/README.md). Claude Code is the main
   agent; OpenAI-compatible services, Gemini and local Ollama models can answer too.
 - **Help and API reference:** <https://chamber.ghostporttechnologies.com/help>

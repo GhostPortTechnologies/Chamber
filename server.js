@@ -377,7 +377,8 @@ function runTicketsCLI(args) {
     }
     const ws = curWs(), dk = wslock.key(ws), store = F().tickets;
     const env = { ...process.env, CHAMBER_TICKETS_FILE: store, ...(dk ? { CHAMBER_WS_KEY: dk.toString('hex'), CHAMBER_WS_AAD: wsfiles.aadOf(ws, store), CHAMBER_WS_SEAL: wsfiles.sealing(ws) ? '1' : '0' } : {}) };   // [new] the CLI writes the current workspace's store; T-0222: with the key while the owner lock is on
-    execFile(TICKETS_CLI, args, { timeout: 5000, env }, (err, stdout, stderr) => {
+    const viaNode = /\.[cm]?js$/i.test(TICKETS_CLI);                          // T-0226: run the .js through node, so Windows works too
+    execFile(viaNode ? process.execPath : TICKETS_CLI, viaNode ? [TICKETS_CLI, ...args] : args, { timeout: 5000, env }, (err, stdout, stderr) => {
       if (!err) notify('tickets');                                              // [new] T-0016
       resolve({ ok: !err, stdout: (stdout || '').trim(), stderr: (stderr || '').trim() });
     });

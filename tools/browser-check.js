@@ -27,7 +27,7 @@ const PUBLIC = [   // [path, text that must be on screen, selectors that must be
   ['/signup', /Create account/i, ['#su-email', '#su-user', '#su-pass', 'button[type=submit]:visible']],
   ['/forgot', /./, ['input:visible']],
   ['/demo', /./, ['#play']],
-  ['/help', /./, []], ['/help/api', /./, []], ['/compare', /Chamber compared/i, []], ['/terms', /Free trial/, []], ['/privacy', /./, []], ['/refunds', /Free trial/, []],
+  ['/help', /./, []], ['/help/api', /./, []], ['/compare', /Chamber compared/i, []], ['/download', /Run Chamber on your own computer/i, ['h1', 'pre.cmd']], ['/terms', /Free trial/, []], ['/privacy', /./, []], ['/refunds', /Free trial/, []],
 ];
 
 async function run(size) {
