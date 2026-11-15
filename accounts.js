@@ -61,6 +61,13 @@ const CONTACT_PER_HOUR = parseInt(process.env.CHAMBER_CONTACT_PER_HOUR, 10) || 3
 const TRIAL_DAYS = SELF_HOSTED ? 0 : Math.max(0, parseInt(process.env.CHAMBER_TRIAL_DAYS, 10) || 0), TRIAL_MS = TRIAL_DAYS * 86400e3, TRIAL_TOKENS = 2;
 const TRIAL_SIGNUPS_PER_IP_DAY = parseInt(process.env.CHAMBER_TRIAL_SIGNUPS_PER_IP_DAY, 10) || 3; const trialSignups = new Map();
 const TRIAL_ON = () => TRIAL_DAYS > 0 && VERIFY_REQUIRED();
+// T-0225: the free plan (decided on T-0196, 15 Nov 2026). Free for one person, the owner, with no time limit and up to
+// FREE_TOKENS agents, but without inviting anyone and without cloud storage (no files). A workspace is on it when its owner has no
+// subscription: after the free trial, after a cancelled subscription has run out, or having never subscribed (a confirmed email is
+// needed, as for the trial). People already in such a workspace keep read access and export but cannot post; nothing is deleted.
+// A failed payment still goes grace, then read-only, as before. CHAMBER_FREE_PLAN=0 brings back the old behaviour (read-only).
+const FREE_ON = () => !SELF_HOSTED && process.env.CHAMBER_FREE_PLAN !== '0';
+const FREE_TOKENS = TRIAL_TOKENS;
 const onTrialClock = acct => !!acct && !acct.subStatus && !!acct.trialEndsAt;      // started on a trial and has never subscribed
 // T-0175: one email 3 days before a trial ends and one when it ends. T-0176: a trial sign-up whose email was never confirmed is
 // removed after CHAMBER_UNCONFIRMED_DAYS (7). Both run from trialHousekeeping(), called hourly by server.js maintenance.
@@ -122,7 +129,8 @@ function createAgentToken(store, ctx, ws, by, name, username) {
   if (!USER_RE.test(username)) return { error: 'Agent username: 2 to 24 letters, numbers, - or _.' };
   if (RESERVED_NAMES.has(username.toLowerCase())) return { error: 'That username is taken.', code: 409 };
   if (store.usernames[username.toLowerCase()]) return { error: 'That username is taken.', code: 409 };
-  if (billingState(store.accounts[ws.owner]) === 'trial' && Object.keys(ws.tokens || {}).length >= TRIAL_TOKENS) return { error: `The free trial includes ${TRIAL_TOKENS} agents. Subscribe on the Account page to add more.`, code: 403 };   // T-0159
+  { const st = billingState(store.accounts[ws.owner]);                                                                         // T-0159; T-0225 the free plan too
+    if (['trial', 'free'].includes(st) && Object.keys(ws.tokens || {}).length >= TRIAL_TOKENS) return { error: `The free ${st === 'free' ? 'plan' : 'trial'} includes ${TRIAL_TOKENS} agents. Subscribe on the Account page to add more.`, code: 403 }; }
   if (Object.keys(ws.tokens || {}).length >= 20) return { error: 'Limit of 20 agent tokens per workspace.' };
   const id = crypto.randomBytes(4).toString('hex'), secret = crypto.randomBytes(24).toString('base64url');
   (ws.tokens ||= {})[id] = { id, name, username, hash: sha(secret), createdAt: Date.now(), createdBy: by.email };
@@ -411,9 +419,9 @@ function billingState(acct) {
     const since = acct.paymentFailedAt || (acct.periodEnd ? acct.periodEnd * 1000 : Date.now());
     return Date.now() - since < GRACE_MS ? 'grace' : 'readonly';
   }
-  if (s === 'paused' || s === 'incomplete' || s === 'incomplete_expired') return 'none';
-  if (onTrialClock(acct)) return !verified(acct) ? 'none' : Date.now() < acct.trialEndsAt ? 'trial' : 'readonly';   // T-0159: trial needs a confirmed email; afterwards read-only, nothing deleted
-  return acct.periodEnd && acct.periodEnd * 1000 > Date.now() ? 'ok' : 'none';   // cancelled: good until the paid period ends
+  if (s === 'paused' || s === 'incomplete' || s === 'incomplete_expired') return FREE_ON() && verified(acct) ? 'free' : 'none';   // T-0225
+  if (onTrialClock(acct)) return !verified(acct) ? 'none' : Date.now() < acct.trialEndsAt ? 'trial' : FREE_ON() ? 'free' : 'readonly';   // T-0159: trial needs a confirmed email; T-0225: afterwards the free plan (read-only without it), nothing deleted
+  return acct.periodEnd && acct.periodEnd * 1000 > Date.now() ? 'ok' : FREE_ON() && verified(acct) ? 'free' : 'none';   // cancelled: good until the paid period ends; T-0225: then free
 }
 function graceEndsAt(acct) { const since = acct?.paymentFailedAt || (acct?.periodEnd ? acct.periodEnd * 1000 : null); return since ? since + GRACE_MS : null; }
 function subscribed(acct) { return billingState(acct) !== 'none'; }
@@ -424,7 +432,8 @@ function payerOf(acct, store) {                                   // whose card 
 function accessOf(acct, store) {                                   // 'full' | 'readonly' | 'none'
   if (!acct) return 'none';
   if (acct.role === 'admin') return 'full';
-  const st = billingState(payerOf(acct, store));
+  const payer = payerOf(acct, store), st = billingState(payer);
+  if (st === 'free') return payer && payer.email === acct.email ? 'full' : 'readonly';   // T-0225: the free plan is for the owner alone; the rest may read
   return st === 'none' ? 'none' : st === 'readonly' ? 'readonly' : 'full';
 }
 function entitled(acct, store) { return accessOf(acct, store) !== 'none'; }
@@ -433,7 +442,7 @@ function billingView(acct, store) {                                // what /api/
   const payer = payerOf(acct, store);
   return { state: acct.role === 'admin' ? 'ok' : billingState(payer), access: accessOf(acct, store), graceEndsAt: billingState(payer) === 'grace' ? graceEndsAt(payer) : null,
            payer: payer ? payer.username : null, isPayer: !!payer && payer.email === acct.email,
-           trial: billingState(payer) === 'trial', trialEndsAt: onTrialClock(payer) ? payer.trialEndsAt : null, trialOver: onTrialClock(payer) && billingState(payer) === 'readonly',   // T-0159
+           trial: billingState(payer) === 'trial', trialEndsAt: onTrialClock(payer) ? payer.trialEndsAt : null, trialOver: onTrialClock(payer) && ['readonly', 'free'].includes(billingState(payer)), free: billingState(payer) === 'free',   // T-0159; T-0225
            trialPending: onTrialClock(payer) && !verified(payer) && Date.now() < payer.trialEndsAt };
 }
 // Storage add-on: packs count only while the payer's subscription is good (ok or grace). Nothing is deleted when they stop
@@ -727,7 +736,7 @@ async function handle(req, res, url, ctx0) {
 
   // Public bits the sign-up form needs
   if (p === '/account/config' && m === 'GET') {
-    return ctx.json(res, 200, { inviteRequired: !!INVITE_CODE && !TRIAL_ON(), trialDays: TRIAL_ON() ? TRIAL_DAYS : 0, price: PRICE_LABEL, resetByEmail: mail.enabled, storage: STORAGE_ON() ? { packGb: STORAGE_PACK_GB, label: STORAGE_LABEL, baseMb: STORAGE_BASE_MB } : null }), true;
+    return ctx.json(res, 200, { inviteRequired: !!INVITE_CODE && !TRIAL_ON(), trialDays: TRIAL_ON() ? TRIAL_DAYS : 0, price: PRICE_LABEL, resetByEmail: mail.enabled, freePlan: FREE_ON() ? { tokens: FREE_TOKENS } : null, storage: STORAGE_ON() ? { packGb: STORAGE_PACK_GB, label: STORAGE_LABEL, baseMb: STORAGE_BASE_MB } : null }), true;
   }
   // T-0162: public contact form. Anyone may write; nothing here is trusted. Plain text only, strict sizes, 3 per address per
   // hour and 200 a day in total, a hidden field that only bots fill, stored in contact.jsonl beside accounts.json (owner-only
@@ -777,6 +786,7 @@ async function handle(req, res, url, ctx0) {
     const password = String(b?.password || '');
     const joined = b?.join ? findInvite(store, String(b.join)) : null, joinWs = joined ? joined.ws : null, joinRole = joined ? joined.role : 'member';   // T-0199: the link decides the role
     if (b?.join && !joinWs) return ctx.json(res, 400, { error: 'This invite link is not valid any more.' }), true;
+    if (joinWs && billingState(store.accounts[joinWs.owner]) === 'free') return ctx.json(res, 403, { error: 'This workspace is on Chamber\'s free plan, which is for one person. Ask its owner to subscribe, then open the invite link again.', plan: 'free' }), true;   // T-0225
     if (joinWs && joinRole === 'member' && fullMembers(store, joinWs.id).length >= MAX_MEMBERS) return ctx.json(res, 403, { error: `This workspace is full (${MAX_MEMBERS} members). Ask the owner to free a seat.` }), true;   // T-0033
     if (joinWs && joinRole !== 'member' && guestMembers(store, joinWs.id).length >= MAX_GUESTS) return ctx.json(res, 403, { error: `This workspace has no free places for viewers and requesters (${MAX_GUESTS}). Ask the owner.` }), true;   // T-0199
     const trialSignup = !joinWs && TRIAL_ON();                                             // T-0159: a new workspace on the free trial
@@ -1171,7 +1181,7 @@ async function handle(req, res, url, ctx0) {
       let seen = {}; try { seen = ctx.withWorkspace(myWs.id, () => ctx.loadData().users) || {}; } catch (e) { if (!e.locked) throw e; }   // T-0222: not known while locked                                   // T-0034: last activity per member
       const roleOf = (a) => wsRoleOf(a, myWs);                                                                   // T-0199
       return ctx.json(res, 200, {
-        id: myWs.id, name: myWs.name, role: roleOf(me), canManage: amAdmin, owner: store.accounts[myWs.owner]?.username || null,
+        id: myWs.id, name: myWs.name, role: roleOf(me), canManage: amAdmin, owner: store.accounts[myWs.owner]?.username || null, plan: billingState(store.accounts[myWs.owner]) === 'free' ? 'free' : 'team',   // T-0225
         members: members(store, myWs.id).map(a => ({ username: a.username, role: roleOf(a), email: amAdmin ? a.email : undefined, chatRole: a.chatRole || 'human',
                                                       lastSeen: seen[a.username]?.lastSeen || null, joinedAt: a.createdAt || null })),
         inviteUrl: amAdmin ? `${PUBLIC_URL}/join/${myWs.invite}` : null,
@@ -1752,9 +1762,10 @@ function trialHousekeeping(ctx, now = Date.now()) {
                : (left <= TRIAL_SOON_MS && !sent.soon && a.trialEndsAt - (a.createdAt || 0) > TRIAL_SOON_MS ? 'soon' : null);
     if (!kind) continue;
     a.trialMail = { ...sent, [kind]: now }; out.reminded.push({ username: a.username, kind });
-    const keep = `Nothing is deleted. Your workspace ${kind === 'over' ? 'is now' : 'then becomes'} read-only: you can still open it and read everything, but you and your AI agents cannot post or change anything until you subscribe.`;
+    const keep = FREE_ON() ? `Nothing is deleted. Your workspace ${kind === 'over' ? 'is now' : 'then moves'} on Chamber's free plan: it stays yours to use for free, for you alone and up to ${FREE_TOKENS} AI agents, without inviting others and without storing files. Anyone you invited can still read it but not post.`   // T-0225
+      : `Nothing is deleted. Your workspace ${kind === 'over' ? 'is now' : 'then becomes'} read-only: you can still open it and read everything, but you and your AI agents cannot post or change anything until you subscribe.`;
     sends.push({ to: a.email, subject: kind === 'over' ? 'Chamber: your free trial has ended' : `Chamber: your free trial ends on ${day(a.trialEndsAt)}`,
-      text: `Hi ${a.username},\n\n${kind === 'over' ? 'Your Chamber free trial has ended.' : `Your Chamber free trial ends on ${day(a.trialEndsAt)}.`}\n\n${keep}\n\nTo keep going, subscribe (${PRICE_LABEL}, refundable for 14 days):\n\n${PUBLIC_URL}/billing\n\nIf Chamber was not for you, you do not need to do anything, and nothing will be charged. Questions? Reply to this email.\n` });
+      text: `Hi ${a.username},\n\n${kind === 'over' ? 'Your Chamber free trial has ended.' : `Your Chamber free trial ends on ${day(a.trialEndsAt)}.`}\n\n${keep}\n\n${FREE_ON() ? 'To keep your team and your files' : 'To keep going'}, subscribe (${PRICE_LABEL}, refundable for 14 days):\n\n${PUBLIC_URL}/billing\n\nIf Chamber was not for you, you do not need to do anything, and nothing will be charged. Questions? Reply to this email.\n` });
   }
   if (out.reminded.length || out.removed.length) save(store);
   for (const s of sends) { if (TEST_HOOKS) console.log(`[accounts] trial mail to ${s.to}: ${s.subject}`);

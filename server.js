@@ -514,7 +514,7 @@ function autoReviewForTicket(t, applied) {
 const MAX_TEXT = 20000;                                                     // [changed] was 2000 (T-0014)
 const MAX_FILE_MB = parseInt(process.env.CHAMBER_MAX_FILE_MB, 10) || 10;      // [new] T-0064: one upload
 const TRIAL_FILES_MB = parseInt(process.env.CHAMBER_TRIAL_FILES_MB, 10) || 50;      // T-0159: file allowance while a workspace is on the free trial
-const quotaMbFor = sess => (accounts.enabled && accounts.billingFor(sess)?.trial) ? Math.min(FILES_QUOTA_MB, TRIAL_FILES_MB) : FILES_QUOTA_MB + (accounts.enabled ? accounts.storageExtraMbFor(sess) : 0);   // + storage add-on packs
+const quotaMbFor = sess => (accounts.enabled && accounts.billingFor(sess)?.free) ? 0 : (accounts.enabled && accounts.billingFor(sess)?.trial) ? Math.min(FILES_QUOTA_MB, TRIAL_FILES_MB) : FILES_QUOTA_MB + (accounts.enabled ? accounts.storageExtraMbFor(sess) : 0);   // + storage add-on packs
 const storageHint = () => (accounts.enabled && accounts.storageOffered()) ? ' The workspace owner can also add storage on the Account page.' : '';
 const FILES_QUOTA_MB = parseInt(process.env.CHAMBER_FILES_QUOTA_MB, 10) || 500;   // [new] T-0064: per workspace
 const MAX_ATTACH = 5;                                                       // [new] T-0064: files per message
@@ -1730,7 +1730,7 @@ async function handleRequest(req, res, sess) {                              // [
     if (gr === 'viewer' && method !== 'GET' && !/^\/api\/(ping|me\/prefs|tickets\/[A-Za-z0-9-]+\/(approve|reject|changes|check)|tickets\/check-all|standing|standing\/S-\d{1,5}\/(withdraw|confirm)|asks\/A-\d{1,6}\/answer)$/.test(url.pathname)) return json(res, 403, { error: 'You are a viewer in this workspace: you can read, not change anything.' });
   }
   if (url.pathname.startsWith('/api/') && accounts.enabled && method !== 'GET' && url.pathname !== '/api/ping' && accounts.sessionReadOnly(sess)) {   // [new] T-0028
-    return json(res, 402, { error: accounts.billingFor(sess)?.trialOver ? 'The free trial has ended. This workspace is read-only until its owner subscribes. Nothing was deleted.' : 'This workspace is read-only until its billing is fixed.', billing: 'readonly' });
+    return json(res, 402, { error: accounts.billingFor(sess)?.free ? `This workspace is on Chamber's free plan, which is for one person, ${accounts.billingFor(sess)?.payer || 'its owner'}. You can still read and export everything; ask them to subscribe so you can post here again.` : accounts.billingFor(sess)?.trialOver ? 'The free trial has ended. This workspace is read-only until its owner subscribes. Nothing was deleted.' : 'This workspace is read-only until its billing is fixed.', billing: 'readonly' });
   }
   if (url.pathname.startsWith('/api/') && method !== 'GET' && url.pathname !== '/api/ping' && url.pathname !== '/api/login' && sess) {   // [new] T-0033
     const r = writeLimiter.hit(`${reqScope.getStore()?.ws || '_'}:${sess.username}`);
@@ -2106,6 +2106,7 @@ echo "${MARK}$__rc|$PWD"`;
     const folder = forRequest ? null : cleanFolder(url.searchParams.get('folder') ?? req.headers['x-chamber-folder']);   // T-0149: upload straight into a folder
     if (folder === false) { req.resume(); return json(res, 400, { error: FOLDER_RULE }); }
     const used = store.filesBytes(F().data);
+    if (accounts.enabled && accounts.billingFor(sess)?.free) { req.resume(); return json(res, 402, { error: 'Files are part of the paid plan: the free plan has no cloud storage. Paste the text into a message instead, or subscribe on the Account page.', plan: 'free' }); }   // T-0225
     const quotaMb = quotaMbFor(sess);                                                   // T-0159: smaller while on the free trial
     if (forRequest && used.b + declared > quotaMb * 1048576) { req.resume(); return json(res, 413, { error: 'The team\'s file space is full, so this file cannot be added. Send the request without it and tell the team.', quota: true }); }
     if (used.b + declared > quotaMb * 1048576) { req.resume(); return json(res, 413, { error: `This workspace has used ${(used.b / 1048576).toFixed(0)} of its ${quotaMb} MB for files. Delete some messages with files first${quotaMb < FILES_QUOTA_MB ? ', or subscribe for ' + FILES_QUOTA_MB + ' MB' : ''}.${quotaMb < FILES_QUOTA_MB ? '' : storageHint()}`, quota: true }); }

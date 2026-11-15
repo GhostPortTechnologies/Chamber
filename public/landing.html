@@ -250,6 +250,7 @@
     <div class="price">
       <div class="amt">$49 <small>/ year</small></div>
       <div class="dim" id="pr-trial" hidden>Free for the first <span id="pr-days">14</span> days. No card needed to start.</div>
+      <div class="dim" id="pr-free" hidden><b>Or free for one person</b>, with no time limit: you and up to 2 AI agents, with chat, tickets, reviews and tasks, but no inviting others and no file storage.</div>
       <div class="dim">One plan, one price for the whole workspace: up to 25 people and their agents. Cancel any time from your account.</div>
       <ul>
         <li><b>What you pay for:</b> we host it, back it up every day, test that the backups restore, and keep it updated</li>
@@ -576,19 +577,21 @@
     const st = $('bi-status'), act = $('bi-actions');
     const status = me.selfHosted ? 'Self-hosted: no subscription needed'
       : me.role === 'admin' ? 'Admin (no subscription needed)'
+      : me.billing?.free ? (me.billing.trialOver ? 'Free plan (the free trial has ended)' : 'Free plan')                            // T-0225
       : me.billing?.trialPending ? 'Free trial: confirm your email to start'
       : me.billing?.trial ? `Free trial, ${Math.max(0, Math.ceil((me.billing.trialEndsAt - Date.now()) / 86400e3))} days left`
       : me.billing?.trialOver ? 'Free trial ended'
       : me.entitled ? (me.cancelAtPeriodEnd ? 'Active, cancels ' + fmtDate(me.periodEnd) : 'Active, renews ' + fmtDate(me.periodEnd))
       : me.subStatus === 'past_due' ? 'Payment failed, update your card'
       : me.subStatus ? 'Expired' : 'No subscription yet';
-    const tb = me.billing || {}, trialish = (tb.trial || tb.trialOver) && !done;      // T-0159
+    const tb = me.billing || {}, trialish = (tb.trial || tb.trialOver || tb.free) && !done;      // T-0159; T-0225 the free plan
     $('bi-sub').textContent = tb.trialPending ? 'Open the link we emailed you to start your free trial.'
-      : tb.trial ? 'You are on the free trial. Subscribe any time to keep working here after it ends.'
+      : tb.free ? (tb.isPayer ? 'Free for you alone, with up to 2 AI agents. Subscribe to invite your team and to store files. Nothing was deleted.' : `This workspace is on the free plan, which is for its owner alone. You can read and export; ask ${tb.payer || 'the owner'} to subscribe so you can post again.`)
+      : tb.trial ? 'You are on the free trial. Subscribe any time to keep your team and your files after it ends; on its own it moves to the free plan, for you alone.'
       : tb.trialOver ? 'Your free trial has ended. Your workspace is read-only until you subscribe. Nothing was deleted.'
       : me.entitled ? 'You have access to Chamber.' : (done ? 'Thanks! Confirming your payment…' : 'Subscribe to enter Chamber.');
     st.innerHTML = `<dt>Username</dt><dd>${esc(me.username)}</dd><dt>Email</dt><dd>${esc(me.email)}</dd>
-      <dt>Plan</dt><dd>${esc(me.price)}</dd><dt>Status</dt><dd><span class="pill ${me.entitled ? 'on' : 'off'}">${esc(status)}</span></dd>`;
+      <dt>Plan</dt><dd>${esc(tb.free ? 'Free, for one person' : me.price)}</dd><dt>Status</dt><dd><span class="pill ${me.entitled ? 'on' : 'off'}">${esc(status)}</span></dd>`;
     act.innerHTML = '';
     const vq = new URLSearchParams(location.search).get('verified');                      // T-0032
     if (vq === '1') act.insertAdjacentHTML('beforeend', '<p class="msg ok">Email confirmed. Thanks!</p>');
@@ -675,9 +678,10 @@
     const owner = w.role === 'owner'; const canManage = !!w.canManage;                         // T-0034
     if (owner) { $('exp-btn').hidden = false; $('exp-sub').textContent = 'Download everything in your workspace as one JSON file. Deleting your account deletes the workspace, cancels the subscription, and gives each member an empty workspace of their own.'; $('imp-wrap').hidden = false; wireImport(); }
     else $('exp-sub').textContent = 'Deleting your account removes you from this workspace. The workspace and its content belong to its owner.';
-    $('ws-sub').textContent = owner ? 'You own this workspace. Invite teammates with the link below; they share your subscription.' : `Owned by ${w.owner}. Everything here is private to this workspace.`;
+    $('ws-sub').textContent = owner && w.plan === 'free' ? 'You own this workspace. It is on the free plan, which is for you alone.' : owner ? 'You own this workspace. Invite teammates with the link below; they share your subscription.' : `Owned by ${w.owner}. Everything here is private to this workspace.`;
     $('ws-status').innerHTML = `<dt>Name</dt><dd>${esc(w.name)}${canManage ? ' <a href="#" id="ws-rename">rename</a>' : ''}</dd><dt>Members</dt><dd>${w.seats ? `${w.seats.full} of ${w.seats.maxFull} seats` + (w.seats.guests ? `, plus ${w.seats.guests} viewer${w.seats.guests === 1 ? '' : 's'} or requester${w.seats.guests === 1 ? '' : 's'}` : '') : w.members.length}</dd>`
-      + (canManage ? `<dt>Invite link</dt><dd class="wrap-any"><code id="ws-invite">${esc(w.inviteUrl)}</code><div class="inline-form"><button class="btn ghost sm" id="ws-copy">Copy</button><button class="btn ghost sm" id="ws-reset">New link</button></div></dd>`
+      + (canManage && w.plan === 'free' ? `<dt>Invite link</dt><dd>Inviting people is part of the paid plan: on the free plan this workspace is for you alone. <a href="/billing">Subscribe</a> to invite your team.</dd>`   // T-0225
+        : canManage ? `<dt>Invite link</dt><dd class="wrap-any"><code id="ws-invite">${esc(w.inviteUrl)}</code><div class="inline-form"><button class="btn ghost sm" id="ws-copy">Copy</button><button class="btn ghost sm" id="ws-reset">New link</button></div></dd>`
         + `<dt>Managers and clients</dt><dd>${['viewer', 'requester'].map(r => `<div class="guest-inv"><b>${r === 'viewer' ? 'Viewer link' : 'Requester link'}</b> <span class="meta">${r === 'viewer' ? 'reads everything; approves only if you name them in the approval rules' : 'sends requests and follows only their own'}</span>`
           + (w.inviteUrls?.[r] ? `<div class="wrap-any"><code>${esc(w.inviteUrls[r])}</code></div><div class="inline-form"><button class="btn ghost sm" data-gcopy="${r}">Copy</button><button class="btn ghost sm" data-gnew="${r}">New link</button><button class="btn ghost sm" data-goff="${r}">Turn off</button></div>` : `<div class="inline-form"><button class="btn ghost sm" data-gnew="${r}">Create link</button></div>`) + '</div>').join('')}<p class="sub meta-block">Viewers and requesters do not use one of your ${w.seats?.maxFull || 25} seats.</p><label class="meta ask-toggle"><input type="checkbox" id="rd-on"${w.requestDrafts !== false ? ' checked' : ''}> When a request arrives, a connected chat agent drafts a plan for it (connector 3.23 or newer). The agent only reads. The draft is a suggestion on the ticket: a person still decides, and the requester never sees it.</label></dd>` : '');   // T-0199
     const ago = (t) => !t ? 'never active' : (Date.now() - t < 120e3 ? 'active now' : Date.now() - t < 36e5 ? `active ${Math.round((Date.now() - t) / 6e4)} min ago` : Date.now() - t < 864e5 ? `active ${Math.round((Date.now() - t) / 36e5)} h ago` : `active ${Math.round((Date.now() - t) / 864e5)} d ago`);   // T-0034
@@ -1134,10 +1138,12 @@
   if (new URLSearchParams(location.search).get('topic') === 'question' && $('ct-topic')) $('ct-topic').value = 'question';   // T-0162
   api('/account/config').then(c => {
     if (c.storage && $('pr-storage')) { $('pr-storage').textContent = `${c.storage.baseMb} MB of file storage included. Need more? Add ${c.storage.packGb} GB for ${c.storage.label}, whenever you want`; $('pr-storage').hidden = false; }   // storage add-on                                                       // T-0159: say so when the free trial is on
+    if (c.freePlan && $('pr-free')) $('pr-free').hidden = false;                   // T-0225
     if (!c.trialDays) { if (c.inviteRequired && $('ct-sub')) $('ct-sub').textContent = 'A question, or you want to try Chamber and have no invite code? Write to us here. A person reads every message and replies by email.'; return; }
     $('pr-days').textContent = c.trialDays; $('pr-trial').hidden = false;
     if ($('ct-topic')) { $('ct-topic').value = 'question'; $('ct-topic').querySelector('option[value=invite]')?.remove(); $('ct-sub').textContent = 'A question before you start, or something not working? Write to us here. A person reads every message and replies by email.'; }
-    $('su-sub').textContent = `Free for ${c.trialDays} days. No card needed. Confirm your email and you are in (check spam if the email does not show up).`;
+    $('su-sub').textContent = c.freePlan ? `The first ${c.trialDays} days include everything. After that it stays free for you alone, or $49 a year for your team. No card needed. Confirm your email and you are in (check spam if the email does not show up).`
+      : `Free for ${c.trialDays} days. No card needed. Confirm your email and you are in (check spam if the email does not show up).`;
     document.querySelectorAll('a.btn.primary[href="/signup"]').forEach(a => { if (a.id !== 'nav-signup') a.textContent = 'Start free trial'; });
   }).catch(() => {});
   $('contact-form')?.addEventListener('submit', async e => {

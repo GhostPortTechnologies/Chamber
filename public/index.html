@@ -1394,10 +1394,18 @@ function dismissOnboarding() { try { localStorage.setItem('chamber-onboard-dismi
 function showBilling(b) {
   const el = document.getElementById('billing-banner'); if (!el) return;
   if (!b || b.state === 'ok' || b.state === 'none') { el.style.display = 'none'; return; }
+  if (b.state === 'free') {                                                              // T-0225: the free plan. Nothing to warn the owner about; files are not part of it
+    const att = document.getElementById('attach-btn');
+    if (b.access !== 'readonly') { el.style.display = 'none'; if (att) { att.disabled = true; att.title = 'Files are part of the paid plan: the free plan has no cloud storage'; } return; }
+    el.innerHTML = `This workspace is on Chamber's free plan, which is for one person, ${esc(b.payer || 'the owner')}. You can still read and export everything; ask them to subscribe so you can post here again.`;
+    el.style.background = '#5a3b00'; el.style.display = 'block';
+    document.getElementById('msg-input').disabled = true; if (att) att.disabled = true; updateSendState();
+    document.getElementById('msg-input').placeholder = 'Read-only: this workspace is on the free plan'; return;
+  }
   if (b.state === 'trial') {                                                             // T-0159: a quiet reminder in the last days, to the owner only
     const d = Math.max(0, Math.ceil((b.trialEndsAt - Date.now()) / 86400e3));
     if (!b.isPayer || d > 5) { el.style.display = 'none'; return; }
-    el.innerHTML = `Free trial: ${d} day${d === 1 ? '' : 's'} left. <a href="/billing" style="color:#fff;text-decoration:underline">Subscribe on the Account page</a> to keep working here after that. Nothing is deleted either way.`;
+    el.innerHTML = `Free trial: ${d} day${d === 1 ? '' : 's'} left. <a href="/billing" style="color:#fff;text-decoration:underline">Subscribe on the Account page</a> to keep your team and your files after that; on its own it moves to the free plan, for you alone. Nothing is deleted either way.`;
     el.style.background = '#5a3b00'; el.style.display = 'block'; return;
   }
   const who = b.isPayer ? 'your' : `${b.payer || 'the owner'}'s`;

@@ -63,7 +63,7 @@ function markPaid(...emails) {                                   // simulate a p
     A.token = l2.json.token;                                                 // the rest of the suite keeps using alice
     check('sign-up returns a token and a workspace', !!A.token && !!A.account.workspace.id && A.account.workspace.role === 'owner');
     check('alice and bob got different workspaces', A.account.workspace.id !== B.account.workspace.id);
-    check('unpaid owner cannot use the app', (await call('GET', '/api/messages', { token: D.token })).status === 401);
+    check('T-0225: an unpaid owner is on the free plan and can use the app on their own', (await call('GET', '/api/messages', { token: D.token })).status === 200);
     check('sign-up without the invite code is refused', (await call('POST', '/account/signup', { body: { email: 'eve@test.invalid', username: 'eve', password: 'password-for-tests' } })).status === 403);
     markPaid('alice@test.invalid', 'bob@test.invalid');
     check('paid owner can use the app', (await call('GET', '/api/messages', { token: A.token })).status === 200);
@@ -115,7 +115,7 @@ function markPaid(...emails) {                                   // simulate a p
     check('owner removes carol', (await call('POST', '/account/workspace/remove', { token: A.token, body: { username: 'carol' } })).status === 200);
     check('removed member is logged out immediately', (await call('GET', '/api/messages', { token: C.token })).status === 401);
     const C2 = (await call('POST', '/account/login', { body: { email: 'carol', password: 'password-for-tests' } })).json;
-    check('removed member now has her own empty, unpaid workspace', C2.account.workspace.id !== A.account.workspace.id && C2.account.entitled === false);
+    check('removed member now has her own empty workspace, on the free plan (T-0225)', C2.account.workspace.id !== A.account.workspace.id && C2.account.entitled === true && (!C2.account.billing || C2.account.billing.free === true), JSON.stringify(C2.account.billing));
     check('owner can rotate the invite link', (await call('POST', '/account/workspace/invite-reset', { token: A.token })).status === 200
       && (await call('GET', `/account/invite/${code}`)).status === 404);
 
@@ -559,7 +559,7 @@ function markPaid(...emails) {                                   // simulate a p
       const me3 = (await call('GET', '/api/me', { token: A.token })).json;
       check('a successful payment restores full access and clears the failure', me3.billing?.state === 'ok' && !acct().paymentFailedAt && (await call('POST', '/api/messages', { token: A.token, body: { username: 'alice', text: 'back' } })).status === 201, JSON.stringify(me3.billing));
       await webhook('customer.subscription.paused', sub('paused'));
-      check('a paused subscription means no access', (await call('GET', '/api/messages', { token: A.token })).status === 401);
+      check('T-0225: a paused subscription drops to the free plan: the owner keeps using it on their own', (await call('GET', '/api/messages', { token: A.token })).status === 200 && (await call('GET', '/api/me', { token: A.token })).json?.billing?.free === true);
       await webhook('customer.subscription.resumed', sub('active'));
       check('resuming restores access', (await call('GET', '/api/messages', { token: A.token })).status === 200);
       check('a webhook with a bad signature is rejected', (await fetch(BASE + '/webhooks/stripe', { method: 'POST', headers: { 'Stripe-Signature': 't=1,v1=00' }, body: '{}' })).status === 400);
@@ -2640,7 +2640,7 @@ function markPaid(...emails) {                                   // simulate a p
       const c4 = async (method, p, { token, body } = {}) => { const r = await fetch(B4 + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
       for (let i = 0; i < 50; i++) { try { if ((await c4('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
       const cfg = (await c4('GET', '/account/config')).json;
-      check('trial on: the sign-up form is told 14 days and no invite code', cfg.trialDays === 14 && cfg.inviteRequired === false, JSON.stringify(cfg));
+      check('trial on: the sign-up form is told 14 days and no invite code, and about the free plan (T-0225)', cfg.trialDays === 14 && cfg.inviteRequired === false && cfg.freePlan && cfg.freePlan.tokens === 2, JSON.stringify(cfg));
       const su = await c4('POST', '/account/signup', { body: { email: 'tria@test.invalid', username: 'tria', password: 'password-for-tests' } });
       check('anyone can start a workspace without an invite code or a card', su.status === 200 && su.json.account.workspace.role === 'owner', su.text.slice(0, 200));
       const T = su.json.token;
@@ -2649,6 +2649,9 @@ function markPaid(...emails) {                                   // simulate a p
       const me1 = (await c4('GET', '/account/me', { token: T })).json; const left = (me1.billing.trialEndsAt - Date.now()) / 86400e3;
       check('confirming the email starts full access: trial, about 14 days left', me1.entitled === true && me1.billing.trial === true && me1.billing.access === 'full' && left > 13.9 && left <= 14, JSON.stringify(me1.billing));
       check('a trial workspace can write', [200, 201].includes((await c4('POST', '/api/messages', { token: T, body: { text: 'hello from the trial' } })).status));
+      const inv4 = ((await c4('GET', '/account/workspace', { token: T })).json?.inviteUrl || '').split('/join/')[1], mem4 = await c4('POST', '/account/signup', { body: { email: 'trim@test.invalid', username: 'trim', password: 'password-for-tests', join: inv4 } });
+      { const l = (log4.match(/\[accounts\] verify link for trim: (\S+)/) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); }
+      check('T-0225: during the trial the owner can still invite a teammate, who can post', mem4.status === 200 && [200, 201].includes((await c4('POST', '/api/messages', { token: mem4.json?.token, body: { text: 'teammate on the trial' } })).status), mem4.text.slice(0, 200));
       const k1 = await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot one', username: 'trial-bot1' } }), k2 = await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot two', username: 'trial-bot2' } }), k3 = await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot three', username: 'trial-bot3' } });
       check('the trial allows 2 agents and refuses a third with a clear reason', k1.status === 200 && k2.status === 200 && k3.status === 403 && /free trial includes 2 agents/.test(k3.json.error), k3.text);
       check('the trial file allowance is the smaller one', (await c4('GET', '/api/files', { token: T })).json?.quota_mb === 1);
@@ -2659,11 +2662,18 @@ function markPaid(...emails) {                                   // simulate a p
       check('new trial workspaces are limited per network address per day (429 on the third here)', third.status === 429, third.text);
       const f4 = path.join(dir4, 'accounts.json'); const s4 = JSON.parse(fs.readFileSync(f4, 'utf8')); s4.accounts['tria@test.invalid'].trialEndsAt = Date.now() - 1000; fs.writeFileSync(f4, JSON.stringify(s4));
       const me2 = (await c4('GET', '/account/me', { token: T })).json; const rd = await c4('GET', '/api/messages', { token: T }); const wr = await c4('POST', '/api/messages', { token: T, body: { text: 'after the trial' } });
-      check('after 14 days: read-only, told why, and nothing is deleted', me2.billing.trialOver === true && me2.billing.access === 'readonly' && rd.status === 200 && (rd.json.messages || []).some(x => x.text === 'hello from the trial') && wr.status === 402 && /free trial has ended/.test(wr.json.error), JSON.stringify(me2.billing) + wr.text);
-      check('an agent of an ended trial is read-only too', (await c4('POST', '/api/messages', { token: k1.json.token, body: { username: 'trial-bot1', text: 'x' } })).status === 402);
+      check('T-0225: after 14 days the workspace moves to the free plan: the owner keeps writing, and nothing is deleted', me2.billing.free === true && me2.billing.trialOver === true && me2.billing.access === 'full' && rd.status === 200 && (rd.json.messages || []).some(x => x.text === 'hello from the trial') && [200, 201].includes(wr.status), JSON.stringify(me2.billing) + wr.text);
+      const ag = await c4('POST', '/api/messages', { token: k1.json.token, body: { username: 'trial-bot1', text: 'agent on the free plan' } }), k4 = await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot three', username: 'trial-bot3' } });
+      check('T-0225: on the free plan its 2 agents keep working, and a third is refused with the reason', [200, 201].includes(ag.status) && k4.status === 403 && /free plan includes 2 agents/.test(k4.json?.error || ''), ag.status + ' ' + k4.text);
+      const fq = (await c4('GET', '/api/files', { token: T })).json?.quota_mb, up4r = await fetch(B4 + '/api/files?room=general', { method: 'POST', headers: { Authorization: `Bearer ${T}`, 'x-file-name': 'a.txt', 'content-type': 'text/plain' }, body: 'hello' }), up4 = { status: up4r.status, json: await up4r.json().catch(() => null) };
+      check('T-0225: the free plan has no cloud storage: no file space, and an upload is refused with the reason', fq === 0 && up4.status === 402 && /free plan has no cloud storage/.test(up4.json?.error || ''), fq + ' ' + JSON.stringify(up4));
+      const mw = await c4('POST', '/api/messages', { token: mem4.json?.token, body: { text: 'teammate after the trial' } }), mr = await c4('GET', '/api/messages', { token: mem4.json?.token }), mme = (await c4('GET', '/account/me', { token: mem4.json?.token })).json || {};
+      check('T-0225: a teammate in a free workspace can still read but not post, and is told why', mr.status === 200 && mw.status === 402 && /free plan, which is for one person, tria/.test(mw.json?.error || '') && mme.billing?.access === 'readonly', mw.text);
+      const ws4 = (await c4('GET', '/account/workspace', { token: T })).json || {}, inv5 = (ws4.inviteUrl || '').split('/join/')[1], join5 = await c4('POST', '/account/signup', { body: { email: 'trin@test.invalid', username: 'trin', password: 'password-for-tests', join: inv5 } });
+      check('T-0225: nobody new can join a free workspace, and the account page knows it is on the free plan', ws4.plan === 'free' && join5.status === 403 && /free plan/.test(join5.json?.error || ''), JSON.stringify({ plan: ws4.plan, j: join5.status, e: join5.json?.error }));
       const s5 = JSON.parse(fs.readFileSync(f4, 'utf8')); Object.assign(s5.accounts['tria@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 365 }); fs.writeFileSync(f4, JSON.stringify(s5));
       const me3 = (await c4('GET', '/account/me', { token: T })).json;
-      check('subscribing turns it back to full access, and the trial limits go away', me3.billing.state === 'ok' && me3.billing.trial === false && me3.billing.trialOver === false && [200, 201].includes((await c4('POST', '/api/messages', { token: T, body: { text: 'paid now' } })).status) && (await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot three', username: 'trial-bot3' } })).status === 200);
+      check('subscribing turns it back to full access, and the trial limits go away (T-0225: the teammate can post again)', me3.billing.state === 'ok' && me3.billing.trial === false && me3.billing.trialOver === false && me3.billing.free === false && [200, 201].includes((await c4('POST', '/api/messages', { token: mem4.json?.token, body: { text: 'teammate, paid now' } })).status) && [200, 201].includes((await c4('POST', '/api/messages', { token: T, body: { text: 'paid now' } })).status) && (await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot three', username: 'trial-bot3' } })).status === 200);
       { const tok = crypto.randomBytes(24).toString('base64url'); const sx = JSON.parse(fs.readFileSync(f4, 'utf8')); const before = sx.accounts['trib@test.invalid'].emailVerified;
         (sx.resets ||= {})[crypto.createHash('sha256').update(tok).digest('hex')] = { email: 'trib@test.invalid', expires: Date.now() + 60000 }; fs.writeFileSync(f4, JSON.stringify(sx));
         const rs = await c4('POST', '/account/reset', { body: { token: tok, password: 'a-new-password-for-tests' } }); const meB = rs.json?.token ? (await c4('GET', '/account/me', { token: rs.json.token })).json : {};
@@ -2693,7 +2703,7 @@ function markPaid(...emails) {                                   // simulate a p
         const again = await su2('trid', '10.9.9.3'); const left = ((again.json?.account?.billing?.trialEndsAt || JSON.parse(fs.readFileSync(f4, 'utf8')).accounts['trid@test.invalid']?.trialEndsAt || 0) - Date.now()) / D;
         check('the same person can sign up again afterwards and gets a full trial', again.status === 200 && left > 13.9, JSON.stringify({ st: again.status, left })); }
       { const terms = fs.readFileSync(path.join(APP, 'public', 'legal', 'terms.html'), 'utf8'), refunds = fs.readFileSync(path.join(APP, 'public', 'legal', 'refunds.html'), 'utf8');
-        check('the Terms and the refund policy describe the free trial (T-0177)', /Free trial/.test(terms) && /14 days/.test(terms) && /read-only/.test(terms) && /2 AI agents/.test(terms) && /Free trial/.test(refunds) && /nothing to refund/.test(refunds)); }
+        check('the Terms and the refund policy describe the free trial and the free plan (T-0177, T-0225)', /Free trial/.test(terms) && /14 days/.test(terms) && /Free plan/.test(terms) && /one person, its owner/.test(terms) && /2 AI agents/.test(terms) && /Free trial/.test(refunds) && /free plan/.test(refunds) && /nothing to refund/.test(refunds)); }
       srv4.kill(); await new Promise(r => setTimeout(r, 400)); fs.rmSync(dir4, { recursive: true, force: true }); }
     console.log('browser check (T-0173)');
     { const bc = fs.readFileSync(path.join(APP, 'tools', 'browser-check.js'), 'utf8'); let parses = true; try { new Function('require', 'process', bc); } catch { parses = false; }
