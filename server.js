@@ -20,7 +20,9 @@ const fleet = require('./fleet');                                            // 
 const accounts = require('./accounts');                                      // [new] user accounts + Stripe paywall (CHAMBER_ACCOUNTS=1)
 const store = require('./store');                                            // [new] T-0017: SQLite chat store (node:sqlite, zero deps)
 const { makeLimiter } = require('./limits');                                 // [new] T-0033: per-user write limiter
-const cron = require('./cron');                                              // [new] T-0058: schedules
+const cron = require('./cron');
+const wslock = require('./wslock'), wscrypt = require('./wscrypt');            // T-0222: the owner lock (which workspaces are locked, their keys) and its encryption
+const { pipeline: streamPipeline } = require('stream/promises');                                              // [new] T-0058: schedules
 
 // Minimal zero-dep .env loader — reads KEY=VALUE lines from ./.env if present,   [new] lets `node server.js` be configured
 // without overriding anything already set in the real environment.             without systemd or a dotenv package.
@@ -69,10 +71,26 @@ const WS_ROOT = path.join(path.dirname(DATA_FILE), 'ws');                   // [
 function F() {                                                               // [new] files for the current request's workspace
   const ws = reqScope.getStore()?.ws;
   if (!ws) return { data: DATA_FILE, reviews: REVIEWS_FILE, tickets: TICKETS_FILE };
+  if (wslock.locked(ws)) throw new wslock.LockedError(ws);                     // T-0222: a locked workspace's data is not read or written by anyone
   const d = path.join(WS_ROOT, ws);
   return { data: path.join(d, 'chamber.json'), reviews: path.join(d, 'reviews.json'), tickets: path.join(d, 'tickets.json') };
 }
-function withWorkspace(ws, fn, extra) { return reqScope.run({ ws, ...(extra || {}) }, fn); }   // [changed] T-0057: extra = { rid, ip } for the audit log
+function withWorkspace(ws, fn, extra) {                                       // [changed] T-0057: extra = { rid, ip } for the audit log
+  // T-0222: a request works in its own workspace (extra.request, or nested inside such a request) and is answered 423 if that one is
+  // locked. Everything else (timers, and another workspace touched by a request, such as the audit line of a sign-in) skips a
+  // LOCKED workspace quietly and gets undefined back.
+  const outer = reqScope.getStore(), mine = !!(extra && extra.request) || !!(outer && outer.request && outer.ws === ws);
+  if (ws && !mine && wslock.locked(ws)) return undefined;
+  return reqScope.run({ ws, ...(mine ? { request: true } : {}), ...(extra || {}) }, fn);
+}
+function curWs() { return reqScope.getStore()?.ws || null; }
+function lockedBody() { return { error: 'This workspace is locked by its owner. It opens again when the owner unlocks it on the Account page.', locked: true }; }
+function lockedRouteOk(p) {                                                   // T-0222: what a locked workspace's people may still reach: who they are, sign-in, billing, the unlock itself
+  if (p === '/api/me' || p === '/api/health') return true;
+  if (p.startsWith('/api/') || p === '/account/export' || p === '/account/import') return false;
+  if (p.startsWith('/account/workspace')) return p === '/account/workspace' || p === '/account/workspace/ownerkey' || p === '/account/workspace/lock' || p.startsWith('/account/workspace/lock/');
+  return true;
+}
 
 // ── Live updates (T-0016): one event stream per client, grouped by workspace, so a change in one workspace
 // never reaches another. notify() is called by the handlers that change something; clients then re-fetch.
@@ -727,12 +745,59 @@ function shellSweep() {
   for (const [k, j] of shellJobs) if (now - (j.doneAt || j.at) > SHELL_TTL_MS) shellJobs.delete(k);
 }
 const consoleCwd = new Map();                                               // T-0101: per-owner working directory for the Terminal console
+// T-0222: seal (direction 'seal') or unseal a workspace's uploaded files and archives with its data key, one file at a time and without
+// holding the server up. Each file is written new beside the old one and swapped in only when complete, so a stop half-way loses
+// nothing: the next start, unlock or hourly pass carries on. It stops at once if the workspace is locked meanwhile.
+const lockBusy = new Set();
+async function lockConvert(ws, direction) {
+  if (!ws || lockBusy.has(ws) || wslock.locked(ws)) return null; lockBusy.add(ws);
+  try {
+    const r = await withWorkspace(ws, async () => {
+      const dir = filesDir(); let names = []; try { names = fs.readdirSync(dir); } catch { /* no uploads yet */ }
+      for (const n of names) if (n.endsWith('.lock-tmp')) { try { fs.unlinkSync(path.join(dir, n)); } catch { /* gone */ } }
+      let files = 0, archives = 0;
+      for (const n of names) {
+        if (!/^[a-f0-9]{24}$/.test(n)) continue;
+        const dk = wslock.key(ws); if (!dk) return { stopped: true };
+        const p = path.join(dir, n), tmp = p + '.lock-tmp', ours = wscrypt.sealedWith(dk, p);
+        if (direction === 'seal' ? ours : !ours) continue;
+        try {
+          await streamPipeline(fs.createReadStream(p), direction === 'seal' ? wscrypt.encryptStream(dk) : wscrypt.decryptStream(dk), fs.createWriteStream(tmp, { mode: 0o600 }));
+          if (fs.existsSync(p)) fs.renameSync(tmp, p); else fs.unlinkSync(tmp);       // deleted meanwhile: do not bring it back
+          files++;
+        } catch (e) { try { fs.unlinkSync(tmp); } catch { /* none */ } return { error: `file ${n}: ${e.message}` }; }
+      }
+      const dk = wslock.key(ws); if (!dk) return { stopped: true };
+      for (const meta of loadArchiveIndex()) {
+        const out = direction === 'seal' ? archiveReseal(meta, archiveKeyMaster(), archiveKeyOwner(dk)) : archiveReseal(meta, archiveKeyOwner(dk), archiveKeyMaster());
+        if (out === 'error') return { error: `archive ${meta.id}` }; if (out === 'resealed') archives++;
+      }
+      return { files, archives };
+    });
+    if (!r || r.stopped || r.error) { if (r && r.error) console.error(`[lock] ${ws}: ${direction} stopped at ${r.error}; it is tried again in the hourly pass`); return r || null; }
+    withWorkspace(ws, () => audit({ username: 'chamber' }, { action: direction === 'seal' ? 'lock-sealed' : 'lock-unsealed', files: r.files, archives: r.archives }, true));
+    accounts.lockConverted(ws, direction);
+    console.log(`[lock] ${ws}: ${direction === 'seal' ? 'sealed' : 'unsealed'} ${r.files} file(s) and ${r.archives} archive(s)`);
+    return r;
+  } catch (e) { if (!e.locked) console.error(`[lock] ${ws}: ${direction}: ${e.message}`); return null; }
+  finally {
+    lockBusy.delete(ws);
+    const st = wslock.state(ws);                                                // switched the other way while this ran: start that now
+    if ((st === 'sealing' && direction !== 'seal') || (st === 'unsealing' && direction !== 'unseal')) setImmediate(() => lockConvert(ws, st === 'sealing' ? 'seal' : 'unseal'));
+  }
+}
+function lockClosed(ws) {                                                     // T-0222: locked by hand: open live streams end, so every screen notices at once
+  const set = subscribers.get(ws); if (!set) return 0; let n = 0;
+  for (const r of set) { try { r.write('event: locked\ndata: {}\n\n'); r.end(); n++; } catch { /* gone */ } }
+  set.clear(); return n;
+}
 const ACCOUNTS_CTX = { verifyAudit, sessions, createSession, getSession, json, parseBody, loadData, loadDataFull, importWorkspace, saveData, loginThrottled, serveStatic, withWorkspace,
   cookieSecure: COOKIE_SECURE, sessionTtl: SESSION_TTL, appHtml: path.join(__dirname, 'public', 'index.html'), get version() { return VERSION; }, audit, auditAll,
-  listFiles: () => store.filesList(F().data, null, 10000).map(fileMeta) };   // [changed] T-0036: version; T-0057: audit; T-0064: files in the export
+  listFiles: () => store.filesList(F().data, null, 10000).map(fileMeta), lockConvert, lockClosed };   // [changed] T-0036: version; T-0057: audit; T-0064: files in the export
 accounts.check();                                                           // [new] refuse to start half-configured
 
 function requestFailed(req, res, e) {                                         // [new] T-0025: one place for 'handler blew up'
+  if (e && e.locked) { try { if (!res.headersSent) json(res, 423, lockedBody()); else res.end(); } catch { /* socket gone */ } return; }   // T-0222: locked meanwhile
   console.error(`[request] ${req.method} ${safePath(req)} failed rid=${req.rid || '-'}:`, e?.stack || e);   // [changed] T-0030: the id ties this to the access line
   try { if (!res.headersSent) json(res, 500, { error: 'internal', request_id: req.rid }); else res.end(); } catch { /* socket gone */ }
 }
@@ -759,7 +824,8 @@ const server = http.createServer((req, res) => {                            // [
     const sess = getSession(req);
     const ws = accounts.enabled ? accounts.workspaceOf(sess) : null;
     req.sess = sess; req.ws = ws;                                             // [new] T-0030: for the access line
-    return withWorkspace(ws, () => handleRequest(req, res, sess).catch(e => requestFailed(req, res, e)), { rid: req.rid, ip: clientIp(req) });
+    if (ws && wslock.locked(ws) && !lockedRouteOk(safePath(req))) { req.resume(); return json(res, 423, lockedBody()); }   // T-0222
+    return withWorkspace(ws, () => handleRequest(req, res, sess).catch(e => requestFailed(req, res, e)), { rid: req.rid, ip: clientIp(req), request: true });
   } catch (e) { requestFailed(req, res, e); }                                // [new] T-0025: sync throw in setup
 });
 
@@ -797,6 +863,7 @@ function recordRetention(s, force) {
 }
 function maintenance(opts = {}) {
   const t0 = Date.now(); let sessionsPruned = 0;
+  for (const s of accounts.enabled ? accounts.lockStates() : []) if ((s.state === 'sealing' || s.state === 'unsealing') && !wslock.locked(s.ws)) lockConvert(s.ws, s.state === 'sealing' ? 'seal' : 'unseal');   // T-0222: finish an interrupted sealing
   for (const [t, s] of sessions) if (s.expires < t0) { sessions.delete(t); sessionsPruned++; }
   const retained = [];
   for (const { id, days } of accounts.retentionSettings()) {
@@ -809,7 +876,7 @@ function maintenance(opts = {}) {
   let orphans = 0;                                                            // T-0064: uploads that were never sent
   try {
     const wss = accounts.enabled ? (fs.existsSync(WS_ROOT) ? fs.readdirSync(WS_ROOT).filter(d => fs.existsSync(path.join(WS_ROOT, d, 'chamber.db'))) : []) : [null];
-    for (const id of wss) orphans += withWorkspace(id, () => { try { return sweepOrphanFiles(); } catch (e) { console.error('[maintenance] files', id, e.message); return 0; } });
+    for (const id of wss) orphans += withWorkspace(id, () => { try { return sweepOrphanFiles(); } catch (e) { console.error('[maintenance] files', id, e.message); return 0; } }) || 0;   // T-0222: a locked workspace is skipped
   } catch (e) { console.error('[maintenance] files', e.message); }
   let trial = { reminded: [], removed: [] };                                  // T-0175/T-0176: trial reminder emails, unconfirmed sign-ups cleaned up
   try { if (accounts.enabled) trial = accounts.trialHousekeeping(ACCOUNTS_CTX); } catch (e) { console.error('[maintenance] trial', e.message); }
@@ -849,7 +916,24 @@ function archiveMasterKey() {
   const k = crypto.randomBytes(32); fs.mkdirSync(path.dirname(f), { recursive: true });
   try { fs.writeFileSync(f, k, { mode: 0o600, flag: 'wx' }); return k; } catch { return fs.readFileSync(f); }   // a racing request may have made it first
 }
-function archiveWsKey() { return Buffer.from(crypto.hkdfSync('sha256', archiveMasterKey(), Buffer.from(path.basename(path.dirname(F().data))), Buffer.from('chamber-archive-v1'), 32)); }
+function archiveKeyMaster() { return Buffer.from(crypto.hkdfSync('sha256', archiveMasterKey(), Buffer.from(path.basename(path.dirname(F().data))), Buffer.from('chamber-archive-v1'), 32)); }
+function archiveKeyOwner(dk) { return Buffer.from(crypto.hkdfSync('sha256', dk, Buffer.from(path.basename(path.dirname(F().data))), Buffer.from('chamber-archive-owner-v1'), 32)); }   // T-0222: under the owner lock
+function archiveWsKey() { const ws = curWs(), st = wslock.state(ws), dk = wslock.key(ws); return (st === 'sealing' || st === 'on') && dk ? archiveKeyOwner(dk) : archiveKeyMaster(); }   // the key a NEW archive is sealed with
+function archiveOpenKeys() {                                                  // T-0222: while the lock is switched on or off, an archive may still be under either key
+  const ws = curWs(), st = wslock.state(ws), dk = wslock.key(ws);
+  if (st === 'on' && dk) return [archiveKeyOwner(dk)]; if (st && dk) return [archiveKeyOwner(dk), archiveKeyMaster()]; return [archiveKeyMaster()];
+}
+function archiveReseal(meta, fromKey, toKey) {                               // T-0222: move one archive from one key to the other: 'already' | 'resealed' | 'gone' | 'error'
+  const f = path.join(archivesDir(), meta.id + '.arc'); let buf; try { buf = fs.readFileSync(f); } catch { return 'gone'; }
+  if (!buf.subarray(0, 6).equals(ARCHIVE_MAGIC)) return 'error';
+  const inner = k => { try { const d = crypto.createDecipheriv('aes-256-gcm', k, buf.subarray(6, 18)); d.setAAD(archiveAad(meta)); d.setAuthTag(buf.subarray(18, 34)); return Buffer.concat([d.update(buf.subarray(34)), d.final()]); } catch { return null; } };
+  if (inner(toKey)) return 'already';
+  const gz = inner(fromKey); if (!gz) { console.error(`[lock] archive ${meta.id} opens with neither key`); return 'error'; }
+  const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', toKey, iv); c.setAAD(archiveAad(meta));
+  const body = Buffer.concat([c.update(gz), c.final()]), sealed = Buffer.concat([ARCHIVE_MAGIC, iv, c.getAuthTag(), body]), tmp = f + '.tmp.' + process.pid;
+  const fd = fs.openSync(tmp, 'w', 0o600); try { fs.writeSync(fd, sealed); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(tmp, f); return 'resealed';
+}
 function archivesDir() { return path.join(path.dirname(F().data), 'archives'); }
 function archiveIndexFile() { return path.join(archivesDir(), 'index.json'); }
 function loadArchiveIndex() { try { const a = JSON.parse(fs.readFileSync(archiveIndexFile(), 'utf8')); return Array.isArray(a) ? a : []; } catch { return []; } }
@@ -863,8 +947,11 @@ function sealArchive(meta, plain) {
 function openArchive(meta) {                                                  // -> { rows } or throws 'tampered'
   const buf = fs.readFileSync(path.join(archivesDir(), meta.id + '.arc'));
   if (!buf.subarray(0, 6).equals(ARCHIVE_MAGIC)) throw new Error('tampered');
-  const d = crypto.createDecipheriv('aes-256-gcm', archiveWsKey(), buf.subarray(6, 18)); d.setAAD(archiveAad(meta)); d.setAuthTag(buf.subarray(18, 34));
-  let plain; try { plain = zlib.gunzipSync(Buffer.concat([d.update(buf.subarray(34)), d.final()])); } catch { throw new Error('tampered'); }
+  let plain = null;
+  for (const k of archiveOpenKeys()) {                                        // T-0222
+    try { const d = crypto.createDecipheriv('aes-256-gcm', k, buf.subarray(6, 18)); d.setAAD(archiveAad(meta)); d.setAuthTag(buf.subarray(18, 34)); plain = zlib.gunzipSync(Buffer.concat([d.update(buf.subarray(34)), d.final()])); break; } catch { /* the next key */ }
+  }
+  if (!plain) throw new Error('tampered');
   if (crypto.createHash('sha256').update(plain).digest('hex') !== meta.sha256) throw new Error('tampered');
   const j = JSON.parse(plain.toString('utf8'));
   if (j.room !== meta.room || !Array.isArray(j.rows) || j.rows.length !== meta.count) throw new Error('tampered');
@@ -1470,6 +1557,7 @@ async function handleRequest(req, res, sess) {                              // [
   if (accounts.enabled && reportM && method === 'GET') {
     const found = accounts.reportByToken(reportM[1]);
     if (!found) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('This report link is not valid any more. Ask whoever sent it for a new one.'); }
+    if (wslock.locked(found.ws)) { res.writeHead(423, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('This workspace is locked by its owner. The report shows again once they unlock it.'); }   // T-0222
     const wk = url.searchParams.get('week'); let from;
     if (wk === 'this') from = weekStartOf(new Date());
     else if (/^\d{4}-\d{2}-\d{2}$/.test(wk || '')) { from = weekStartOf(new Date(wk + 'T00:00:00Z')); if (!(from.getTime() > Date.now() - 366 * 864e5) || from.getTime() > Date.now()) from = null; }
@@ -1482,6 +1570,7 @@ async function handleRequest(req, res, sess) {                              // [
     const token = url.pathname.slice('/hooks/'.length).replace(/\/+$/, '');
     const found = accounts.hookByToken(token);
     if (!found) return json(res, 404, { error: 'unknown webhook' });
+    if (wslock.locked(found.ws)) { req.resume(); return json(res, 423, { error: 'This workspace is locked by its owner, so the delivery was not accepted. Send it again later.', locked: true }); }   // T-0222
     const lim = hookLimiter.hit('hook:' + found.hook.id);
     if (!lim.ok) { res.setHeader('Retry-After', lim.retryAfter); return json(res, 429, { error: 'too many deliveries; at most 60 a minute per webhook' }); }
     let raw = ''; try { raw = await new Promise((ok, bad) => { req.setEncoding('utf8'); req.on('data', c => { raw += c; if (raw.length > 65536) req.destroy(new Error('too large')); }); req.on('end', () => ok(raw)); req.on('error', bad); }); } catch { return json(res, 413, { error: 'body over 64 KB' }); }
@@ -1585,6 +1674,11 @@ async function handleRequest(req, res, sess) {                              // [
   }
   if (url.pathname === '/api/me' && method === 'GET') {                     // [new] lets the app pick up a session made by the landing page
     if (!sess) return json(res, 401, { error: 'not signed in' });
+    if (accounts.enabled && wslock.locked(accounts.workspaceOf(sess))) {     // T-0222: locked: who you are and that it is locked, nothing from inside
+      if (sess.agent) return json(res, 423, lockedBody());
+      const role = accounts.sessionRole(sess);
+      return json(res, 200, { username: sess.username, role: sess.role, email: sess.email || null, accounts: true, wsRole: role, locked: { canUnlock: role === 'owner' } });
+    }
     return json(res, 200, { username: sess.username, role: sess.role, email: sess.email || null, accounts: accounts.enabled,
                             billing: accounts.enabled ? accounts.billingFor(sess) : undefined,   // [new] T-0028: banner + read-only hint
                             commanders: accounts.enabled ? accounts.commandersFor(accounts.workspaceOf(sess)) : undefined,   // [new] T-0015; T-0148: people see it too (workspaceOf resolves a human session), so the app can say 'you are not a commander'
@@ -1957,12 +2051,13 @@ echo "${MARK}$__rc|$PWD"`;
     fs.mkdirSync(filesDir(), { recursive: true, mode: 0o700 });
     const dest = path.join(filesDir(), id), tmp = dest + '.part';
     const hash = crypto.createHash('sha256'); let size = 0, over = false;
-    const out = fs.createWriteStream(tmp, { mode: 0o600 });
+    const sealDk = ['sealing', 'on'].includes(wslock.state(curWs())) ? wslock.key(curWs()) : null;   // T-0222: with the owner lock on, a file is sealed as it arrives
+    const out = fs.createWriteStream(tmp, { mode: 0o600 }), sink = sealDk ? wscrypt.encryptStream(sealDk) : out; if (sealDk) sink.pipe(out);
     await new Promise((ok, bad) => {
-      req.on('data', c => { size += c.length; if (size > limit) { over = true; req.destroy(); return; } hash.update(c); out.write(c); });
+      req.on('data', c => { size += c.length; if (size > limit) { over = true; req.destroy(); return; } hash.update(c); sink.write(c); });
       req.on('end', ok); req.on('error', ok); req.on('close', ok); out.on('error', bad);
     });
-    await new Promise(ok => out.end(ok));
+    await new Promise(ok => { out.once('finish', ok); out.once('error', ok); sink.end(); });
     if (over || !req.complete) { try { fs.unlinkSync(tmp); } catch {} return json(res, 413, { error: over ? `That file is over the ${MAX_FILE_MB} MB limit.` : 'upload interrupted' }); }
     if (size === 0) { try { fs.unlinkSync(tmp); } catch {} return json(res, 400, { error: 'empty file' }); }
     if (used.b + size > quotaMb * 1048576) { try { fs.unlinkSync(tmp); } catch {} return json(res, 413, { error: `This workspace has used ${(used.b / 1048576).toFixed(0)} of its ${quotaMb} MB for files. Delete some messages with files first.${storageHint()}`, quota: true }); }   // the check above trusts the size the sender declared; an upload that declares none is measured here
@@ -2075,14 +2170,16 @@ echo "${MARK}$__rc|$PWD"`;
     if (!reqFileM && !canSeeRoom(data, rec.room || 'general', sess?.username)) return json(res, 403, { error: 'not a member of that room' });
     if (!rec.msg_id && rec.by.toLowerCase() !== String(sess?.username || '').toLowerCase()) return json(res, 404, { error: 'no such file' });   // not sent yet: only the uploader sees it
     const p = path.join(filesDir(), rec.id); let st; try { st = fs.statSync(p); } catch { return json(res, 410, { error: 'the file is gone' }); }
+    const sealedDk = wslock.state(curWs()) && wscrypt.isEncFileSync(p) ? wslock.key(curWs()) : null;   // T-0222: a sealed file is opened on the way out
     const inline = INLINE_IMAGE.has(rec.mime) && !url.searchParams.has('download');
     const type = inline ? rec.mime : (SAFE_DOWNLOAD.test(rec.mime) && rec.mime !== 'image/svg+xml' && !/html|xml|javascript/.test(rec.mime) ? rec.mime : 'application/octet-stream');
     const ascii = rec.name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, "'");
-    res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'X-Content-Type-Options': 'nosniff',
+    res.writeHead(200, { 'Content-Type': type, 'Content-Length': sealedDk ? rec.size : st.size, 'X-Content-Type-Options': 'nosniff',
                          'Content-Security-Policy': "sandbox; default-src 'none'",                        // even an image response can never run anything
                          'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(rec.name)}`,
                          'Cache-Control': 'private, max-age=31536000, immutable' });
     if (req.method === 'HEAD') return res.end();
+    if (sealedDk) { streamPipeline(fs.createReadStream(p), wscrypt.decryptStream(sealedDk), res).catch(e => { console.error(`[files] ${rec.id} did not open with the workspace key: ${e.message}`); try { res.destroy(); } catch {} }); return; }   // T-0222: a changed byte ends the download, never hands it out
     fs.createReadStream(p).on('error', () => { try { res.destroy(); } catch {} }).pipe(res);
     return;
   }
@@ -3295,7 +3392,12 @@ if (!IS_LOOPBACK && !AUTH_REQUIRED) {                                        // 
   process.exit(1);                                                          // [new]
 }
 
-server.listen(PORT, HOST, () => {                                            // [changed] HOST is now configurable (was '127.0.0.1')
+const lockList = accounts.enabled ? accounts.lockStates() : [];               // T-0222: workspaces that use the owner lock, reopened only if the key keeper still holds their keys
+for (const s of lockList) wslock.setState(s.ws, s.state);
+wslock.restore(lockList).then(r => {
+  if (lockList.length) console.log(`[lock] ${lockList.length} workspace(s) use the owner lock; ${r.restored} reopened from the key keeper${r.keeper ? '' : ' (no key keeper answered: the others stay locked until their owners unlock them)'}`);
+  for (const s of lockList) if ((s.state === 'sealing' || s.state === 'unsealing') && !wslock.locked(s.ws)) lockConvert(s.ws, s.state === 'sealing' ? 'seal' : 'unseal');
+}, e => console.error('[lock] restore:', e.message)).finally(() => server.listen(PORT, HOST, () => {                                            // [changed] HOST is now configurable (was '127.0.0.1')
   console.log(`Chamber running on http://${HOST}:${PORT}`);
   console.log('  store:   SQLite (node:sqlite), one database per workspace');
   // Startup summary so the operator sees which integrations are live.         [new] operability / at-a-glance config check
@@ -3308,4 +3410,4 @@ server.listen(PORT, HOST, () => {                                            // 
   if (!IS_LOOPBACK && AUTH_REQUIRED && !COOKIE_SECURE) {                     // [new] nudge toward TLS when exposed
     console.log('  NOTE: exposed with auth but CHAMBER_SECURE_COOKIE is off — serve over HTTPS (reverse proxy) and set it to 1.');  // [new]
   }
-});
+}));

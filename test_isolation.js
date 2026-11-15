@@ -1686,6 +1686,94 @@ function markPaid(...emails) {                                   // simulate a p
         } finally { try { kk.kill('SIGKILL'); } catch {} }
       } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} }
     }
+    console.log('the owner lock: switch on, lock, unlock, files and archives sealed (T-0222)');
+    check('T-0222: the owner lock is not offered on a server where it is not switched on', (await call('POST', '/account/workspace/lock', { token: A.token, body: { on: true } })).status === 404 && (await call('GET', '/account/workspace/lock', { token: A.token })).status === 404);
+    { const dir11 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-lock-')), sock11 = path.join(dir11, 'keys.sock'), wcr = require(path.join(APP, 'wscrypt.js')), { webcrypto: wc } = require('crypto');
+      let port11 = await freePort(), B11 = `http://127.0.0.1:${port11}`, srv11 = null, log11 = '', kk = null;
+      const env11 = () => ({ ...env, CHAMBER_PUBLIC_URL: B11, CHAMBER_PORT: String(port11), CHAMBER_DATA: path.join(dir11, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir11, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir11, 'tickets.json'), CHAMBER_OWNER_LOCK: '1', CHAMBER_KEYS_SOCKET: sock11 });
+      const c11 = async (method, p, { token, body, raw, headers } = {}) => { const r = await fetch(B11 + p, { method, signal: AbortSignal.timeout(15000), headers: { ...(raw ? {} : { 'Content-Type': 'application/json' }), ...(headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: raw !== undefined ? raw : body === undefined ? undefined : JSON.stringify(body) }); const buf = Buffer.from(await r.arrayBuffer()); let json = null; try { json = JSON.parse(buf.toString('utf8')); } catch {} return { status: r.status, json, buf, text: buf.toString('utf8') }; };
+      const startSrv = async () => { srv11 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env11(), stdio: ['ignore', 'pipe', 'pipe'] }); srv11.stdout.on('data', d => log11 += d); srv11.stderr.on('data', d => log11 += d); for (let i = 0; i < 80; i++) { try { if ((await c11('GET', '/api/health')).status === 200) return; } catch {} await new Promise(r => setTimeout(r, 100)); } };
+      const stopSrv = async () => { if (!srv11) return; const s = srv11; srv11 = null; s.kill('SIGTERM'); await new Promise(r => { s.on('exit', r); setTimeout(r, 6000); }); };
+      const startKeeper = async () => { kk = spawn(process.execPath, [path.join(APP, 'keykeeper.js')], { env: { ...process.env, CHAMBER_KEYS_SOCKET: sock11 }, stdio: 'ignore' }); for (let i = 0; i < 50 && !fs.existsSync(sock11); i++) await new Promise(r => setTimeout(r, 100)); };
+      try {
+        await startKeeper(); await startSrv();
+        const PW = 'password-for-tests', f11 = path.join(dir11, 'accounts.json');
+        const su11 = async (u, extra = {}) => (await c11('POST', '/account/signup', { body: { email: `${u}@test.invalid`, username: u, password: PW, ...extra } })).json || {};
+        const O = await su11('own11', { invite: INVITE }); { const l = (log11.match(/\[accounts\] verify link for own11: (\S+)/) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); }
+        { const s = JSON.parse(fs.readFileSync(f11, 'utf8')); Object.assign(s.accounts['own11@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 300 }); fs.writeFileSync(f11, JSON.stringify(s)); }
+        const code11 = ((await c11('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1], M = await su11('mem11', { join: code11 });
+        const bot = (await c11('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Bot', username: 'bot11' } })).json?.token;
+        const wsDir = path.join(dir11, 'ws', fs.readdirSync(path.join(dir11, 'ws'))[0]), MARK = 'SECRET-BLUEPRINT-7731', plain1 = Buffer.concat([Buffer.from(MARK), require('crypto').randomBytes(150000), Buffer.from(MARK)]);
+        const up = async (buf, name) => (await c11('POST', '/api/files?room=general', { token: O.token, raw: buf, headers: { 'x-file-name': name, 'content-type': 'application/octet-stream' } })).json?.file?.id;
+        const down = async (id, tok = O.token) => c11('GET', `/api/files/${id}?download=1`, { token: tok });
+        const f1 = await up(plain1, 'plan.bin');
+        await c11('POST', '/api/messages', { token: O.token, body: { text: 'SECRET-MINUTES of the board meeting' } });
+        const arc = (await c11('POST', '/api/archives', { token: O.token, body: { room: 'general', before: Date.now() + 1000 } })).json?.archive?.id, arcFile = path.join(wsDir, 'archives', arc + '.arc'), arcBefore = fs.readFileSync(arcFile);
+        const lockGet = async (tok = O.token) => (await c11('GET', '/account/workspace/lock', { token: tok })).json || {};
+        const noKey = await c11('POST', '/account/workspace/lock', { token: O.token, body: { on: true } }), byMem = await c11('POST', '/account/workspace/lock', { token: M.token, body: { on: true } });
+        check('T-0222: only the owner switches the lock on, and only after setting the passphrase it opens with',
+          f1 && arc && noKey.status === 400 && /passphrase/.test(noKey.text) && byMem.status === 403 && (await lockGet()).on === false, JSON.stringify({ f1, arc, n: noKey.status, m: byMem.status }));
+        // the owner's key, made and kept the way the browser does it (T-0219)
+        const b64 = b => Buffer.from(b).toString('base64'), kek = async (secret, salt, iter) => wc.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, await wc.subtle.importKey('raw', new TextEncoder().encode(secret), 'PBKDF2', false, ['deriveKey']), { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+        const wrapK = async (secret, pkcs8) => { const salt = wc.getRandomValues(new Uint8Array(16)), iv = wc.getRandomValues(new Uint8Array(12)); return { wrapped: b64(await wc.subtle.encrypt({ name: 'AES-GCM', iv }, await kek(secret, salt, 100000), pkcs8)), salt: b64(salt), iv: b64(iv), iter: 100000 }; };
+        const makeKey = async pass => { const kp = await wc.subtle.generateKey({ name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['encrypt', 'decrypt']); const pkcs8 = await wc.subtle.exportKey('pkcs8', kp.privateKey); return { pkcs8, body: { pub: b64(await wc.subtle.exportKey('spki', kp.publicKey)), ...(await wrapK(pass, pkcs8)), rec: await wrapK('RECOVERYCODE' + pass.length, pkcs8) } }; };
+        const PASS1 = 'first passphrase for the lock', key1 = await makeKey(PASS1);
+        check('T-0222: setup: the owner sets a passphrase', (await c11('POST', '/account/workspace/ownerkey', { token: O.token, body: key1.body })).status === 200);
+        const browserKey = async (pass, tok = O.token) => {                         // what the Account page does: open the private key with the passphrase, then the workspace key with it
+          const keys = (await c11('GET', '/account/workspace/ownerkey', { token: tok })).json.keys, lk = await lockGet(tok), k = keys.find(x => x.id === lk.key);
+          const pk = await wc.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(k.iv, 'base64') }, await kek(pass, Buffer.from(k.salt, 'base64'), k.iter), Buffer.from(k.wrapped, 'base64'));
+          const priv = await wc.subtle.importKey('pkcs8', pk, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
+          return Buffer.from(await wc.subtle.decrypt({ name: 'RSA-OAEP' }, priv, Buffer.from(lk.wrapped, 'base64'))).toString('hex'); };
+        const waitState = async want => { let l = {}; for (let i = 0; i < 100; i++) { l = await lockGet(); if (want === 'off' ? l.on === false : l.state === want) return l; await new Promise(r => setTimeout(r, 100)); } return l; };
+        const on = await c11('POST', '/account/workspace/lock', { token: O.token, body: { on: true } }), done1 = await waitState('on');
+        const disk1 = fs.readFileSync(path.join(wsDir, 'files', f1)), arcAfter = fs.readFileSync(arcFile), got1 = await down(f1), arcRead = await c11('GET', `/api/archives/${arc}`, { token: O.token });
+        check('T-0222: switched on, the workspace\'s existing files and archives are sealed with its key in the background; on disk they hold none of what was in them, and everyone still reads them as before',
+          on.status === 200 && on.json.state === 'sealing' && on.json.open === true && typeof on.json.wrapped === 'string' && done1.state === 'on' && wcr.isEncStream(disk1) && !disk1.includes(MARK) && got1.status === 200 && got1.buf.equals(plain1)
+          && !arcAfter.equals(arcBefore) && arcAfter.length === arcBefore.length && arcRead.status === 200 && JSON.stringify(arcRead.json.messages).includes('SECRET-MINUTES') && /\[lock\] \S+: sealed 1 file\(s\) and 1 archive\(s\)/.test(log11), JSON.stringify({ on: on.status, st: done1.state, got: got1.status, arc: arcRead.status }));
+        const plain2 = Buffer.from('second file ' + MARK.repeat(3)), f2 = await up(plain2, 'notes.txt'), sent2 = await c11('POST', '/api/messages', { token: O.token, body: { text: 'the notes', attachments: [f2] } }), disk2 = fs.readFileSync(path.join(wsDir, 'files', f2)), got2 = await down(f2, M.token);
+        const wsFiles = fs.readdirSync(path.join(wsDir, 'files'));
+        check('T-0222: a file uploaded while the lock is on arrives sealed on disk, and a member downloads it as it was sent; no half-written file is left over',
+          f2 && sent2.status === 201 && wcr.isEncStream(disk2) && !disk2.includes(MARK) && got2.status === 200 && got2.buf.equals(plain2) && !wsFiles.some(n => n.includes('.')), JSON.stringify({ f2, sent: sent2.status, got: got2.status, wsFiles }));
+        // locked by hand
+        const sse = await fetch(B11 + '/api/events', { headers: { Authorization: `Bearer ${M.token}` }, signal: AbortSignal.timeout(8000) }).catch(() => null);
+        const close = await c11('POST', '/account/workspace/lock/close', { token: O.token, body: {} });
+        let sseText = ''; try { sseText = sse ? await sse.text() : ''; } catch {}
+        const lockedRes = { msgs: await c11('GET', '/api/messages?room=general', { token: M.token }), meM: await c11('GET', '/api/me', { token: M.token }), meO: await c11('GET', '/api/me', { token: O.token }), ping: await c11('POST', '/api/ping', { token: bot, body: { username: 'bot11' } }), botMe: await c11('GET', '/api/me', { token: bot }),
+          file: await down(f1), acct: await c11('GET', '/account/workspace', { token: O.token }), exp: await c11('GET', '/account/export', { token: O.token }), maint: await c11('GET', '/api/_test/maintenance') };
+        check('T-0222: locked by hand, nothing inside can be reached by anyone: chat, files, the export, agents all get "locked"; people still learn who they are and that it is locked, the owner that they can unlock, and open live screens are told at once',
+          close.status === 200 && close.json.open === false && lockedRes.msgs.status === 423 && lockedRes.msgs.json.locked === true && lockedRes.meM.status === 200 && lockedRes.meM.json.locked.canUnlock === false && lockedRes.meO.json.locked.canUnlock === true
+          && lockedRes.ping.status === 423 && lockedRes.botMe.status === 423 && lockedRes.file.status === 423 && !lockedRes.file.buf.includes(MARK) && lockedRes.exp.status === 423 && lockedRes.acct.status === 200 && lockedRes.acct.json.lock.open === false
+          && lockedRes.maint.status === 200 && Number.isFinite(lockedRes.maint.json.orphanFiles) && /event: locked/.test(sseText), JSON.stringify(Object.fromEntries(Object.entries(lockedRes).map(([k, v]) => [k, v.status]))) + ' sse=' + sseText.slice(-40));
+        const bad = await c11('POST', '/account/workspace/lock/unlock', { token: O.token, body: { key: require('crypto').randomBytes(32).toString('hex') } }), memUn = await c11('POST', '/account/workspace/lock/unlock', { token: M.token, body: { key: '0'.repeat(64) } });
+        const dkHex = await browserKey(PASS1), good = await c11('POST', '/account/workspace/lock/unlock', { token: O.token, body: { key: dkHex } }), back1 = await down(f1), back2 = await down(f2, M.token);
+        check('T-0222: a wrong key does not open it, a member cannot unlock it, and the owner opens it with the key their passphrase unwraps in the browser; everything reads again',
+          bad.status === 403 && memUn.status === 403 && good.status === 200 && good.json.open === true && back1.status === 200 && back1.buf.equals(plain1) && back2.buf.equals(plain2) && (await c11('GET', '/api/messages?room=general', { token: M.token })).status === 200, JSON.stringify({ bad: bad.status, mem: memUn.status, good: good.status }));
+        await stopSrv(); log11 = ''; await startSrv();
+        const afterRestart = await c11('GET', '/api/messages?room=general', { token: M.token });
+        kk.kill('SIGTERM'); await new Promise(r => kk.on('exit', r)); await stopSrv(); log11 = ''; await startSrv();
+        const afterReboot = await c11('GET', '/api/messages?room=general', { token: M.token });
+        check('T-0222: a restart of the app keeps the workspace open while the key keeper runs; with the keeper gone too (as after a reboot) it starts locked and says so',
+          afterRestart.status === 200 && afterReboot.status === 423 && /no key keeper answered/.test(log11), JSON.stringify({ r: afterRestart.status, b: afterReboot.status, log: log11.match(/\[lock\][^\n]*/g) }));
+        await c11('POST', '/account/workspace/lock/unlock', { token: O.token, body: { key: dkHex } });
+        const tr = await c11('POST', '/account/workspace/transfer', { token: O.token, body: { username: 'mem11', password: PW } });
+        const PASS2 = 'a second passphrase, after losing the first', key2 = await makeKey(PASS2), set2 = await c11('POST', '/account/workspace/ownerkey', { token: O.token, body: key2.body });
+        await c11('POST', '/account/workspace/lock/close', { token: O.token, body: {} });
+        let oldOpens = true; try { await browserKey(PASS1); } catch { oldOpens = false; }
+        const dk2 = await browserKey(PASS2), un2 = await c11('POST', '/account/workspace/lock/unlock', { token: O.token, body: { key: dk2 } });
+        await c11('POST', '/account/workspace/lock/close', { token: O.token, body: {} }); const key3 = await makeKey('a third passphrase while locked'), set3 = await c11('POST', '/account/workspace/ownerkey', { token: O.token, body: key3.body }); await c11('POST', '/account/workspace/lock/unlock', { token: O.token, body: { key: dk2 } });
+        check('T-0222: while the lock is on the workspace cannot be handed to another owner; a new passphrase set while it is open takes the lock over (the old one no longer opens it), and none can be set while it is locked',
+          tr.status === 400 && /owner lock off first/.test(tr.text) && set2.status === 200 && (await lockGet()).key === 2 && oldOpens === false && dk2 === dkHex && un2.status === 200 && set3.status === 423, JSON.stringify({ tr: tr.status, set2: set2.status, un2: un2.status, set3: set3.status, oldOpens }));
+        { const fp = path.join(wsDir, 'files', f1), keep = fs.readFileSync(fp), t = Buffer.from(keep); t[100000] ^= 1; fs.writeFileSync(fp, t);
+          let changed = null; try { changed = await down(f1); } catch { changed = null; } fs.writeFileSync(fp, keep);
+          check('T-0222: a sealed file with one byte changed on disk is not handed out (the download breaks off), and nothing of the end of the file arrives', !changed || changed.buf.length < plain1.length || !changed.buf.equals(plain1), JSON.stringify({ got: changed && changed.buf.length })); }
+        const offBad = await c11('POST', '/account/workspace/lock', { token: O.token, body: { on: false, password: 'wrong password' } }), off = await c11('POST', '/account/workspace/lock', { token: O.token, body: { on: false, password: PW } }), done2 = await waitState('off');
+        const plainDisk1 = fs.readFileSync(path.join(wsDir, 'files', f1)), plainDisk2 = fs.readFileSync(path.join(wsDir, 'files', f2)), arcOff = await c11('GET', `/api/archives/${arc}`, { token: O.token });
+        const recs = (((await c11('GET', '/account/workspace/audit', { token: O.token })).json || {}).audit || []).map(r => r.action);
+        check('T-0222: switching the lock off needs the password and turns everything back into plain files; archives open with the server key again; every step is on the record',
+          offBad.status !== 200 && off.status === 200 && off.json.state === 'unsealing' && done2.on === false && plainDisk1.equals(plain1) && plainDisk2.equals(plain2) && arcOff.status === 200 && JSON.stringify(arcOff.json.messages).includes('SECRET-MINUTES')
+          && ['lock-on', 'lock-sealed', 'locked-by-hand', 'unlocked', 'lock-off', 'lock-unsealed'].every(a => recs.includes(a)) && (await c11('GET', '/api/messages?room=general', { token: M.token })).status === 200, JSON.stringify({ offBad: offBad.status, off: off.status, st: done2, recs: recs.slice(0, 12) }));
+      } finally { await stopSrv(); try { kk && kk.kill('SIGKILL'); } catch {} try { fs.rmSync(dir11, { recursive: true, force: true }); } catch {} }
+    }
     console.log('review that talks back (T-0189)');
     { const port8 = await freePort(), B8 = `http://127.0.0.1:${port8}`; const dir8 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-review-'));
       const env8 = { ...env, CHAMBER_PUBLIC_URL: B8, CHAMBER_PORT: String(port8), CHAMBER_DATA: path.join(dir8, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir8, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir8, 'tickets.json') };

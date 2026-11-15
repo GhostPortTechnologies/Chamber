@@ -25,7 +25,9 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const https = require('https'); const http = require('http');
-const records = require('./records');                             // T-0219: sealed copies of the activity record, and its keep-for limits
+const records = require('./records');
+const wslock = require('./wslock'), wscrypt = require('./wscrypt');           // T-0222: the owner lock
+const LOCK_FEATURE = process.env.CHAMBER_OWNER_LOCK === '1';                 // T-0222: switched on for tests only until the owner lock is finished                             // T-0219: sealed copies of the activity record, and its keep-for limits
 const fleet = require('./fleet');                                             // T-0153: GhostPort fleet link (router status, read-only)
 const { execFile, execFileSync } = require('child_process');      // T-0010: /source archive via git; T-0036: changelog
 const cron = require('./cron');                                   // T-0058: schedules
@@ -1103,7 +1105,7 @@ async function handle(req, res, url, ctx0) {
     if (gone && ws && ws.owner === gone.email) {
       for (const a of members(st, ws.id)) if (a.email !== gone.email) { createWorkspace(st, a); endSessions(ctx, a.email); }   // members get their own empty workspace
       for (const t of Object.values(ws.tokens || {})) delete st.usernames[t.username.toLowerCase()];
-      delete st.workspaces[ws.id];
+      delete st.workspaces[ws.id]; wslock.setState(ws.id, null); wslock.forget(ws.id);   // T-0222
       if (WS_RE.test(ws.id)) fs.rmSync(path.join(DATA_DIR, 'ws', ws.id), { recursive: true, force: true });
     }
     if (gone) { delete st.usernames[gone.username.toLowerCase()]; delete st.accounts[gone.email]; save(st); }
@@ -1117,8 +1119,54 @@ async function handle(req, res, url, ctx0) {
   if (p.startsWith('/account/workspace')) {
     if (!me || !myWs) return ctx.json(res, 401, { error: 'not signed in' }), true;
     if (wsRoleOf(me, myWs) === 'requester') return ctx.json(res, 403, { error: 'A requester sees only their own requests, not the workspace.' }), true;   // T-0199
+    if (p === '/account/workspace/lock' || p.startsWith('/account/workspace/lock/')) {   // T-0222: the owner lock (the key is the owner's, so the owner switches it)
+      if (!LOCK_FEATURE) return ctx.json(res, 404, { error: 'not found' }), true;
+      if (m === 'GET' && p === '/account/workspace/lock') return ctx.json(res, 200, lockView(myWs, amOwner)), true;
+      if (m !== 'POST') return ctx.json(res, 405, { error: 'GET or POST' }), true;
+      if (!amOwner) return ctx.json(res, 403, { error: 'Only the workspace owner can lock or unlock it: the key is theirs.' }), true;
+      const lb = (await ctx.parseBody(req).catch(() => ({}))) || {}, L = myWs.lock && myWs.lock.on ? myWs.lock : null;
+      if (p === '/account/workspace/lock' && lb.on === true) {
+        if (L) return ctx.json(res, 409, { error: 'The owner lock is already on.' }), true;
+        const k = ownerKeyNow(myWs);
+        if (!k || k.by !== me.username) return ctx.json(res, 400, { error: 'Set your passphrase first (Account, Activity & audit, Passphrase for saved copies). The lock opens with the same passphrase.' }), true;
+        const dk = wscrypt.newKey();
+        myWs.lock = { on: true, state: 'sealing', key: k.id, wrapped: wrapForOwner(k.pub, dk), check: wscrypt.keyCheck(dk), since: Date.now(), by: me.username };
+        save(store); wslock.setState(myWs.id, 'sealing'); await wslock.open(myWs.id, dk); dk.fill(0);
+        ctx.audit(sess, { action: 'lock-on', key: k.id }, true);
+        ctx.lockConvert(myWs.id, 'seal');                                         // carries on in the background
+        return ctx.json(res, 200, lockView(myWs, true)), true;
+      }
+      if (p === '/account/workspace/lock' && lb.on === false) {
+        if (!L) return ctx.json(res, 409, { error: 'The owner lock is not on.' }), true;
+        if (wslock.locked(myWs.id)) return ctx.json(res, 423, { error: 'Unlock the workspace first: it cannot be turned back into plain files while it is locked.', locked: true }), true;
+        { const g = reauth(me, lb.password); if (g !== 'ok') return reauthFail(ctx, res, g), true; }
+        L.state = 'unsealing'; save(store); wslock.setState(myWs.id, 'unsealing');
+        ctx.audit(sess, { action: 'lock-off' }, true);
+        ctx.lockConvert(myWs.id, 'unseal');
+        return ctx.json(res, 200, lockView(myWs, true)), true;
+      }
+      if (p === '/account/workspace/lock/unlock') {                              // the browser opened the workspace key with the passphrase and sends it here, over https
+        if (!L) return ctx.json(res, 409, { error: 'The owner lock is not on.' }), true;
+        const hex = String(lb.key || '');
+        if (!/^[a-f0-9]{64}$/i.test(hex)) return ctx.json(res, 400, { error: 'key must be the workspace key (64 hex characters), as the Account page sends it.' }), true;
+        const dk = Buffer.from(hex, 'hex'), want = Buffer.from(String(L.check), 'hex'), got = Buffer.from(wscrypt.keyCheck(dk), 'hex');
+        if (want.length !== got.length || !crypto.timingSafeEqual(want, got)) { dk.fill(0); return ctx.json(res, 403, { error: 'That key does not open this workspace.' }), true; }
+        const was = wslock.locked(myWs.id); await wslock.open(myWs.id, dk); dk.fill(0);
+        if (was) ctx.audit(sess, { action: 'unlocked' }, true);
+        if (L.state === 'sealing' || L.state === 'unsealing') ctx.lockConvert(myWs.id, L.state === 'sealing' ? 'seal' : 'unseal');
+        return ctx.json(res, 200, lockView(myWs, true)), true;
+      }
+      if (p === '/account/workspace/lock/close') {                               // lock it now, by hand: the key is forgotten until the owner unlocks again
+        if (!L) return ctx.json(res, 409, { error: 'The owner lock is not on.' }), true;
+        if (L.state === 'unsealing') return ctx.json(res, 409, { error: 'The lock is being switched off; wait until that is finished.' }), true;
+        if (!wslock.locked(myWs.id)) ctx.audit(sess, { action: 'locked-by-hand' }, true);
+        await wslock.forget(myWs.id); ctx.lockClosed(myWs.id);
+        return ctx.json(res, 200, lockView(myWs, true)), true;
+      }
+      return ctx.json(res, 400, { error: 'POST /account/workspace/lock {on: true | false (with password)}, /account/workspace/lock/unlock {key}, or /account/workspace/lock/close' }), true;
+    }
     if (p === '/account/workspace' && m === 'GET') {
-      const seen = ctx.withWorkspace(myWs.id, () => ctx.loadData().users) || {};                                   // T-0034: last activity per member
+      let seen = {}; try { seen = ctx.withWorkspace(myWs.id, () => ctx.loadData().users) || {}; } catch (e) { if (!e.locked) throw e; }   // T-0222: not known while locked                                   // T-0034: last activity per member
       const roleOf = (a) => wsRoleOf(a, myWs);                                                                   // T-0199
       return ctx.json(res, 200, {
         id: myWs.id, name: myWs.name, role: roleOf(me), canManage: amAdmin, owner: store.accounts[myWs.owner]?.username || null,
@@ -1135,6 +1183,7 @@ async function handle(req, res, url, ctx0) {
         agentPolicy: myWs.agentPolicy || 'owner',
         retentionDays: myWs.retentionDays || 0,                                  // T-0037: 0 = keep forever
         recordDays: myWs.recordDays || 0, recordCopy: !!myWs.recordCopy, ownerKey: ownerKeyView(myWs, me, false),   // T-0219: 0 = the record is kept for good
+        lock: LOCK_FEATURE || (myWs.lock && myWs.lock.on) ? lockView(myWs, amOwner) : undefined,   // T-0222
       }), true;
     }
     if (p === '/account/workspace/audit/verify' && m === 'GET') {             // T-0194: is the record intact?
@@ -1189,6 +1238,11 @@ async function handle(req, res, url, ctx0) {
       if (!wrapOk(b) || !wrapOk(b.rec)) return ctx.json(res, 400, { error: 'The wrapped key is not in the expected form.' }), true;
       if (keys.length >= 10) return ctx.json(res, 400, { error: 'This workspace already had ten keys. Write to support.' }), true;
       const id = keys.reduce((n, k) => Math.max(n, k.id), 0) + 1;
+      if (myWs.lock && myWs.lock.on) {                                  // T-0222: the workspace key is wrapped for the owner's key; a new key takes it over
+        const wdk = wslock.key(myWs.id);
+        if (!wdk) return ctx.json(res, 423, { error: 'This workspace is locked with your earlier passphrase. Unlock it first with that passphrase or its recovery code; a new passphrase cannot open what the earlier one locked.', locked: true }), true;
+        myWs.lock.wrapped = wrapForOwner(b.pub, wdk); myWs.lock.key = id;
+      }
       myWs.ownerKeys = [...keys, { id, pub: b.pub, ...wrapOf(b), rec: wrapOf(b.rec), created: Date.now(), by: me.username }];
       save(store); ctx.audit(sess, { action: 'owner-key-set', key: id, bits: pk.bits }, true);
       return ctx.json(res, 200, ownerKeyView(myWs, me, true)), true;
@@ -1268,6 +1322,7 @@ async function handle(req, res, url, ctx0) {
     }
     if (p === '/account/workspace/transfer' && m === 'POST') {   // T-0034: hand the workspace (and its subscription) to another human member
       if (!amOwner) return ownerOnly(), true;
+      if (myWs.lock && myWs.lock.on) return ctx.json(res, 400, { error: 'Switch the owner lock off first: the workspace is locked with your key, and the new owner could not open it.' }), true;   // T-0222
       { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g), true; }
       const target = Object.values(store.accounts).find(a => a.username.toLowerCase() === String(b?.username || '').toLowerCase() && a.workspace === myWs.id);
       if (!target) return ctx.json(res, 404, { error: 'No such member in your workspace.' }), true;
@@ -1757,6 +1812,20 @@ function ownerKeyView(ws, me, full) {
   if (full) v.keys = ownerKeys(ws).map(x => ({ id: x.id, created: x.created, by: x.by, wrapped: x.wrapped, salt: x.salt, iv: x.iv, iter: x.iter, rec: x.rec }));
   return v;
 }
+// ── T-0222: the owner lock. ws.lock = { on, state: 'sealing' | 'on' | 'unsealing', key: owner key id, wrapped: the workspace key
+// RSA-OAEP-wrapped for that owner key, check: proves a key is the right one, since, by }. The workspace key itself is never stored.
+function wrapForOwner(pubB64, dk) { return crypto.publicEncrypt({ key: crypto.createPublicKey({ key: Buffer.from(pubB64, 'base64'), format: 'der', type: 'spki' }), padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' }, dk).toString('base64'); }
+function lockView(ws, owner) {
+  const l = ws && ws.lock && ws.lock.on ? ws.lock : null;
+  if (!l) return { feature: LOCK_FEATURE, on: false };
+  return { feature: LOCK_FEATURE, on: true, state: l.state, open: !wslock.locked(ws.id), since: l.since, by: l.by, key: l.key, keeper: wslock.keeper(), ...(owner ? { wrapped: l.wrapped } : {}) };
+}
+function lockStates() { if (!ENABLED) return []; return Object.values(load().workspaces).filter(w => w.lock && w.lock.on).map(w => ({ ws: w.id, state: w.lock.state, check: w.lock.check })); }
+function lockConverted(wsId, direction) {                         // the server sealed (or unsealed) all of a workspace's data
+  const st = load(), w = st.workspaces[wsId]; if (!w || !w.lock || !w.lock.on) return;
+  if (direction === 'seal' && w.lock.state === 'sealing') { w.lock.state = 'on'; w.lock.sealedAt = Date.now(); save(st); wslock.setState(wsId, 'on'); }
+  else if (direction === 'unseal' && w.lock.state === 'unsealing') { delete w.lock; save(st); wslock.setState(wsId, null); wslock.forget(wsId); }
+}
 function recordSettings() {                                       // T-0219: [{ id, name, days, copy, key, by }] for workspaces whose owner limited how long the record is kept
   if (!ENABLED) return [];
   const st = load();
@@ -1770,4 +1839,4 @@ function retentionSettings() {                                    // T-0037: [{ 
 function fleetLinkOf(wsId) { return (load().workspaces[wsId] || {}).fleet || null; }                       // T-0153: the stored link record (sealed key + status), or null
 function fleetMark(wsId, patch) { const store = load(); const f = (store.workspaces[wsId] || {}).fleet; if (!f) return; Object.assign(f, patch); save(store); }
 const fleetDir = () => path.dirname(FILE);                                                                  // where fleet-link.key lives (beside accounts.json)
-module.exports = { enabled: ENABLED, recordSettings, reportMailFind, reportMailSet, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };
+module.exports = { enabled: ENABLED, lockStates, lockConverted, recordSettings, reportMailFind, reportMailSet, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };

@@ -99,6 +99,22 @@ function decryptFileSync(dk, src, dst) {
   } catch (e) { try { fs.closeSync(outFd); fs.unlinkSync(dst); } catch {} fs.closeSync(inFd); throw e; }
   fs.closeSync(inFd); fs.closeSync(outFd);
 }
+// Does this file on disk open with this key? Reads the header and the first piece only. A file that was never sealed, or was
+// sealed with another key, or begins with the same marker by chance, answers false (T-0222: used when a workspace is sealed or
+// unsealed in one go, so each file is converted once and only once).
+function sealedWith(dk, file) {
+  if (!okKey(dk)) return false; let fd;
+  try {
+    fd = fs.openSync(file, 'r'); const head = Buffer.alloc(MAGIC_S.length + 8 + 4);
+    if (fs.readSync(fd, head, 0, head.length, 0) !== head.length || !head.subarray(0, MAGIC_S.length).equals(MAGIC_S)) return false;
+    const id = head.subarray(MAGIC_S.length, MAGIC_S.length + 8), len = head.readUInt32BE(MAGIC_S.length + 8);
+    if (len < IV + TAG || len > CHUNK + IV + TAG) return false;
+    const box = Buffer.alloc(len); if (fs.readSync(fd, box, 0, len, head.length) !== len) return false;
+    for (const last of [false, true]) { try { open(dk, box, pieceAad(id, 0, last)); return true; } catch { /* the other reading */ } }
+    return false;
+  } catch { return false; } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 const isEncFileSync = file => { let fd; try { fd = fs.openSync(file, 'r'); const b = Buffer.alloc(MAGIC_S.length); return fs.readSync(fd, b, 0, b.length, 0) === b.length && b.equals(MAGIC_S); } catch { return false; } finally { if (fd !== undefined) fs.closeSync(fd); } };
 
-module.exports = { newKey, okKey, keyCheck, isEnc, encText, decText, isEncBytes, encBytes, decBytes, isEncStream, encryptStream, decryptStream, encryptFileSync, decryptFileSync, isEncFileSync, TEXT_PREFIX, CHUNK };
+module.exports = { newKey, okKey, keyCheck, isEnc, encText, decText, isEncBytes, encBytes, decBytes, isEncStream, encryptStream, decryptStream, encryptFileSync, decryptFileSync, isEncFileSync, sealedWith, TEXT_PREFIX, CHUNK };
