@@ -295,7 +295,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.29.0")
+check("the connector reports its version", m.AGENT_VERSION == "3.30.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -885,6 +885,13 @@ check("the rule is about the address only: other schemes and an address without 
 pr = subprocess.run([sys.executable, str(HERE / "chamber-agent.py"), "--pair", "http://chamber.example.com"], capture_output=True, text=True, timeout=30, env={"PATH": os.environ.get("PATH", ""), "HOME": tempfile.gettempdir(), "CHAMBER_ENV_FILE": "/nonexistent/none.env"})
 check("pairing with a code is held to the same rule: nothing is sent to an http:// address", pr.returncode != 0 and "must start with https://" in pr.stderr + pr.stdout, (pr.returncode, (pr.stderr + pr.stdout)[:160]))
 load("claude")
+print("a locked workspace is waited for (3.30.0, T-0222)")
+m222l = load("claude"); said = []; m222l.log = lambda *a: said.append(" ".join(str(x) for x in a))
+w1, w2, w0 = m222l.locked_wait(423), m222l.locked_wait(423), m222l.locked_wait(500); n_locked = len(said); m222l.locked_over(); m222l.locked_over()
+check("when Chamber says the workspace is locked, the connector says so once, waits a minute between tries, and says when it is open again; other errors are not taken for a lock",
+      w1 == 60 and w2 == 60 and w0 == 0 and n_locked == 1 and "locked by its owner" in said[0] and len(said) == 2 and "open again" in said[1], said)
+src = open(HERE / "chamber-agent.py", encoding="utf-8").read()
+check("the main loop and the start-up both wait on a lock instead of failing", "w = locked_wait(e.code)" in src and src.count("locked_wait(e.code)") == 2 and "locked_over(); ME = me[\"username\"]" in src)
 sys.argv = ["chamber-agent.py"]
 srv.shutdown()
 print(f"\n{passed} passed, {failed} failed")

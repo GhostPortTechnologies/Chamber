@@ -27,7 +27,7 @@ const path = require('path');
 const https = require('https'); const http = require('http');
 const records = require('./records');
 const wslock = require('./wslock'), wscrypt = require('./wscrypt'), wsfiles = require('./wsfiles');           // T-0222: the owner lock
-const LOCK_FEATURE = process.env.CHAMBER_OWNER_LOCK === '1';                 // T-0222: switched on for tests only until the owner lock is finished                             // T-0219: sealed copies of the activity record, and its keep-for limits
+const LOCK_FEATURE = process.env.CHAMBER_OWNER_LOCK !== '0';                 // T-0222: offered to every owner; CHAMBER_OWNER_LOCK=0 takes the option away on a server                             // T-0219: sealed copies of the activity record, and its keep-for limits
 const fleet = require('./fleet');                                             // T-0153: GhostPort fleet link (router status, read-only)
 const { execFile, execFileSync } = require('child_process');      // T-0010: /source archive via git; T-0036: changelog
 const cron = require('./cron');                                   // T-0058: schedules
@@ -1432,7 +1432,7 @@ async function handle(req, res, url, ctx0) {
     if (p === '/account/workspace/automation' && m === 'GET') {    // T-0058: schedules + webhooks (owner/admin)
       const now = new Date();
       return ctx.json(res, 200, {
-        schedules: (myWs.schedules || []).map(s => ({ ...s, nextRun: s.enabled ? (cron.next(s.spec, s.tz, now)?.getTime() || null) : null })),
+        schedules: (myWs.schedules || []).map(s => ({ ...s, text: scheduleText(myWs.id, s) ?? '(locked)', nextRun: s.enabled ? (cron.next(s.spec, s.tz, now)?.getTime() || null) : null })),
         hooks: (myWs.hooks || []).map(h => ({ id: h.id, name: h.name, room: h.room, instruction: h.instruction, bot: h.bot || null, by: h.by, createdAt: h.createdAt, lastHit: h.lastHit || null, hits: h.hits || 0 })),
         mirrors: (myWs.mirrors || []).map(x => { let host = '?'; try { host = new URL(x.url).hostname; } catch {} return { id: x.id, room: x.room, kind: x.kind, host, urlTail: x.url.slice(-6), by: x.by, enabled: x.enabled, sent: x.sent || 0, fails: x.fails || 0, lastSent: x.lastSent || null, lastError: x.lastError || null }; }),   // T-0062: URL never returned in full
         presets: cron.PRESETS,
@@ -1447,17 +1447,17 @@ async function handle(req, res, url, ctx0) {
       const rooms = ctx.withWorkspace(myWs.id, () => ctx.loadData().rooms);
       if (!rooms[room] || rooms[room].dm) return ctx.json(res, 400, { error: 'Pick an existing room (not a DM).' }), true;
       if ((myWs.schedules || []).length >= 30) return ctx.json(res, 400, { error: 'Limit of 30 schedules per workspace.' }), true;
-      const s = { id: crypto.randomBytes(4).toString('hex'), spec, tz, room, text, by: me.username, enabled: true, createdAt: Date.now(), lastRun: null, runs: 0, once: !!b?.once };   // T-0069: once = a reminder; it disables itself after firing
+      const sid = crypto.randomBytes(4).toString('hex'), s = { id: sid, spec, tz, room, text: schedSeal(myWs.id, sid, text), by: me.username, enabled: true, createdAt: Date.now(), lastRun: null, runs: 0, once: !!b?.once };   // T-0069: once = a reminder; it disables itself after firing
       (myWs.schedules ||= []).push(s); save(store);
       ctx.audit(sess, { action: 'schedule-create', id: s.id, spec, tz, room }, true);
-      return ctx.json(res, 201, { ok: true, schedule: { ...s, nextRun: cron.next(spec, tz)?.getTime() || null } }), true;
+      return ctx.json(res, 201, { ok: true, schedule: { ...s, text, nextRun: cron.next(spec, tz)?.getTime() || null } }), true;
     }
     const schedMatch = p.match(/^\/account\/workspace\/schedules\/([a-f0-9]{8})$/);
     if (schedMatch && m === 'POST') {                                // T-0058: toggle / delete
       const s = (myWs.schedules || []).find(x => x.id === schedMatch[1]); if (!s) return ctx.json(res, 404, { error: 'No such schedule.' }), true;
       if (b?.delete) { myWs.schedules = myWs.schedules.filter(x => x.id !== s.id); save(store); ctx.audit(sess, { action: 'schedule-delete', id: s.id }, true); return ctx.json(res, 200, { ok: true }), true; }
       if (b?.enabled !== undefined) { s.enabled = !!b.enabled; save(store); ctx.audit(sess, { action: 'schedule-toggle', id: s.id, enabled: s.enabled }, true); }
-      return ctx.json(res, 200, { ok: true, schedule: s }), true;
+      return ctx.json(res, 200, { ok: true, schedule: { ...s, text: scheduleText(myWs.id, s) } }), true;
     }
     if (p === '/account/workspace/mirrors' && m === 'POST') {       // T-0062: forward a room to Slack / Discord / any JSON endpoint
       const room = String(b?.room || 'general'); const rooms = ctx.withWorkspace(myWs.id, () => ctx.loadData().rooms);
@@ -1820,6 +1820,22 @@ function lockView(ws, owner) {
   if (!l) return { feature: LOCK_FEATURE, on: false };
   return { feature: LOCK_FEATURE, on: true, state: l.state, open: !wslock.locked(ws.id), since: l.since, by: l.by, key: l.key, keeper: wslock.keeper(), ...(owner ? { wrapped: l.wrapped } : {}) };
 }
+// Schedule texts live in accounts.json, outside the workspace folder; with the lock on they are sealed with the workspace key too.
+function schedSeal(wsId, id, text) { return wsfiles.sealing(wsId) ? wscrypt.encText(wslock.key(wsId), text, `sched:${wsId}:${id}`) : text; }
+function scheduleText(wsId, s) {                                   // the text, opened; null while the workspace is locked
+  if (!s || !wscrypt.isEnc(s.text)) return s ? s.text : null;
+  const dk = wslock.key(wsId); if (!dk) return null;
+  try { return wscrypt.decText(dk, s.text, `sched:${wsId}:${s.id}`); } catch { return null; }
+}
+function lockConvertSchedules(wsId, direction) {
+  const dk = wslock.key(wsId); if (!dk) return 0; const st = load(), w = st.workspaces[wsId]; if (!w) return 0; let n = 0;
+  for (const s of w.schedules || []) {
+    const aad = `sched:${wsId}:${s.id}`, sealed = wscrypt.isEnc(s.text) && (() => { try { wscrypt.decText(dk, s.text, aad); return true; } catch { return false; } })();
+    if (direction === 'seal' && !sealed) { s.text = wscrypt.encText(dk, String(s.text || ''), aad); n++; }
+    else if (direction === 'unseal' && sealed) { s.text = wscrypt.decText(dk, s.text, aad); n++; }
+  }
+  if (n) save(st); return n;
+}
 function lockStates() { if (!ENABLED) return []; return Object.values(load().workspaces).filter(w => w.lock && w.lock.on).map(w => ({ ws: w.id, state: w.lock.state, check: w.lock.check })); }
 function lockConverted(wsId, direction) {                         // the server sealed (or unsealed) all of a workspace's data
   const st = load(), w = st.workspaces[wsId]; if (!w || !w.lock || !w.lock.on) return;
@@ -1839,4 +1855,4 @@ function retentionSettings() {                                    // T-0037: [{ 
 function fleetLinkOf(wsId) { return (load().workspaces[wsId] || {}).fleet || null; }                       // T-0153: the stored link record (sealed key + status), or null
 function fleetMark(wsId, patch) { const store = load(); const f = (store.workspaces[wsId] || {}).fleet; if (!f) return; Object.assign(f, patch); save(store); }
 const fleetDir = () => path.dirname(FILE);                                                                  // where fleet-link.key lives (beside accounts.json)
-module.exports = { enabled: ENABLED, lockStates, lockConverted, recordSettings, reportMailFind, reportMailSet, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };
+module.exports = { enabled: ENABLED, lockStates, lockConverted, scheduleText, lockConvertSchedules, recordSettings, reportMailFind, reportMailSet, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };

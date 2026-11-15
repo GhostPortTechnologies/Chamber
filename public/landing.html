@@ -374,6 +374,14 @@
           <div class="msg" id="del-msg"></div></form>
       </div>
       <div id="pol-box" hidden>
+        <div id="lock-box" style="display:none;margin-top:18px">
+          <h3 class="sub-h" id="owner-lock">Owner lock</h3>
+          <p class="sub" id="lock-state"></p>
+          <div class="inline-form" id="lock-on-row" style="display:none"><button class="btn" type="button" id="lock-on">Switch the owner lock on</button></div>
+          <div class="inline-form" id="lock-open-row" style="display:none"><input id="lock-pass" type="password" autocomplete="off" placeholder="passphrase, or the recovery code"><button class="btn" type="button" id="lock-unlock">Unlock</button></div>
+          <div class="inline-form" id="lock-act-row" style="display:none"><button class="btn ghost" type="button" id="lock-close">Lock it now</button><input id="lock-off-pw" type="password" autocomplete="current-password" placeholder="account password, to switch it off"><button class="btn ghost" type="button" id="lock-off">Switch the lock off</button></div>
+          <p class="msg" id="lock-msg" role="status"></p>
+        </div>
         <h2 class="sec">Agent rules</h2>
         <p class="sub">Who may give instructions to the AI agents in this workspace? Agents refuse everyone else. Changes they cannot make themselves are proposed as tickets for a human to approve.</p>
         <label class="check"><input type="radio" name="pol" value="owner" id="pol-owner"> Only the owner</label>
@@ -759,6 +767,7 @@
     };
     renderAudit();                                                                      // T-0057
     renderRecords();                                                                    // T-0219
+    renderLock();                                                                       // T-0222
     $('au-verify').onclick = async () => {                                              // T-0194
       show($('au-verify-msg'), 'Checking…');
       try { const v = await api('/account/workspace/audit/verify');
@@ -903,6 +912,54 @@
   $('rec-now')?.addEventListener('click', async () => {
     try { const d = await api('/account/workspace/records-saved', {}); renderSaved(d.copies); show($('rec-saved-msg'), `Saved a sealed copy of ${d.copy.entries} entries. Nothing was deleted.`, 'ok'); }
     catch (err) { show($('rec-saved-msg'), err.message, 'err'); }
+  });
+  // ── T-0222: the owner lock. The browser opens the workspace key with the owner's passphrase (or recovery code) and sends it to
+  // the server over https to unlock; the passphrase itself never leaves this page.
+  let lockPoll = 0;
+  const hexOf = u8 => [...u8].map(x => x.toString(16).padStart(2, '0')).join('');
+  const renderLock = async () => {
+    if (!me || !me.workspace || !$('lock-box')) return;
+    let l; try { l = await api('/account/workspace/lock'); } catch { return; }
+    if (!l.feature) return;
+    const owner = me.workspace.role === 'owner', vis = (id, on) => { $(id).style.display = on ? '' : 'none'; };
+    $('lock-box').style.display = '';
+    let txt;
+    if (!l.on) txt = 'Off. Traffic to and from Chamber is always encrypted. With the owner lock on, what this workspace stores is sealed as well, with a key only your passphrase or recovery code opens.';
+    else if (l.state === 'sealing') txt = 'Switching on: sealing what this workspace has stored. The workspace stays usable meanwhile.';
+    else if (l.state === 'unsealing') txt = 'Switching off: turning what is stored back into plain files.';
+    else if (!l.open) txt = owner ? 'Locked. Nobody, you included, can use this workspace until you unlock it here with your passphrase or recovery code.' : 'Locked by the owner. It opens again when they unlock it.';
+    else txt = 'On, and open. Chat, tickets, files and the record are stored sealed with a key only your passphrase or recovery code opens. Room names, people\'s names, times and folder names stay readable. While the workspace is open our server works with it in memory, so this is not end-to-end encryption.';
+    if (l.on && l.open && owner) txt += l.keeper === false ? ' On this server every restart locks it again until you unlock it here.' : ' A restart of the machine Chamber runs on locks it until you unlock it here.';
+    $('lock-state').textContent = txt;
+    vis('lock-on-row', owner && !l.on); vis('lock-open-row', owner && l.on && !l.open); vis('lock-act-row', owner && l.on && l.open && l.state === 'on');
+    clearTimeout(lockPoll); if (l.on && (l.state === 'sealing' || l.state === 'unsealing')) lockPoll = setTimeout(renderLock, 2000);
+  };
+  $('lock-on')?.addEventListener('click', async () => {
+    const k = await api('/account/workspace/ownerkey').catch(() => null);
+    if (!k || !k.set || !k.mine) return show($('lock-msg'), 'Set your passphrase first (Activity & audit, Passphrase for saved copies). The lock opens with the same passphrase.', 'err');
+    if (!confirm('Switch the owner lock on?\n\nEverything people wrote or uploaded here will be stored sealed with a key only your passphrase or recovery code opens.\n\nIf you lose both, nobody can open this workspace again, not even us.\n\nAfter the machine Chamber runs on restarts, the workspace stays locked until you unlock it on this page.')) return;
+    try { await api('/account/workspace/lock', { on: true }); show($('lock-msg'), 'Switched on. Sealing what is stored now.', 'ok'); renderLock(); } catch (err) { show($('lock-msg'), err.message, 'err'); }
+  });
+  $('lock-unlock')?.addEventListener('click', async () => {
+    const secret = $('lock-pass').value; if (!secret) return show($('lock-msg'), 'Type your passphrase or the recovery code.', 'err');
+    show($('lock-msg'), 'Opening…');
+    try {
+      const l = await api('/account/workspace/lock'), k = await api('/account/workspace/ownerkey'), key = (k.keys || []).find(x => x.id === l.key);
+      if (!key) return show($('lock-msg'), 'The key this workspace was locked with is not here any more.', 'err');
+      const un = await unwrapAny(secret, key); if (!un) return show($('lock-msg'), 'That passphrase (or code) does not open it. Nothing was sent anywhere.', 'err');
+      const priv = await crypto.subtle.importKey('pkcs8', un.pkcs8, { name: 'RSA-OAEP', hash: 'SHA-256' }, false, ['decrypt']);
+      const dk = new Uint8Array(await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, priv, b64d(l.wrapped))), hex = hexOf(dk); dk.fill(0);
+      await api('/account/workspace/lock/unlock', { key: hex }); $('lock-pass').value = '';
+      show($('lock-msg'), 'Unlocked. Everyone can use the workspace again.', 'ok'); renderLock();
+    } catch (err) { show($('lock-msg'), err.message, 'err'); }
+  });
+  $('lock-close')?.addEventListener('click', async () => {
+    if (!confirm('Lock the workspace now?\n\nNobody, you included, can use it until you unlock it here with your passphrase or recovery code. Agents wait meanwhile.')) return;
+    try { await api('/account/workspace/lock/close', {}); show($('lock-msg'), 'Locked.', 'ok'); renderLock(); } catch (err) { show($('lock-msg'), err.message, 'err'); }
+  });
+  $('lock-off')?.addEventListener('click', async () => {
+    const password = $('lock-off-pw').value; if (!password) return show($('lock-msg'), 'Type your account password to switch the lock off.', 'err');
+    try { await api('/account/workspace/lock', { on: false, password }); $('lock-off-pw').value = ''; show($('lock-msg'), 'Switching off: what is stored becomes plain files again.', 'ok'); renderLock(); } catch (err) { show($('lock-msg'), err.message, 'err'); }
   });
   const renderAudit = async () => {                                                         // T-0057
     const q = encodeURIComponent($('au-q')?.value || ''), actor = encodeURIComponent($('au-actor')?.value || '');

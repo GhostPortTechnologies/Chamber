@@ -1,0 +1,30 @@
+# Chamber key keeper (T-0222): holds the keys of OPEN workspaces (owner lock) in memory, so that releasing a new version of the app
+# does not lock every such workspace. It writes nothing to disk: when the machine restarts the keys are gone and those workspaces
+# stay locked until their owners unlock them. The app finds it through CHAMBER_KEYS_SOCKET (see chamber.service).
+# Install: copy to /etc/systemd/system/, then: systemctl daemon-reload && systemctl enable --now chamber-keykeeper
+[Unit]
+Description=Chamber key keeper (open workspace keys, memory only)
+Before=chamber.service
+
+[Service]
+Type=simple
+User=chamber
+RuntimeDirectory=chamber-keys
+RuntimeDirectoryMode=0700
+Environment=CHAMBER_KEYS_SOCKET=/run/chamber-keys/keys.sock
+ExecStart=/usr/bin/node /opt/chamber/app/keykeeper.js
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

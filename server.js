@@ -814,6 +814,7 @@ async function lockConvert(ws, direction) {
         await new Promise(r => setImmediate(r));
       }
       chat += store.convertChatRest(F().data, direction);
+      state += accounts.lockConvertSchedules(ws, direction);                       // schedule texts (kept in accounts.json)
       return { files, archives, state, chat };
     });
     if (!r || r.stopped || r.error) { if (r && r.error) console.error(`[lock] ${ws}: ${direction} stopped at ${r.error}; it is tried again in the hourly pass`); return r || null; }
@@ -1531,7 +1532,8 @@ function runSchedules(now = new Date()) {
     withWorkspace(ws, () => {
       const data = loadData();
       if (!data.users[schedule.by] || !data.rooms[schedule.room]) { console.log(`[schedule] ${ws}/${schedule.id} skipped: creator or room gone`); return; }
-      const made = postMessage(data, { username: schedule.by, text: schedule.text, room: schedule.room, source: `schedule:${schedule.id}` });
+      const stext = accounts.scheduleText(ws, schedule); if (stext === null) return;   // T-0222: sealed and not openable now
+      const made = postMessage(data, { username: schedule.by, text: stext, room: schedule.room, source: `schedule:${schedule.id}` });
       if (made.message) fired.push({ ws, id: schedule.id, message: made.message.id });
     }, { rid: 'sched' });
   }
@@ -3438,6 +3440,7 @@ if (!IS_LOOPBACK && !AUTH_REQUIRED) {                                        // 
 const lockList = accounts.enabled ? accounts.lockStates() : [];               // T-0222: workspaces that use the owner lock, reopened only if the key keeper still holds their keys
 for (const s of lockList) wslock.setState(s.ws, s.state);
 wslock.restore(lockList).then(r => {
+  if (wslock.keeper()) console.log(`[lock] key keeper ${r.keeper ? 'answers' : 'does NOT answer'} on ${process.env.CHAMBER_KEYS_SOCKET}`);
   if (lockList.length) console.log(`[lock] ${lockList.length} workspace(s) use the owner lock; ${r.restored} reopened from the key keeper${r.keeper ? '' : ' (no key keeper answered: the others stay locked until their owners unlock them)'}`);
   for (const s of lockList) if ((s.state === 'sealing' || s.state === 'unsealing') && !wslock.locked(s.ws)) lockConvert(s.ws, s.state === 'sealing' ? 'seal' : 'unseal');
 }, e => console.error('[lock] restore:', e.message)).finally(() => server.listen(PORT, HOST, () => {                                            // [changed] HOST is now configurable (was '127.0.0.1')

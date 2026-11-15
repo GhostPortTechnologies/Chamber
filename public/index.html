@@ -1199,7 +1199,8 @@ function connectEvents() {
   es.onopen = () => { eventsLive = true; };
   es.onerror = () => { eventsLive = false; };                               // EventSource reconnects by itself
   es.addEventListener('shutdown', () => { toast('Chamber is restarting, reconnecting…'); });   // T-0025: server drains before a restart
-  let wasDown = false; es.addEventListener('error', () => { wasDown = true; });
+  es.addEventListener('locked', () => { try { es.close(); } catch {} checkLocked(); });   // T-0222: the owner locked the workspace
+  let wasDown = false; es.addEventListener('error', () => { wasDown = true; checkLocked(); });
   es.addEventListener('open', () => { if (wasDown) { wasDown = false; poll(); loadRooms(); loadTickets(); } });   // catch up after a reconnect
   es.addEventListener('change', e => {
     let d = {}; try { d = JSON.parse(e.data); } catch {}
@@ -1289,6 +1290,19 @@ async function saveNotify() {
     const d = await r.json(); if (!r.ok) { toast(d.error || 'Could not save quiet hours', 'err'); return; }
     myNotify.quiet = d.quiet; renderNotifySummary(); toast('Saved'); closeNotify(); } catch { toast('Could not save', 'err'); }
 }
+// T-0222: the owner locked the workspace (or the machine restarted and the owner has not unlocked it yet). Nothing inside can be
+// shown, so the app says exactly that, and shows the owner where to unlock it.
+function showWorkspaceLocked(canUnlock) {
+  if (document.getElementById('ws-locked')) return;
+  document.body.innerHTML = `<main id="ws-locked" style="max-width:520px;margin:12vh auto;padding:0 16px;color:var(--text);line-height:1.6"><h1 style="font-size:20px;margin:0 0 10px">This workspace is locked</h1>`
+    + `<p>${canUnlock ? 'It is locked with your passphrase (you locked it, or the machine Chamber runs on restarted). Unlock it on your Account page with your passphrase or recovery code.' : 'Its owner has locked it. It opens again when they unlock it. Meanwhile nobody can read anything in it, and agents wait.'}</p>`
+    + `${canUnlock ? '<p><a class="btn btn-primary" href="/billing#owner-lock">Unlock on the Account page</a></p>' : '<p><a href="/billing">Account page</a></p>'}</main>`;
+}
+let lockCheckAt = 0;
+async function checkLocked() {                                                 // after a dropped live connection: was it a lock?
+  if (Date.now() - lockCheckAt < 10000) return; lockCheckAt = Date.now();
+  try { const r = await fetch(`${API}/api/me`); if (r.ok) { const m = await r.json(); if (m.locked) showWorkspaceLocked(m.locked.canUnlock); } } catch { /* offline */ }
+}
 // Accounts mode: the landing page signed us in already. Pick that session up instead of showing the overlay,   [new]
 // and offer a way back to the account page.
 (async () => {
@@ -1296,6 +1310,7 @@ async function saveNotify() {
     const r = await fetch(`${API}/api/me`);
     if (!r.ok) return;
     const me = await r.json();
+    if (me.locked) { showWorkspaceLocked(me.locked.canUnlock); return; }        // T-0222
     if (me.accounts) {
       document.getElementById('menu-account').hidden = false; document.getElementById('menu-signout').hidden = false;   // T-0065: in the gear menu
       document.getElementById('menu-notify').hidden = false;   // T-0078

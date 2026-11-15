@@ -504,6 +504,24 @@ async function run(size) {
       await page.selectOption('#rec-days', '0'); await page.uncheck('#rec-copy'); await page.click('#rec-save'); await page.locator('#rec-msg', { hasText: /kept for good/ }).waitFor();
       check(`${size}: the owner sets how long the record is kept, with a sealed copy first, and can go back to keeping it for good`, true);
     });
+    await step('account page: owner lock on, locked, unlocked, off', async () => {                     // T-0222
+      page.removeAllListeners('dialog');                                            // an earlier step may leave a one-time dialog handler behind
+      await page.goto(BASE + '/billing', { waitUntil: 'networkidle' });
+      await page.locator('#lock-box').waitFor({ state: 'visible' }); await page.locator('#lock-box').scrollIntoViewIfNeeded();
+      const off0 = await page.locator('#lock-state').innerText();
+      page.once('dialog', d => d.accept()); await page.click('#lock-on');
+      await page.locator('#lock-state', { hasText: /On, and open/ }).waitFor({ timeout: 60000 }); await shot('owner-lock-on');
+      page.once('dialog', d => d.accept()); await page.click('#lock-close'); await page.locator('#lock-state', { hasText: /^Locked\./ }).waitFor();
+      const p2 = await page.context().newPage(); await p2.goto(BASE + '/app', { waitUntil: 'networkidle' }); await p2.locator('#ws-locked').waitFor({ timeout: 15000 });
+      const appTxt = await p2.locator('body').innerText(), msgs = await p2.evaluate(async () => (await fetch('/api/messages?room=general')).status); await shot('owner-lock-app'); await p2.close();
+      await page.fill('#lock-pass', 'not the right passphrase'); await page.click('#lock-unlock'); await page.locator('#lock-msg', { hasText: /does not open it/ }).waitFor({ timeout: 60000 });
+      await page.fill('#lock-pass', 'a passphrase for the browser check'); await page.click('#lock-unlock'); await page.locator('#lock-state', { hasText: /On, and open/ }).waitFor({ timeout: 60000 });
+      const opened = await page.evaluate(async () => (await fetch('/api/messages?room=general')).status);
+      await page.fill('#lock-off-pw', pw); await page.click('#lock-off'); await page.locator('#lock-state', { hasText: /^Off\./ }).waitFor({ timeout: 60000 });
+      const fits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1); await shot('owner-lock-off'); page.removeAllListeners('dialog');
+      check(`${size}: the owner switches the lock on, locks it (the app then shows only that it is locked, and chat answers "locked"), unlocks it with the passphrase in the browser (a wrong one opens nothing) and switches it off with the password`,
+        /^Off\./.test(off0) && /This workspace is locked/.test(appTxt) && /Unlock on the Account page/.test(appTxt) && msgs === 423 && opened === 200 && fits, JSON.stringify({ off0: off0.slice(0, 40), app: appTxt.slice(0, 120), msgs, opened, fits }));
+    });
     await step('weekly report: private link and page', async () => {                                   // T-0202
       await page.goto(BASE + '/billing', { waitUntil: 'networkidle' });
       await page.locator('#rep-link').scrollIntoViewIfNeeded(); await page.click('#rep-link');

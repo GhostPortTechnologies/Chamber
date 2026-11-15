@@ -52,6 +52,8 @@ Guardrails (T-0015, first cut):
     what it read and did; a new top-level mention starts a fresh session. Sessions end after CHAMBER_SESSION_IDLE_MIN minutes
     without a reply (60). Claude Code keeps the conversation on this machine in its usual place (~/.claude, which the agent
     itself may not read). CHAMBER_SESSIONS=off goes back to one fresh run per mention with no session file. Replies are redacted for anything that looks like a secret.
+  - T-0222 (3.30.0): when the workspace owner has locked the workspace (owner lock), Chamber answers 423; the connector says so once
+    and tries again every minute, instead of failing or restarting, and says when it is open again.
   - T-0222 (3.29.0): the agent key only travels over https. A CHAMBER_URL that starts with http:// is refused at start, except for
     this machine itself (127.0.0.1, localhost) or when CHAMBER_ALLOW_HTTP=1 says the address is inside a private network you trust.
   - T-0221 (3.28.0): in that mode the agent is given the CLAUDE.md at the top of each attached folder (three at most) as background
@@ -164,7 +166,7 @@ CLAUDE_BIN = os.environ.get("CHAMBER_CLAUDE_BIN", "claude")
 POLL_SEC = int(os.environ.get("CHAMBER_POLL_SEC", "5"))
 CLAUDE_TIMEOUT = int(os.environ.get("CHAMBER_CLAUDE_TIMEOUT", "300"))
 STATE = os.environ.get("CHAMBER_STATE", os.path.expanduser("~/.chamber-agent-state.json"))
-AGENT_VERSION = "3.29.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
+AGENT_VERSION = "3.30.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
 FALLBACK_SEC = int(os.environ.get("CHAMBER_FALLBACK_SEC", "20"))   # T-0046: poll + presence ping interval while the event stream is up
 BACKEND = os.environ.get("CHAMBER_BACKEND", "claude").strip().lower()           # T-0055
 MODEL = os.environ.get("CHAMBER_MODEL", "").strip()
@@ -426,6 +428,17 @@ def api(method, path, body=None):
         return json.load(r)
 
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
+
+LOCKED = {"since": 0.0}                                              # T-0222 (3.30.0): the owner has locked the workspace
+def locked_wait(code):
+    """Chamber answers 423 while the workspace owner has the workspace locked. Say so once; the caller waits a minute and tries again."""
+    if code != 423: return 0
+    if not LOCKED["since"]:
+        LOCKED["since"] = time.time(); log("the workspace is locked by its owner: nothing is read or answered until it is unlocked; trying again every minute")
+    return 60
+def locked_over():
+    if LOCKED["since"]:
+        log(f"the workspace is open again (it was locked for about {max(1, int((time.time() - LOCKED['since']) / 60))} min)"); LOCKED["since"] = 0.0
 
 MAX_ATTACH_BYTES = int(os.environ.get("CHAMBER_MAX_ATTACH_MB", "10")) * 1048576   # T-0064: never download more than this per file
 TEXT_INLINE_BYTES = 64 * 1024                                                     # T-0064: text files up to this size go into the prompt for tool-less backends
@@ -1996,7 +2009,13 @@ class Breaker:                                                                  
 
 def main():
     global ME
-    me = api("GET", "/api/me"); ME = me["username"]
+    while True:                                                      # T-0222: a locked workspace is waited for, not a reason to stop
+        try: me = api("GET", "/api/me"); break
+        except urllib.error.HTTPError as e:
+            w = locked_wait(e.code)
+            if not w: raise
+            time.sleep(w)
+    locked_over(); ME = me["username"]
     global COMMANDERS
     server_cmd = {u.lower() for u in me.get("commanders") or []}                      # T-0041: the server is the source of truth
     if COMMANDERS and not COMMANDERS <= server_cmd:
@@ -2150,10 +2169,14 @@ def main():
                     finally:
                         set_state("idle"); mark_answered(m["id"]); breaker.record()                # T-0087/T-0088: record the answer in the ledger and the breaker
         except urllib.error.HTTPError as e:
+            w = locked_wait(e.code)                                           # T-0222
+            if w: wake.wait(w); wake.clear(); continue
             log(f"HTTP {e.code} from Chamber: {e.read()[:200]!r}")
             if e.code == 401: log("token rejected or revoked; stopping"); sys.exit(1)
         except Exception as e:
             log(f"error: {e}")
+        else:
+            locked_over()
         wake.wait(FALLBACK_SEC if stream.connected else POLL_SEC); wake.clear()         # T-0046: event-driven, with polling as the safety net
 
 if __name__ == "__main__":

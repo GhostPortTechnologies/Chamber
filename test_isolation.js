@@ -1470,7 +1470,7 @@ function markPaid(...emails) {                                   // simulate a p
     }
     console.log('activity over any period, its export, and how long the record is kept (T-0219)');
     { const port9 = await freePort(), B9 = `http://127.0.0.1:${port9}`; const dir9 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-act-'));
-      const env9 = { ...env, CHAMBER_PUBLIC_URL: B9, CHAMBER_PORT: String(port9), CHAMBER_DATA: path.join(dir9, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir9, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir9, 'tickets.json') };
+      const env9 = { ...env, CHAMBER_PUBLIC_URL: B9, CHAMBER_PORT: String(port9), CHAMBER_DATA: path.join(dir9, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir9, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir9, 'tickets.json'), CHAMBER_OWNER_LOCK: '0' };
       const srv9 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env9, stdio: ['ignore', 'pipe', 'pipe'] }); let log9 = ''; srv9.stdout.on('data', d => log9 += d); srv9.stderr.on('data', d => log9 += d);
       const c9 = async (method, p, { token, body } = {}) => { const r = await fetch(B9 + p, { method, signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text, headers: r.headers }; };
       for (let i = 0; i < 50; i++) { try { if ((await c9('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
@@ -1482,6 +1482,7 @@ function markPaid(...emails) {                                   // simulate a p
         const code9 = ((await c9('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1], M = await su9('mem9', { join: code9 });
         const bot = (await c9('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Bot', username: 'bot9' } })).json?.token;
         const wsDir = path.join(dir9, 'ws', fs.readdirSync(path.join(dir9, 'ws'))[0]), tf = path.join(wsDir, 'tickets.json');
+        check('T-0222: a server started with CHAMBER_OWNER_LOCK=0 does not offer the owner lock', (await c9('GET', '/account/workspace/lock', { token: O.token })).status === 404 && (await c9('POST', '/account/workspace/lock', { token: O.token, body: { on: true } })).status === 404);
         // ── the Activity tab's data ──
         await c9('POST', '/api/tickets', { token: O.token, body: { by: 'own9', title: 'Fix the sign-up page' } });
         await c9('POST', '/api/tickets', { token: M.token, body: { by: 'mem9', title: '=HYPERLINK("http://bad.invalid","click")' } });
@@ -1688,7 +1689,8 @@ function markPaid(...emails) {                                   // simulate a p
       } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {} }
     }
     console.log('the owner lock: switch on, lock, unlock, files and archives sealed (T-0222)');
-    check('T-0222: the owner lock is not offered on a server where it is not switched on', (await call('POST', '/account/workspace/lock', { token: A.token, body: { on: true } })).status === 404 && (await call('GET', '/account/workspace/lock', { token: A.token })).status === 404);
+    { const lk0 = (await call('GET', '/account/workspace/lock', { token: A.token })).json || {};
+      check('T-0222: the owner lock is offered on every server by default, and is off until an owner switches it on', lk0.feature === true && lk0.on === false, JSON.stringify(lk0)); }
     { const dir11 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-lock-')), sock11 = path.join(dir11, 'keys.sock'), wcr = require(path.join(APP, 'wscrypt.js')), { webcrypto: wc } = require('crypto');
       let port11 = await freePort(), B11 = `http://127.0.0.1:${port11}`, srv11 = null, log11 = '', kk = null;
       const env11 = () => ({ ...env, CHAMBER_PUBLIC_URL: B11, CHAMBER_PORT: String(port11), CHAMBER_DATA: path.join(dir11, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir11, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir11, 'tickets.json'), CHAMBER_OWNER_LOCK: '1', CHAMBER_KEYS_SOCKET: sock11 });
@@ -1795,6 +1797,7 @@ function markPaid(...emails) {                                   // simulate a p
         const rvw = await c12('POST', '/api/reviews', { token: O.token, body: { by: 'own12', note: `look at ${MARK}`, files: [{ path: 'notes.txt', diff: `${MARK} pasted text` }] } });
         const mem = await c12('POST', '/api/memory', { token: O.token, body: { agent: 'bot12', scope: '*', text: `remember ${MARK}` } });
         const acfg = await c12('POST', '/api/ask-config', { token: O.token, body: { device: 'office box', owner: 'own12', can: 'readonly', notes: `do not touch ${MARK}` } });
+        const sch1 = await c12('POST', '/account/workspace/schedules', { token: O.token, body: { spec: '30 7 * * 1-5', tz: 'UTC', room: 'general', text: `@bot12 check ${MARK}` } });
         check('T-0222 part 4: setup: a ticket with a note, an attached change, a pasted review, an agent memory note and phone AI notes', dff.status < 300 && rvw.status < 300 && mem.status < 300 && acfg.status < 300, JSON.stringify([dff.status, rvw.status, mem.status, acfg.status, dff.text.slice(0, 80)]));
         const b64 = b => Buffer.from(b).toString('base64'), kek = async (secret, salt, iter) => wc.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, await wc.subtle.importKey('raw', new TextEncoder().encode(secret), 'PBKDF2', false, ['deriveKey']), { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
         const wrapK = async (secret, pkcs8) => { const salt = wc.getRandomValues(new Uint8Array(16)), iv = wc.getRandomValues(new Uint8Array(12)); return { wrapped: b64(await wc.subtle.encrypt({ name: 'AES-GCM', iv }, await kek(secret, salt, 100000), pkcs8)), salt: b64(salt), iv: b64(iv), iter: 100000 }; };
@@ -1807,6 +1810,9 @@ function markPaid(...emails) {                                   // simulate a p
         const sealedOk = own.map(f => [path.basename(f), fs.existsSync(f) && wcr.isEncBytes(fs.readFileSync(f)) && !fs.readFileSync(f).includes(MARK)]), recLines = rec.flatMap(f => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean));
         check('T-0222 part 4: switched on, every file people wrote into is sealed on disk (tickets, the attached change and its description, reviews, memory, phone AI notes, the recent record), and every line of the record is sealed by itself; none holds what was written',
           st1.state === 'on' && sealedOk.every(x => x[1]) && recLines.length > 5 && recLines.every(l => l.startsWith('enc:v1:') && !l.includes(MARK)) && /\[lock\] \S+: sealed 0 file\(s\), 0 archive\(s\), \d+ other file\(s\) and \d+ chat value\(s\)/.test(log12), JSON.stringify({ st: st1.state, sealedOk, lines: recLines.length }));
+        const sch2 = await c12('POST', '/account/workspace/schedules', { token: O.token, body: { spec: '0 9 * * 1', tz: 'UTC', room: 'general', text: `@bot12 weekly ${MARK}` } }), auto = (await c12('GET', '/account/workspace/automation', { token: O.token })).json || {};
+        check('T-0222 part 6: schedule texts are sealed too, the ones made before and after switching on, though they live outside the workspace folder; the owner still sees them as written',
+          sch1.status === 201 && sch2.status === 201 && sch2.json.schedule.text === `@bot12 weekly ${MARK}` && !fs.readFileSync(f12, 'utf8').includes(MARK) && (auto.schedules || []).map(s => s.text).sort().join('|') === [`@bot12 check ${MARK}`, `@bot12 weekly ${MARK}`].sort().join('|'), JSON.stringify({ s1: sch1.status, s2: sch2.status, auto: (auto.schedules || []).map(s => s.text) }));
         const view = { tickets: (await c12('GET', '/api/tickets', { token: O.token })).text, diff: (await c12('GET', '/api/tickets/T-0002/diff', { token: O.token })).text, reviews: (await c12('GET', '/api/reviews', { token: O.token })).text,
           memory: (await c12('GET', '/api/memory?agent=bot12', { token: O.token })).text, cfg: (await c12('GET', '/api/ask-config', { token: O.token })).text, record: (await c12('GET', '/account/workspace/audit', { token: O.token })).text, verify: (await c12('GET', '/account/workspace/audit/verify', { token: O.token })).json };
         check('T-0222 part 4: while open, everyone reads all of it exactly as before, and the record still checks out', Object.entries(view).filter(([k]) => k !== 'verify' && k !== 'record').every(([, v]) => v.includes(MARK)) && view.record.includes('progress on') && view.verify && view.verify.ok === true, JSON.stringify({ verify: view.verify, has: Object.fromEntries(Object.entries(view).map(([k, v]) => [k, typeof v === 'string' ? v.includes(MARK) : v])) }));
@@ -1825,7 +1831,7 @@ function markPaid(...emails) {                                   // simulate a p
         await c12('POST', '/account/workspace/lock', { token: O.token, body: { on: false, password: PW } }); const st2 = await waitState('off');
         const plainOk = own.map(f => [path.basename(f), fs.existsSync(f) && !wcr.isEncBytes(fs.readFileSync(f))]), recPlain = rec.flatMap(f => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean)), v2 = (await c12('GET', '/account/workspace/audit/verify', { token: O.token })).json;
         check('T-0222 part 4: switched off, all of it is plain again, the record line by line, and the record still checks out',
-          st2.on === false && plainOk.every(x => x[1]) && JSON.parse(fs.readFileSync(path.join(ws12, 'tickets.json'), 'utf8')).tickets.some(t => t.title === `Third ${MARK}`) && recPlain.every(l => l.startsWith('{')) && recPlain.some(l => l.includes('progress on')) && v2.ok === true, JSON.stringify({ st2, plainOk, v2 }));
+          st2.on === false && plainOk.every(x => x[1]) && fs.readFileSync(f12, 'utf8').includes(`@bot12 weekly ${MARK}`) && JSON.parse(fs.readFileSync(path.join(ws12, 'tickets.json'), 'utf8')).tickets.some(t => t.title === `Third ${MARK}`) && recPlain.every(l => l.startsWith('{')) && recPlain.some(l => l.includes('progress on')) && v2.ok === true, JSON.stringify({ st2, plainOk, v2 }));
       } finally { srv12.kill(); try { fs.rmSync(dir12, { recursive: true, force: true }); } catch {} }
     }
     { // the record's keep-for limit on a sealed record (records.js with the codec the server passes)
