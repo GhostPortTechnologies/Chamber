@@ -166,6 +166,18 @@ async function run(size) {
       const card = page.locator('.ticket-card', { hasText: 'Browser check ticket' }).first(); await card.waitFor(); check(`${size}: a proposed ticket appears on the board`, true); await shot('tickets');
       const cb = await card.boundingBox(); check(`${size}: the ticket is on the first screen`, !!cb && cb.y + cb.height <= SIZES[size].viewport.height * 0.75, JSON.stringify(cb));
     });
+    await step('ticket export page: Chamber colours on screen, dark on white on paper', async () => {   // T-0228
+      const app = await page.evaluate(() => ({ bg: getComputedStyle(document.body).backgroundColor, id: getComputedStyle(document.querySelector('.ticket-card .id')).color }));
+      const px = await page.context().newPage(); try {
+        await px.goto(BASE + '/api/tickets/export', { waitUntil: 'networkidle' });
+        const look = () => px.evaluate(() => { const cs = q => getComputedStyle(document.querySelector(q)); return { bg: cs('body').backgroundColor, text: cs('body').color, h1: cs('h1').color, id: cs('.t .id').color, font: cs('body').fontFamily, cards: document.querySelectorAll('.t').length, sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }; });
+        const scr = await look(); try { await px.screenshot({ path: path.join(OUT, `${size}-ticket-export.png`), fullPage: true }); } catch {}
+        await px.emulateMedia({ media: 'print' }); const prn = await look(); try { await px.screenshot({ path: path.join(OUT, `${size}-ticket-export-print.png`), fullPage: true }); } catch {}
+        check(`${size}: the ticket export has the app's background, accent and typeface on screen, fits the screen, and prints dark on white with coloured headings`,
+          scr.bg === app.bg && scr.id === app.id && scr.h1 === app.id && /JetBrains Mono/.test(scr.font) && scr.cards > 0 && scr.sw <= scr.cw + 1
+          && prn.bg === 'rgb(255, 255, 255)' && prn.text === 'rgb(17, 17, 17)' && prn.h1 !== prn.text && prn.h1 !== scr.h1, JSON.stringify({ app, scr, prn }));
+      } finally { await px.close(); }
+    });
     await step('review a proposed change: comment on a line and ask for changes', async () => { try {    // T-0189
       const tid = await page.evaluate(async () => {
         const r = await fetch('/api/tickets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Review check: set x', body: 'A change to review.', for: 'agent', by: 'x' }) });

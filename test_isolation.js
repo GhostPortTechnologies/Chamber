@@ -1629,6 +1629,13 @@ function markPaid(...emails) {                                   // simulate a p
       const san = k.sanitize({ items: [{ id: 'abcdef12', title: 'Pay the bill', every: 'month', day: 1, tz: 'UTC', by: 'ann', at: 1, done: [{ p: '2026-10', by: 'ann', at: 2 }, { p: '<script>', at: 3 }], extra: 'x' }, { id: '../etc', title: 'bad id', every: 'day' }, { id: 'abcdef13', title: 'Bad rhythm', every: 'year' }] });
       check('T-0224: what a person may set is checked (title length, rhythm, weekday, day of the month, time zone), and an imported list keeps only well-formed tasks with the fields Chamber writes',
         bad.every(c => c.error) && good.title === 'Pay the bill' && good.day === 31 && san.items.length === 1 && san.items[0].done.length === 1 && !('extra' in san.items[0]), JSON.stringify({ bad, good, san })); }
+    console.log('the printable ticket page in Chamber colours (T-0228)');
+    { const { exportTickets } = require(path.join(APP, 'ticket-export.js'));
+      const tk = [{ id: 'T-0001', title: '<img src=x onerror=alert(1)>', status: 'proposed', priority: 'normal', body: 'b' }, { id: 'T-0002', title: 'Fix it', status: 'done', priority: 'critical' }];
+      const h = exportTickets(tk, { format: 'html' }).body, md = exportTickets(tk, { format: 'md' }).body, csv = exportTickets(tk, { format: 'csv' }).body;
+      check('T-0228: the printable ticket page follows the app (theme read before first paint, the accent from theme.js, the same typeface), fits a phone, prints dark on white, has no olive-gold left, and still escapes ticket text; Markdown and CSV carry no page code',
+        /localStorage\.getItem\('chamber-theme'\)/.test(h) && h.includes('<script src="/theme.js"></script>') && /JetBrains Mono/.test(h) && /name="viewport"/.test(h) && /@media print \{ :root:root:root \{ --bg:#fff;/.test(h)
+        && !/#7a6a00/i.test(h) && !h.includes('<img src=x') && h.includes('&lt;img src=x onerror=alert(1)&gt;') && !/<style|<script/.test(md + csv), h.slice(0, 300)); }
     console.log('finished work is checked on the Reviews tab (T-0223)');
     { const port10 = await freePort(), B10 = `http://127.0.0.1:${port10}`; const dir10 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-check-'));
       const env10 = { ...env, CHAMBER_PUBLIC_URL: B10, CHAMBER_PORT: String(port10), CHAMBER_DATA: path.join(dir10, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir10, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir10, 'tickets.json') };

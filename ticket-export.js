@@ -53,36 +53,45 @@ function counts(tickets, key) {                                                 
   return [...m.entries()].sort((a, b) => b[1] - a[1]);                          // [[value, n], ...] in descending order
 }
 
-// Print stylesheet. One rule per array entry so each line can carry its own comment
-// without the comment ending up inside the exported page.
+// Page stylesheet (T-0228: GhostPort colours). On screen the page looks like the rest of Chamber: the same Dark, Light,
+// System and Contrast themes as the app (the choice is read from the browser before the page is drawn), the app's typeface,
+// and the accent colour the person picked (theme.js, loaded at the end of the page). On paper it switches to dark text on
+// white with headings in the accent darkened for ink, so it stays readable and does not print a page of black.
+// Until 2026-11-15 the page was black on white with an olive stripe for "normal" priority, which read as black and gold.
+// One rule per array entry so each line can carry its own comment without the comment ending up inside the exported page.
+const LIGHT = '--bg:#f4f7f5; --surface:#ffffff; --surface-2:#eef2ef; --line:#dbe2de; --line-strong:#c2ccc6; --text:#182019; --text-dim:#566159; --text-faint:#7a847e; --accent:color-mix(in srgb, var(--accent-pick) 50%, #000); --danger:#c62828; --warn:#a35f00; color-scheme:light;';  // the app's Light theme values
 const CSS = [
-  ':root { --ink:#111; --dim:#666; --rule:#d8d8d8; --bg:#fff; }',             // black on white: readable on paper, saves toner
+  ':root { --accent-pick:#00ff88; --accent:var(--accent-pick); --bg:#0a0c0b; --surface:#101412; --surface-2:#161b18; --line:#232a26; --line-strong:#303934; --text:#d8ded9; --text-dim:#8d978f; --text-faint:#5f6964; --danger:#ff6b6b; --warn:#ffab40; --mono:"JetBrains Mono","Fira Code",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color-scheme:dark; }',  // the app's Dark theme: GhostPort green on near-black (also what a saved copy shows)
+  `:root[data-theme=light] { ${LIGHT} }`,                                       // Light, as in the app (the accent darkened so it reads on white)
+  `@media (prefers-color-scheme: light) { :root[data-theme=system] { ${LIGHT} } }`,  // System follows the phone or computer
+  ':root[data-theme=contrast] { --bg:#000; --surface:#000; --surface-2:#121212; --line:#5a5a5a; --line-strong:#808080; --text:#fff; --text-dim:#d6d6d6; --text-faint:#b8b8b8; }',  // Contrast, as in the app
   '* { box-sizing: border-box; }',                                              // padding stays inside widths
-  'body { margin:0; padding:28px 32px; background:var(--bg); color:var(--ink); font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }',  // page margins and system font
-  'h1 { font-size:20px; margin:0 0 2px; letter-spacing:-.01em; }',              // board title
-  '.sub { color:var(--dim); font-size:12px; margin-bottom:14px; }',             // filter + timestamp line under the title
-  '.summary { display:flex; flex-wrap:wrap; gap:6px 18px; padding:10px 12px; border:1px solid var(--rule); border-radius:6px; margin-bottom:22px; font-size:12px; }',  // count boxes
-  '.summary b { font-variant-numeric:tabular-nums; }',                          // digits line up
-  'h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:24px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--rule); }',  // status section headings
-  '.t { border:1px solid var(--rule); border-left:3px solid var(--rule); border-radius:5px; padding:9px 12px; margin:0 0 8px; page-break-inside:avoid; break-inside:avoid; }',  // one ticket card; never split across pages
-  '.t.p-critical { border-left-color:#b3261e; }',                               // left stripe colour = priority
-  '.t.p-high { border-left-color:#c2610a; }',                                   // high: orange
-  '.t.p-normal, .t.p-medium { border-left-color:#7a6a00; }',                    // normal (and medium, from other stores): olive
-  '.t.p-low { border-left-color:#5a5a5a; }',                                    // low: grey
-  '.hd { display:flex; align-items:baseline; gap:8px; }',                       // id, priority badge and title on one line
-  '.hd h3 { font-size:13.5px; font-weight:600; margin:0; flex:1; }',            // title takes the remaining width
-  '.id { font:600 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim); white-space:nowrap; }',  // ticket id in monospace
+  'body { margin:0; padding:28px 32px; background:var(--bg); color:var(--text); font:13px/1.5 var(--mono); -webkit-font-smoothing:antialiased; }',  // page margins and the app's typeface
+  'h1 { font-size:18px; margin:0 0 4px; color:var(--accent); letter-spacing:.1em; text-transform:uppercase; }',  // board title in the accent, like the help pages
+  '.sub { color:var(--text-dim); font-size:12px; margin-bottom:14px; }',        // filter + timestamp line under the title
+  '.summary { display:flex; flex-wrap:wrap; gap:6px 18px; padding:10px 12px; background:var(--surface); border:1px solid var(--line); border-radius:6px; margin-bottom:22px; font-size:12px; color:var(--text-dim); }',  // count boxes
+  '.summary b { color:var(--text); font-variant-numeric:tabular-nums; }',       // digits line up
+  'h2 { font-size:11px; text-transform:uppercase; letter-spacing:.12em; color:var(--accent); margin:24px 0 8px; padding-bottom:5px; border-bottom:1px solid var(--line); }',  // status section headings
+  '.t { background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--line-strong); border-radius:6px; padding:9px 12px; margin:0 0 8px; page-break-inside:avoid; break-inside:avoid; }',  // one ticket card; never split across pages
+  '.t.p-critical { border-left-color:var(--danger); }',                         // left stripe only where it matters: critical red
+  '.t.p-high { border-left-color:var(--warn); }',                               // high: orange, as on the Tickets tab
+  '.hd { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }',       // id, priority badge and title on one line (wraps on a phone)
+  '.hd h3 { font-size:13px; font-weight:600; margin:0; flex:1; min-width:12em; overflow-wrap:anywhere; color:var(--text); }',  // title takes the remaining width
+  '.id { font-weight:700; font-size:11px; letter-spacing:.06em; color:var(--accent); white-space:nowrap; }',  // ticket id in the accent, as on the Tickets tab
   '.pri { font-size:10px; text-transform:uppercase; letter-spacing:.06em; padding:1px 5px; border-radius:3px; border:1px solid currentColor; white-space:nowrap; }',  // priority badge
-  '.pri-critical { color:#b3261e; } .pri-high { color:#c2610a; }',             // badge colours match the stripes
-  '.pri-normal, .pri-medium { color:#7a6a00; } .pri-low { color:#5a5a5a; } .pri-none { color:var(--dim); }',  // rest of the badge colours
-  '.meta { color:var(--dim); font-size:11.5px; margin-top:3px; display:flex; flex-wrap:wrap; gap:4px 14px; }',  // status/owner/type/age row
-  '.meta b { color:var(--ink); font-weight:600; }',                             // values darker than labels
-  '.body { white-space:pre-wrap; word-wrap:break-word; font:11.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; background:#fafafa; border:1px solid #eee; border-radius:4px; padding:8px 10px; margin:8px 0 0; }',  // ticket body keeps its line breaks
-  'footer { margin-top:28px; padding-top:10px; border-top:1px solid var(--rule); color:var(--dim); font-size:11px; }',  // closing line
-  '.warn { border:1px solid #c2610a; color:#8a4408; background:#fff8f1; border-radius:5px; padding:8px 11px; margin:0 0 18px; font-size:11.5px; }',  // full-detail warning box
+  '.pri-critical { color:var(--danger); } .pri-high { color:var(--warn); }',   // badge colours: the Tickets tab's
+  '.pri-normal, .pri-medium { color:var(--text-dim); } .pri-low, .pri-none { color:var(--text-faint); }',  // normal and low stay quiet (normal used to be olive-gold)
+  '.meta { color:var(--text-dim); font-size:11px; margin-top:4px; display:flex; flex-wrap:wrap; gap:4px 14px; }',  // status/owner/type/age row
+  '.meta b { color:var(--text); font-weight:600; }',                            // values brighter than labels
+  '.body { white-space:pre-wrap; word-wrap:break-word; font:11.5px/1.45 var(--mono); color:var(--text); background:var(--surface-2); border:1px solid var(--line); border-radius:4px; padding:8px 10px; margin:8px 0 0; }',  // ticket body keeps its line breaks
+  'footer { margin-top:28px; padding-top:10px; border-top:1px solid var(--line); color:var(--text-faint); font-size:11px; }',  // closing line
+  '.warn { border:1px solid var(--warn); color:var(--warn); background:color-mix(in srgb, var(--warn) 10%, transparent); border-radius:6px; padding:8px 11px; margin:0 0 18px; font-size:11.5px; }',  // full-detail warning box
+  '.warn code { font:inherit; }',                                               // the full=1 hint in the same type
   '.noprint { margin-bottom:16px; }',                                           // spacing under the print button
-  '.noprint button { font:inherit; padding:6px 12px; border:1px solid var(--rule); background:#f6f6f6; border-radius:5px; cursor:pointer; }',  // print button style
-  '@media print { body { padding:0; font-size:11px; } .noprint { display:none !important; } .t { border-left-width:2px; } h2 { page-break-after:avoid; break-after:avoid; } @page { margin:14mm 12mm; } }',  // paper: hide the button, keep headings with their cards
+  '.noprint button { font:inherit; font-size:12px; padding:7px 14px; color:var(--text); background:var(--surface-2); border:1px solid var(--line-strong); border-radius:6px; cursor:pointer; }',  // print button, styled like the app's buttons
+  '.noprint button:hover { border-color:var(--accent); color:var(--accent); }',  // and lit like them
+  '@media (max-width: 600px) { body { padding:18px 16px; } }',                  // a phone: the usual 16px side margin
+  '@media print { :root:root:root { --bg:#fff; --surface:#fff; --surface-2:#f5f7f5; --line:#d5dbd7; --line-strong:#b5bdb8; --text:#111; --text-dim:#555; --text-faint:#6b6b6b; --accent:color-mix(in srgb, var(--accent-pick) 42%, #000); --danger:#b3261e; --warn:#a35f00; color-scheme:light; } body { padding:0; font-size:11px; } .noprint { display:none !important; } .t { border-left-width:2px; } h2 { page-break-after:avoid; break-after:avoid; } @page { margin:14mm 12mm; } }',  // paper: dark on white whatever the screen theme (:root:root:root outranks every theme rule above), headings in the accent darkened for ink; hide the button, keep headings with their cards
 ].join('\n');                                                                   // one stylesheet string
 
 function renderHtml(tickets, opts) {                                            // printable page; Ctrl+P -> Save as PDF
@@ -120,6 +129,8 @@ function renderHtml(tickets, opts) {                                            
   return [
     '<!doctype html>',                                                          // standards mode
     '<html lang="en"><head><meta charset="utf-8">',                             // UTF-8 so ticket text renders correctly
+    '<meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="/favicon.ico" sizes="any">',  // T-0228: readable on a phone, Chamber's icon on the tab
+    "<script>try{document.documentElement.dataset.theme=localStorage.getItem('chamber-theme')||'dark'}catch(e){}</script>",  // T-0228: the app's Dark / Light / System / Contrast choice (same key as the app), before first paint
     `<title>Chamber tickets - ${when}</title>`,                               // tab title; also the default PDF file name
     `<style>${CSS}</style></head><body>`,                                       // stylesheet above
     '<div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>',  // hidden on paper by @media print
@@ -134,6 +145,7 @@ function renderHtml(tickets, opts) {                                            
     '</div>',                                                                   // end summary
     groups.map(([st, g]) => `<section><h2>${esc(st)} - ${g.length}</h2>${sortTickets(g).map(row).join('')}</section>`).join(''),  // one section per status
     `<footer>Chamber ticket board · ${esc(opts.filterLabel)} · ${tickets.length} shown${full ? ' · full detail' : ' · titles and metadata only'}</footer>`,  // repeats the scope on the last page
+    '<script src="/theme.js"></script><script>window.ChamberTheme && ChamberTheme.init({ server: true });</script>',  // T-0228: the accent the person picked, else the workspace's (a saved copy without the server keeps GhostPort green)
     '</body></html>',                                                           // end document
   ].join('\n');                                                                 // newlines keep the source readable
 }
