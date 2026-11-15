@@ -295,7 +295,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.28.0")
+check("the connector reports its version", m.AGENT_VERSION == "3.29.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -871,6 +871,20 @@ rO = mO221.ask("general", [], {"id": "n9", "ts": 1_793_990_001_000, "username": 
 check("an older-style agent is unchanged (Claude Code loads the file itself there), an agent with no Read tool gets nothing, and a model without file tools gets nothing",
       mL221.project_notes() == "" and mW221.project_notes() == "" and "ship-blue" not in json.dumps(seen[-1][2]), json.dumps(seen[-1][2])[:200])
 shutil.rmtree(r221, ignore_errors=True)
+print("the agent key only travels over https (3.29.0, T-0222)")
+def start222(url, extra=None):
+    try: load("claude", extra={"CHAMBER_URL": url, **(extra or {})}); return "started"
+    except SystemExit as e: return str(e.code)
+r_http, r_ok, r_local, r_https = start222("http://chamber.example.com"), start222("http://chamber.example.com", {"CHAMBER_ALLOW_HTTP": "1"}), start222("http://localhost:8080"), start222("https://chamber.example.com")
+check("a Chamber address that starts with http:// is refused at start with the reason and the way to allow it; this machine itself, an address the operator vouched for, and https all start",
+      "must start with https://" in r_http and "CHAMBER_ALLOW_HTTP=1" in r_http and "never sent over plain http" in r_http and r_ok == "started" and r_local == "started" and r_https == "started", (r_http[:120], r_ok, r_local, r_https))
+m222 = load("claude")
+check("the rule is about the address only: other schemes and an address without a host are refused too, and words like off or 0 do not switch it off",
+      m222.url_problem("ftp://x.example") != "" and m222.url_problem("https://") != "" and m222.url_problem("chamber.example.com") != "" and m222.url_problem("http://127.0.0.1:1") == ""
+      and "must start with https://" in start222("http://10.0.0.5:3000", {"CHAMBER_ALLOW_HTTP": "0"}) and "must start with https://" in start222("http://10.0.0.5:3000", {"CHAMBER_ALLOW_HTTP": "off"}))
+pr = subprocess.run([sys.executable, str(HERE / "chamber-agent.py"), "--pair", "http://chamber.example.com"], capture_output=True, text=True, timeout=30, env={"PATH": os.environ.get("PATH", ""), "HOME": tempfile.gettempdir(), "CHAMBER_ENV_FILE": "/nonexistent/none.env"})
+check("pairing with a code is held to the same rule: nothing is sent to an http:// address", pr.returncode != 0 and "must start with https://" in pr.stderr + pr.stdout, (pr.returncode, (pr.stderr + pr.stdout)[:160]))
+load("claude")
 sys.argv = ["chamber-agent.py"]
 srv.shutdown()
 print(f"\n{passed} passed, {failed} failed")

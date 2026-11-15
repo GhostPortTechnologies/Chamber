@@ -22,19 +22,23 @@ set -eu
 URL=https://chamber.ghostporttechnologies.com; TOKEN=""; COMMANDERS=""; ROOMS=""; WORKDIR=""; BACKEND=""; MODEL=""; ATTACH=""; NOATTACH=0
 NL="
 "
-BG=0; STOP=0; UNINSTALL=0; NOSTART=${CHAMBER_NO_START:-0}      # CHAMBER_NO_START=1: set everything up but start nothing (tests)
+ALLOWHTTP=0; BG=0; STOP=0; UNINSTALL=0; NOSTART=${CHAMBER_NO_START:-0}      # CHAMBER_NO_START=1: set everything up but start nothing (tests)
 while [ $# -gt 0 ]; do
   case "$1" in
     --token) TOKEN=${2:-}; shift 2;; --commanders) COMMANDERS=${2:-}; shift 2;; --rooms) ROOMS=${2:-}; shift 2;;
     --workdir|--attach) [ -n "${2:-}" ] || { echo "Chamber: $1 needs a folder" >&2; exit 2; }; ATTACH="$ATTACH$2$NL"; shift 2;; --no-attach) NOATTACH=1; shift;;
     --backend) BACKEND=${2:-}; shift 2;; --model) MODEL=${2:-}; shift 2;;
-    --url) URL=${2%/}; shift 2;; --background) BG=1; shift;; --stop) STOP=1; shift;; --uninstall) UNINSTALL=1; shift;;
+    --url) URL=${2%/}; shift 2;; --allow-http) ALLOWHTTP=1; shift;; --background) BG=1; shift;; --stop) STOP=1; shift;; --uninstall) UNINSTALL=1; shift;;
     -h|--help) echo "See the top of $URL/laptop.sh"; exit 0;;
     *) echo "Chamber: unknown option $1" >&2; exit 2;;
   esac
 done
 say() { printf '%s\n' "$*"; }
 die() { printf 'Chamber: %s\n' "$*" >&2; exit 1; }
+# T-0222: the agent key only travels over https. Plain http is taken for this computer itself, or when you say so with --allow-http.
+case "$URL" in https://?*|http://127.0.0.1|http://127.0.0.1[:/]*|http://localhost|http://localhost[:/]*) ;; *)
+  if [ "$ALLOWHTTP" = 1 ] || grep -qs '^CHAMBER_ALLOW_HTTP=1' "${XDG_CONFIG_HOME:-$HOME/.config}/chamber/agent.env"; then ALLOWHTTP=1
+  else die "the Chamber address must start with https:// (got $URL). The agent key is never sent over plain http. If that address is inside a private network you trust, add --allow-http."; fi;; esac
 [ "$(id -u)" != 0 ] || die "this is the version for your own computer and needs no admin rights. Run it as yourself, without sudo. On a server, use $URL/install.sh instead."
 if [ "$TOKEN" = "-" ]; then                                        # T-0217: ask for the key, so it is not left in this computer's command history
   TOKEN=""
@@ -100,6 +104,7 @@ elif ! grep -q '^CHAMBER_TOKEN=chk_' "$CONF" 2>/dev/null; then
   "$PY" "$DIR/chamber-agent.py" --pair "$URL" --write "$CONF" || die "pairing did not finish. Run this again for a new code."
 fi
 setv CHAMBER_INSTALL laptop
+if [ "$ALLOWHTTP" = 1 ]; then setv CHAMBER_ALLOW_HTTP 1; fi
 setv CHAMBER_STATE "$DIR/state.json"
 setv CHAMBER_REACH attached                                       # T-0218: the agent reads only what is attached
 setv CHAMBER_ATTACH_HINT "~/.chamber/chamber-attach <folder>"

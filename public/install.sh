@@ -17,11 +17,11 @@
 # adding the Claude sign-in later is just:  ... | sudo bash -s -- --role connector --oauth-token sk-ant-oat01-...
 set -uo pipefail
 URL=https://chamber.ghostporttechnologies.com; ROLE=""; TOKEN=""; COMMANDERS=""; ROOMS=""; WORKDIR=""; TOOLS=""   # T-0174: empty = "not given"; a re-run keeps what the settings file already says
-ATTACH=(); REACH=""; BACKEND=""; MODEL=""; LLM_URL=""; LLM_KEY=""; REPO=""; SERVICE=""; HEALTH=""; APPROVERS=""; OAUTH=""; NO_CLAUDE=0; DRY=0; UNINSTALL=0; SCOPE=""; TRIAGE=""; WMODE=live; GHTOKEN=""; WBASE=""; WPAR=""
+ATTACH=(); REACH=""; ALLOW_HTTP=0; BACKEND=""; MODEL=""; LLM_URL=""; LLM_KEY=""; REPO=""; SERVICE=""; HEALTH=""; APPROVERS=""; OAUTH=""; NO_CLAUDE=0; DRY=0; UNINSTALL=0; SCOPE=""; TRIAGE=""; WMODE=live; GHTOKEN=""; WBASE=""; WPAR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --role) ROLE=$2; shift 2;; --token) TOKEN=$2; shift 2;; --commanders) COMMANDERS=$2; shift 2;; --rooms) ROOMS=$2; shift 2;;
-    --workdir) WORKDIR=$2; ATTACH+=("$2"); shift 2;; --attach) ATTACH+=("$2"); shift 2;; --reach) REACH=$2; shift 2;; --tools) TOOLS=$2; shift 2;; --backend) BACKEND=$2; shift 2;; --model) MODEL=$2; shift 2;;
+    --allow-http) ALLOW_HTTP=1; shift;; --workdir) WORKDIR=$2; ATTACH+=("$2"); shift 2;; --attach) ATTACH+=("$2"); shift 2;; --reach) REACH=$2; shift 2;; --tools) TOOLS=$2; shift 2;; --backend) BACKEND=$2; shift 2;; --model) MODEL=$2; shift 2;;
     --llm-url) LLM_URL=$2; shift 2;; --llm-key) LLM_KEY=$2; shift 2;; --repo) REPO=$2; shift 2;; --service) SERVICE=$2; shift 2;;
     --mode) WMODE=$2; shift 2;; --github-token) GHTOKEN=$2; shift 2;; --base) WBASE=$2; shift 2;; --parallel) WPAR=$2; shift 2;;   # T-0191/T-0192: worker pull-request mode
     --health) HEALTH=$2; shift 2;; --approvers) APPROVERS=$2; shift 2;; --scope) SCOPE=$2; shift 2;; --triage) TRIAGE=$2; shift 2;; --url) URL=${2%/}; shift 2;; --oauth-token) OAUTH=$2; shift 2;;
@@ -35,6 +35,11 @@ run() { if [ $DRY = 1 ]; then echo "  (dry) $*"; else "$@"; fi; }
 [ "$(id -u)" = 0 ] || { red "Run me as root:  curl -fsSL $URL/install.sh | sudo bash -s -- <options>"; exit 1; }
 case "$ROLE" in connector|worker) ;; *) red "--role connector or --role worker is required"; exit 2;; esac
 case "$REACH" in ""|attached|all) ;; *) red "--reach is attached (the agent reads only what you attach) or all (whatever its account can read)"; exit 2;; esac
+# T-0222: the agent key only travels over https. Plain http is taken for this machine itself, or when you say so with --allow-http
+# (an address inside a private network you trust); a machine that was set up that way stays that way.
+case "$URL" in https://?*|http://127.0.0.1|http://127.0.0.1[:/]*|http://localhost|http://localhost[:/]*) ;; *)
+  if [ $ALLOW_HTTP = 1 ] || grep -qs '^CHAMBER_ALLOW_HTTP=1' "/etc/chamber-$( [ "$ROLE" = worker ] && echo worker || echo agent ).env"; then ALLOW_HTTP=1
+  else red "The Chamber address must start with https:// (got $URL). The agent key is never sent over plain http. If that address is inside a private network you trust, add --allow-http."; exit 2; fi;; esac
 command -v python3 >/dev/null || { red "python3 is required"; exit 1; }
 command -v curl >/dev/null || { red "curl is required"; exit 1; }
 # T-0217: "--token -" (or no --token the first time) asks for the key on the terminal, so it is not left in this machine's command history.
@@ -100,13 +105,13 @@ if [ $DRY = 0 ]; then
     MODEL=${MODEL:-$(old CHAMBER_MODEL)}; BACKEND=${BACKEND:-$(old CHAMBER_BACKEND)}; LLM_URL=${LLM_URL:-$(old CHAMBER_LLM_URL)}; LLM_KEY=${LLM_KEY:-$(old CHAMBER_LLM_KEY)}; fi
   ROOMS=${ROOMS:-general}; TOOLS=${TOOLS:-Read,Grep,Glob}; BACKEND=${BACKEND:-claude}
   { echo "# written by $URL/install.sh on $(date -u +%FT%TZ); re-run the installer to change settings"
-    echo "CHAMBER_URL=$URL"; echo "CHAMBER_TOKEN=$TOKEN"
+    echo "CHAMBER_URL=$URL"; echo "CHAMBER_TOKEN=$TOKEN"; [ $ALLOW_HTTP = 1 ] && echo "CHAMBER_ALLOW_HTTP=1"   # T-0222
     if [ $ROLE = connector ]; then
       echo "CHAMBER_COMMANDERS=$COMMANDERS"; echo "CHAMBER_ROOMS=$ROOMS"; echo "CHAMBER_WORKDIR=${WORKDIR:-$HOMEDIR/work}"; echo "CHAMBER_ALLOWED_TOOLS=$TOOLS"
       [ -n "$REACH" ] && echo "CHAMBER_REACH=$REACH"                                        # T-0218
       echo "CHAMBER_ATTACHED_FILE=/etc/chamber-agent.attached.json"; echo "CHAMBER_ATTACH_HINT=sudo chamber-attach <folder>"
       # Lines someone added by hand (CHAMBER_DENY_PATHS, CHAMBER_ASK_TOOLS, CHAMBER_GIT_REPO, ...) survive a re-run; the ones this installer writes itself do not come twice.
-      grep -sE '^[A-Z_][A-Z0-9_]*=' $ENVF | while IFS= read -r L; do case " CHAMBER_URL CHAMBER_TOKEN CHAMBER_COMMANDERS CHAMBER_ROOMS CHAMBER_WORKDIR CHAMBER_ALLOWED_TOOLS CHAMBER_MODEL CHAMBER_BACKEND CHAMBER_LLM_URL CHAMBER_LLM_KEY CLAUDE_CODE_OAUTH_TOKEN CHAMBER_REACH CHAMBER_ATTACHED_FILE CHAMBER_ATTACH_HINT " in *" ${L%%=*} "*) ;; *) echo "$L";; esac; done
+      grep -sE '^[A-Z_][A-Z0-9_]*=' $ENVF | while IFS= read -r L; do case " CHAMBER_URL CHAMBER_TOKEN CHAMBER_COMMANDERS CHAMBER_ROOMS CHAMBER_WORKDIR CHAMBER_ALLOWED_TOOLS CHAMBER_MODEL CHAMBER_BACKEND CHAMBER_LLM_URL CHAMBER_LLM_KEY CLAUDE_CODE_OAUTH_TOKEN CHAMBER_REACH CHAMBER_ATTACHED_FILE CHAMBER_ATTACH_HINT CHAMBER_ALLOW_HTTP " in *" ${L%%=*} "*) ;; *) echo "$L";; esac; done
       [ -n "$MODEL" ] && echo "CHAMBER_MODEL=$MODEL"   # 3.16.1: for Claude too (e.g. claude-opus-5-5)
       [ "$BACKEND" != claude ] && { echo "CHAMBER_BACKEND=$BACKEND"; [ -n "$LLM_URL" ] && echo "CHAMBER_LLM_URL=$LLM_URL"; [ -n "$LLM_KEY" ] && echo "CHAMBER_LLM_KEY=$LLM_KEY"; }
     else echo "WORKER_REPO=$REPO"; echo "WORKER_SERVICE=$SERVICE"; echo "WORKER_HEALTH=$HEALTH"; echo "WORKER_APPROVERS=${APPROVERS:-$COMMANDERS}"

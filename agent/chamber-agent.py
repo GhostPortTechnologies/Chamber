@@ -52,6 +52,8 @@ Guardrails (T-0015, first cut):
     what it read and did; a new top-level mention starts a fresh session. Sessions end after CHAMBER_SESSION_IDLE_MIN minutes
     without a reply (60). Claude Code keeps the conversation on this machine in its usual place (~/.claude, which the agent
     itself may not read). CHAMBER_SESSIONS=off goes back to one fresh run per mention with no session file. Replies are redacted for anything that looks like a secret.
+  - T-0222 (3.29.0): the agent key only travels over https. A CHAMBER_URL that starts with http:// is refused at start, except for
+    this machine itself (127.0.0.1, localhost) or when CHAMBER_ALLOW_HTTP=1 says the address is inside a private network you trust.
   - T-0221 (3.28.0): in that mode the agent is given the CLAUDE.md at the top of each attached folder (three at most) as background
     about the project: data, not instructions from Chamber. The project's settings file is not loaded.
   - T-0218 (3.27.0): with CHAMBER_REACH=attached the agent reads no file on this machine until a person attaches a folder or a
@@ -162,7 +164,7 @@ CLAUDE_BIN = os.environ.get("CHAMBER_CLAUDE_BIN", "claude")
 POLL_SEC = int(os.environ.get("CHAMBER_POLL_SEC", "5"))
 CLAUDE_TIMEOUT = int(os.environ.get("CHAMBER_CLAUDE_TIMEOUT", "300"))
 STATE = os.environ.get("CHAMBER_STATE", os.path.expanduser("~/.chamber-agent-state.json"))
-AGENT_VERSION = "3.28.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
+AGENT_VERSION = "3.29.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
 FALLBACK_SEC = int(os.environ.get("CHAMBER_FALLBACK_SEC", "20"))   # T-0046: poll + presence ping interval while the event stream is up
 BACKEND = os.environ.get("CHAMBER_BACKEND", "claude").strip().lower()           # T-0055
 MODEL = os.environ.get("CHAMBER_MODEL", "").strip()
@@ -407,6 +409,15 @@ if "--pair" in sys.argv:                                            # T-0048: de
     if not URL: sys.exit("usage: chamber-agent.py --pair https://chamber.example.com [--write /etc/chamber-agent.env]")
 elif not URL or not TOKEN:
     sys.exit("CHAMBER_URL and CHAMBER_TOKEN are required (see the header of this file), or run with --pair <url> first")
+def url_problem(url):
+    """T-0222: the agent key only travels over https. Plain http is taken for this machine itself (a test, or a Chamber on the same
+    box), or when the operator says so in words with CHAMBER_ALLOW_HTTP=1 (a private network they trust, such as inside a VPN)."""
+    u = urllib.parse.urlparse(url)
+    if u.scheme == "https" and u.hostname: return ""
+    if u.scheme == "http" and u.hostname and (u.hostname in ("127.0.0.1", "localhost", "::1") or os.environ.get("CHAMBER_ALLOW_HTTP", "").strip().lower() in ("1", "yes", "true", "on")): return ""
+    return (f"Chamber's address must start with https:// (got {url!r}). The agent key is never sent over plain http, where anyone on the way could read it. "
+            "If this address is inside a private network you trust, say so with CHAMBER_ALLOW_HTTP=1 in the settings.")
+if url_problem(URL): sys.exit(url_problem(URL))
 
 def api(method, path, body=None):
     req = urllib.request.Request(URL + path, method=method, data=json.dumps(body).encode() if body is not None else None,

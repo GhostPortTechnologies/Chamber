@@ -82,6 +82,15 @@ def _ask_mcp_main():
 if "--ask-mcp" in sys.argv: _ask_mcp_main(); sys.exit(0)
 
 URL = os.environ.get("CHAMBER_URL", "https://chamber.ghostporttechnologies.com").rstrip("/")
+def url_problem(url):
+    """T-0222: the agent key only travels over https. Plain http is taken for this machine itself (a test, or a Chamber on the same
+    box), or when the operator says so in words with CHAMBER_ALLOW_HTTP=1 (a private network they trust, such as inside a VPN)."""
+    u = urllib.parse.urlparse(url)
+    if u.scheme == "https" and u.hostname: return ""
+    if u.scheme == "http" and u.hostname and (u.hostname in ("127.0.0.1", "localhost", "::1") or os.environ.get("CHAMBER_ALLOW_HTTP", "").strip().lower() in ("1", "yes", "true", "on")): return ""
+    return (f"Chamber's address must start with https:// (got {url!r}). The agent key is never sent over plain http, where anyone on the way could read it. "
+            "If this address is inside a private network you trust, say so with CHAMBER_ALLOW_HTTP=1 in the settings.")
+if url_problem(URL): sys.exit(url_problem(URL))                              # 1.12.0
 TOKEN = os.environ.get("CHAMBER_TOKEN", "")
 ME = os.environ.get("CHAMBER_AGENT_NAME", "chamber-worker")
 REPO = os.environ.get("WORKER_REPO", "")                                 # 1.5.1: no built-in defaults; the installer writes all three
@@ -207,7 +216,7 @@ def health_ok():
     return False
 
 
-WORKER_VERSION = "worker-1.11.0"
+WORKER_VERSION = "worker-1.12.0"
 
 
 def wlog(tid, line, model=None):

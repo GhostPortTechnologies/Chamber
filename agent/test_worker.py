@@ -313,5 +313,12 @@ for k in ("WORKER_MODE", "WORKER_GITHUB_TOKEN", "WORKER_GITHUB_API", "WORKER_GIT
 print("version")
 check("worker reports a worker-* version line", W.WORKER_VERSION.startswith("worker-") and tuple(int(x) for x in W.WORKER_VERSION[7:].split(".")) >= (1, 3, 0), W.WORKER_VERSION)   # compared as numbers: 1.10 is newer than 1.9
 
+print("the worker's key only travels over https (1.12.0, T-0222)")
+_w = lambda url, extra=None: subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "chamber-worker.py")], capture_output=True, text=True, timeout=30,
+                                             env={"PATH": os.environ.get("PATH", ""), "HOME": tempfile.gettempdir(), "CHAMBER_URL": url, "CHAMBER_TOKEN": "chk_x", **(extra or {})})
+_bad = _w("http://chamber.example.com")
+check("the ticket worker refuses an http:// Chamber address at start and says why; the rule itself lets https, this machine and a vouched-for address through",
+      _bad.returncode != 0 and "must start with https://" in _bad.stderr + _bad.stdout and W.url_problem("https://chamber.example.com") == "" and W.url_problem("http://localhost:3000") == "" and W.url_problem("http://10.0.0.5") != "", (_bad.returncode, (_bad.stderr + _bad.stdout)[:160]))
+
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
