@@ -264,6 +264,15 @@ function markPaid(...emails) {                                   // simulate a p
     check('a VAPID public key exists', typeof pk.publicKey === 'string' && pk.publicKey.length > 80);
     check('a bad subscription is rejected', (await call('POST', '/account/push', { token: A.token, body: { subscription: { endpoint: 'http://not-https' } } })).status === 400);
     check('a subscription is stored', (await call('POST', '/account/push', { token: A.token, body: { subscription: { endpoint: 'https://push.invalid/x', keys: {} } } })).json.subscriptions === 1);
+    { const pj = require('./push'), ng = require('./netguard');                                                    // T-0235
+      const okE = ['https://fcm.googleapis.com/fcm/send/abc', 'https://updates.push.services.mozilla.com/wpush/v2/x', 'https://web.push.apple.com/QH', 'https://wns2-par02p.notify.windows.com/w/?token=x'];
+      const badE = ['https://evil.example/x', 'https://fcm.googleapis.com.evil.example/x', 'https://fcm.googleapis.com:8443/x', 'http://fcm.googleapis.com/x', 'https://u:p@fcm.googleapis.com/x', 'https://169.254.169.254/latest', 'https://localhost/x'];
+      check('T-0235: push addresses only from browser push services (Google, Mozilla, Apple, Microsoft); others refused', okE.every(pj.endpointOk) && !badE.some(pj.endpointOk));
+      check('T-0235: a push subscription to any other address is refused by the server', (await call('POST', '/account/push', { token: A.token, body: { subscription: { endpoint: 'https://evil.example/x', keys: {} } } })).status === 400);
+      check('T-0235: private, metadata, carrier-NAT and IPv6-local addresses are private; public ones are not', ['127.0.0.1', '10.1.2.3', '172.20.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1'].every(ng.privateAddr) && !['8.8.8.8', '1.1.1.1', '2606:4700:4700::1111'].some(ng.privateAddr));
+      check('T-0235: mirror hosts written as private addresses or local names are refused', !ng.publicHost('[::1]') && !ng.publicHost('100.64.1.1') && !ng.publicHost('localhost') && !ng.publicHost('box.internal') && ng.publicHost('hooks.slack.com'));
+      const lk = await new Promise(r => ng.safeLookup('localhost', {}, (e, a) => r(e ? e.code : a)));
+      check('T-0235: a name that points to a private address is refused when the connection is made', lk === 'EPRIVATE', String(lk)); }
     check('agents cannot register pushes', (await call('POST', '/account/push', { token: tk2.token, body: { subscription: { endpoint: 'https://push.invalid/y' } } })).status === 401);
     check('pushes can be cleared', (await call('POST', '/account/push/clear', { token: A.token })).status === 200 && (await call('GET', '/account/push', { token: A.token })).json.subscriptions === 0);
     console.log('notification controls (T-0078)');

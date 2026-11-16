@@ -25,9 +25,17 @@ function vapidHeader(endpoint) {
   const sig = crypto.sign('sha256', Buffer.from(unsigned), { key, dsaEncoding: 'ieee-p1363' });
   return `vapid t=${unsigned}.${b64u(sig)}, k=${k.publicKey}`;
 }
+// T-0235 (pen test 2026-11-16): a push address must belong to a browser's push service (Chrome/Android and most others: Google FCM;
+// Firefox: Mozilla; Safari: Apple; Edge: Microsoft WNS), https on the normal port, no user part. Anything else would let a user make
+// this server send requests to an address of their choice. '.invalid' is a reserved name that never resolves (the test suite uses it).
+const PUSH_HOST_RE = /^(fcm\.googleapis\.com|android\.googleapis\.com|([a-z0-9-]+\.)*push\.services\.mozilla\.com|([a-z0-9-]+\.)*push\.apple\.com|([a-z0-9-]+\.)*notify\.windows\.com|([a-z0-9-]+\.)+invalid)$/i;
+function endpointOk(endpoint) {
+  try { const u = new URL(String(endpoint)); return u.protocol === 'https:' && !u.port && !u.username && !u.password && PUSH_HOST_RE.test(u.hostname); } catch { return false; }
+}
 // Send one content-free push. Resolves 'ok', 'gone' (subscription expired: caller should drop it) or 'error'.
 function send(sub) {
   return new Promise(resolve => {
+    if (!endpointOk(sub && sub.endpoint)) return resolve('gone');            // T-0235: an address stored before the rule is dropped, never called
     try {
       const u = new URL(sub.endpoint);
       const req = https.request({ hostname: u.hostname, path: u.pathname + u.search, method: 'POST', timeout: 10000,
@@ -38,4 +46,4 @@ function send(sub) {
     } catch { resolve('error'); }
   });
 }
-module.exports = { send, publicKey: () => loadKeys().publicKey };
+module.exports = { send, endpointOk, publicKey: () => loadKeys().publicKey };

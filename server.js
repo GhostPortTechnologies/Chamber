@@ -1080,6 +1080,7 @@ function postMessage(data, { username, text, room, type, reply_to, source, attac
 // T-0062: forward a room's messages to Slack / Discord / a JSON endpoint. Fire-and-forget, 5 s timeout, never for messages
 // that themselves came in through a webhook or another mirror (loop protection), never for status lines.
 const https = require('https');
+const netguard = require('./netguard');                                // T-0235
 function mirrorOut(wsId, msg) {
   if (!wsId || msg.type !== 'message' || (msg.source && !msg.source.startsWith('schedule:'))) return;
   for (const mr of accounts.mirrorsFor(wsId, msg.room)) {
@@ -1090,7 +1091,11 @@ function mirrorOut(wsId, msg) {
     const payload = JSON.stringify(body);
     try {
       const u = new URL(mr.url);
-      const req = (u.protocol === 'https:' ? https : http).request(u, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'User-Agent': 'chamber-mirror/1' }, timeout: 5000 }, res => {
+      // T-0235: the address is checked as the connection is made (a name that points to a private address is refused, also if it
+      // changes after the mirror was saved). Only the test suite's own loopback stand-in is exempt.
+      const testStub = TEST_HOOKS && u.hostname === '127.0.0.1';
+      if (!testStub && !netguard.publicHost(u.hostname)) throw new Error('refused: private address');
+      const req = (u.protocol === 'https:' ? https : http).request(u, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), 'User-Agent': 'chamber-mirror/1' }, timeout: 5000, ...(testStub ? {} : { lookup: netguard.safeLookup }) }, res => {
         res.resume(); res.on('end', () => accounts.mirrorResult(wsId, mr.id, res.statusCode < 300, `HTTP ${res.statusCode}`));
       });
       req.on('timeout', () => req.destroy(new Error('timeout'))); req.on('error', e => accounts.mirrorResult(wsId, mr.id, false, e.message)); req.end(payload);

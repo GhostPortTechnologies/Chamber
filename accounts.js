@@ -34,7 +34,8 @@ const tasksMod = require('./tasks');                              // T-0224: the
 const cron = require('./cron');                                   // T-0058: schedules
 let changelogCache = { at: 0, html: '' };                           // T-0036
 const mail = require('./mail');                                   // T-0008: password-reset email (optional)
-const push = require('./push');                                   // T-0013: push notifications
+const push = require('./push');
+const netguard = require('./netguard');                           // T-0235: mirrors never reach private addresses                                   // T-0013: push notifications
 const notify = require('./notify');                               // T-0078: per-room level + quiet hours routing
 
 const ENABLED = process.env.CHAMBER_ACCOUNTS === '1';
@@ -1006,7 +1007,7 @@ async function handle(req, res, url, ctx0) {
     if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
     const b = await ctx.parseBody(req).catch(() => ({}));
     const sub = b?.subscription;
-    if (!sub || typeof sub.endpoint !== 'string' || !/^https:\/\//.test(sub.endpoint)) return ctx.json(res, 400, { error: 'bad subscription' }), true;
+    if (!sub || typeof sub.endpoint !== 'string' || !/^https:\/\//.test(sub.endpoint) || !push.endpointOk(sub.endpoint)) return ctx.json(res, 400, { error: 'bad subscription' }), true;   // T-0235: browser push services only
     me.push = (me.push || []).filter(s => s.endpoint !== sub.endpoint).concat([{ endpoint: sub.endpoint, keys: sub.keys || {}, addedAt: Date.now() }]).slice(-10);
     save(store);
     return ctx.json(res, 200, { ok: true, subscriptions: me.push.length }), true;
@@ -1477,7 +1478,7 @@ async function handle(req, res, url, ctx0) {
       if (!rooms[room] || rooms[room].dm) return ctx.json(res, 400, { error: 'Pick an existing room (not a DM).' }), true;
       const kind = ['slack', 'discord', 'generic'].includes(b?.kind) ? b.kind : null; if (!kind) return ctx.json(res, 400, { error: 'kind must be slack, discord or generic' }), true;
       let u; try { u = new URL(String(b?.url || '')); } catch { u = null; }
-      if (!u || u.protocol !== 'https:' || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(u.hostname) || /^172\.(1[6-9]|2\d|3[01])\./.test(u.hostname)) return ctx.json(res, 400, { error: 'Mirror URL must be https and public (Slack incoming webhook, Discord webhook, or your own endpoint).' }), true;
+      if (!u || u.protocol !== 'https:' || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(u.hostname) || /^172\.(1[6-9]|2\d|3[01])\./.test(u.hostname) || !netguard.publicHost(u.hostname)) return ctx.json(res, 400, { error: 'Mirror URL must be https and public (Slack incoming webhook, Discord webhook, or your own endpoint).' }), true;
       if ((myWs.mirrors || []).length >= 10) return ctx.json(res, 400, { error: 'Limit of 10 mirrors per workspace.' }), true;
       const mr = { id: crypto.randomBytes(4).toString('hex'), room, kind, url: u.toString(), by: me.username, enabled: true, createdAt: Date.now(), sent: 0, fails: 0, lastSent: null, lastError: null };
       (myWs.mirrors ||= []).push(mr); save(store);
