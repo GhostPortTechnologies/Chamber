@@ -38,7 +38,7 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--line);margin-t
 </style></head><body><div class="top"><a class="brand" href="/">CHAMBER</a><nav><a href="/help">Help</a><a href="/compare" class="on">Compare</a><a href="/download">Download</a><a href="/help/api">API</a><a href="/changelog">Changelog</a><a href="/app">Open Chamber</a></nav></div>
 <main>
 <h1>Chamber compared</h1>
-<p class="dim">Checked against each product's own website and documentation on 13 November 2026. These products change quickly, so follow the links for the current state. If anything here is wrong or out of date, write to <a href="mailto:support@ghostporttechnologies.com">support@ghostporttechnologies.com</a> and we will correct it.</p>
+<p class="dim">The other products were checked against their own websites and documentation on 13 November 2026; what this page says about Chamber was brought up to date on 16 November 2026. These products change quickly, so follow the links for the current state. If anything here is wrong or out of date, write to <a href="mailto:support@ghostporttechnologies.com">support@ghostporttechnologies.com</a> and we will correct it.</p>
 
 <h2 id="short">The short version</h2>
 <p>Most tools in this space help a developer drive an AI coding agent: from another device, together with a colleague, or from a board of tasks. Chamber is built around a different question: <b>who approved this job before it ran, and what exactly did the AI do?</b></p>
@@ -60,19 +60,28 @@ footer{color:var(--dim);font-size:12px;border-top:1px solid var(--line);margin-t
 
 <h2 id="copilot">GitHub Copilot coding agent</h2>
 <p><b>What it is.</b> You assign a GitHub issue to Copilot. It works on its own branch in a GitHub Actions environment, opens a draft pull request, and asks you for a review when it is done. Its pull requests need a person's approval before they can be merged.</p>
-<p><b>Ahead of Chamber today.</b> It lives inside GitHub, where many teams already keep their issues and code. It works through pull requests, and you guide it with review comments, the way you would guide a person.</p>
-<p><b>How Chamber is different.</b> Copilot works in GitHub's environment on a repository. Chamber's agents run on your own machine, with your own AI account, and can also do approved work on a live server inside hard limits: one folder, one service, never secrets. Chamber is not tied to one code host, and its plain-words view lets people who do not read code approve a change.</p>
+<p><b>Ahead of Chamber today.</b> It lives inside GitHub, where many teams already keep their issues and code. It works through pull requests, and you guide it with review comments on the pull request itself, the way you would guide a person.</p>
+<p><b>How Chamber is different.</b> Copilot works in GitHub's environment on a repository. Chamber's agents run on your own machine, with your own AI account, and can also do approved work on a live server inside hard limits: one folder, one service, never secrets. Chamber also has a pull-request mode for code work; outside it, Chamber is not tied to one code host (the pull-request mode uses GitHub). Its plain-words view lets people who do not read code approve a change.</p>
 <p><b>Choose it if</b> your team lives in GitHub and the work is code in a repository.</p>
 <p class="dim">Source: <a href="https://learn.microsoft.com/en-us/training/modules/github-copilot-code-agent/3-assign-track-troubleshoot-copilot-code-agent-tasks" rel="noopener">Microsoft Learn: assigning and tracking Copilot coding agent tasks</a></p>
 
 <h2 id="vibe-kanban">Vibe Kanban</h2>
 <p><b>What it is.</b> An open-source kanban board for planning work and running coding agents. Each workspace gives an agent its own branch; you review the diff, leave comments on lines for the agent, and open pull requests. It supports more than ten coding agents. Its own page says, as of 13 November 2026, that it is sunsetting.</p>
-<p><b>Ahead of Chamber today.</b> Several agents at once, each on its own branch. Comments on single lines sent back to the agent. Pull requests. A built-in browser to preview changes. More coding agents.</p>
+<p><b>Ahead of Chamber today.</b> A built-in browser to preview changes. More coding agents (Chamber runs Claude Code, and Codex is new and still being tested). Several agents at once on your own computer without GitHub: Chamber runs up to 5 jobs at once, but only in its pull-request mode. Chamber now also has comments on single lines and pull requests, which this page listed as Vibe Kanban's lead before 16 November.</p>
 <p><b>How Chamber is different.</b> A named person approves a job before an agent starts it, the same record covers chat, server work and code, and Chamber is hosted for you if you want.</p>
 <p class="dim">Source: <a href="https://github.com/BloopAI/vibe-kanban" rel="noopener">github.com/BloopAI/vibe-kanban</a></p>
 
 <h2 id="not-yet">What Chamber does not do yet</h2>
-<p>We would rather you hear it here. Not available in Chamber today: starting on a laptop without admin rights, pull requests, several jobs at once, comments on single lines, Codex as a full agent, end-to-end encryption, and apps in the app stores. Some of these are being built now; the <a href="/changelog">changelog</a> says when each one arrives.</p>
+<p>We would rather you hear it here. Not available in Chamber today: <b>end-to-end encryption</b> and <b>apps in the app stores</b> (Chamber is a web app you can add to your phone's home screen). Not yet tried by us: the laptop installer <b>on a Mac</b>, and the Windows installer <b>on a real Windows PC</b>. The <a href="/changelog">changelog</a> says when anything changes.</p>
+<h2 id="added">Added since 13 November</h2>
+<p>Until 16 November this page listed these as missing. They are now in Chamber, each with how far we have tested it:</p>
+<ul>
+<li><b>Starting on a laptop without admin rights</b> (macOS and Linux): tested on Linux as an ordinary user; not yet tried on a Mac.</li>
+<li><b>Pull requests</b>: the ticket worker can make a branch, open a GitHub pull request, and close the ticket when it is merged. Tried end to end with Claude Code.</li>
+<li><b>Several jobs at once</b>: up to 5 tickets at once, in pull-request mode.</li>
+<li><b>Comments on single lines</b>: in a code review, with <b>Ask for changes</b> sent back to the agent.</li>
+<li><b>Codex as a full agent</b> (16 November): held to the folders you attach by Codex's own sandbox, which we tested with the real Codex program; not yet tried with a real OpenAI account. On Ubuntu 24.04 with that system's default security setting it refuses to start rather than run without its sandbox.</li>
+</ul>
 
 <h2 id="price">Price</h2>
 <p>Hosted by us: free for one person (up to 2 agents; no inviting others and no file storage), or $49 a year for a whole workspace of up to 25 people and their agents, with the first 14 days free. Extra file storage is $49.99 a year per 10 GB. Or run it on your own computer or server for free: Chamber is open source under the AGPL, and <a href="/download">one command installs it</a> on Windows or Linux.</p>
