@@ -60,6 +60,19 @@ def check(name, ok, detail=""):
     if ok: passed += 1; print(f"  ok   {name}")
     else: failed += 1; print(f"  FAIL {name} {detail}")
 
+def toml_ok(s):                                                    # T-0193: an inline TOML table, roughly: balanced braces outside strings
+    depth, q, esc = 0, False, False
+    for ch in s:
+        if q:
+            if esc: esc = False
+            elif ch == "\\": esc = True
+            elif ch == '"': q = False
+        elif ch == '"': q = True
+        elif ch == "{": depth += 1
+        elif ch == "}": depth -= 1
+        if depth < 0: return False
+    return depth == 0 and not q and s.startswith("{")
+
 def load(backend, model="m", url=None, key="", ctx="", allow="", extra=None):
     env = {"CHAMBER_URL": f"http://127.0.0.1:{port}", "CHAMBER_TOKEN": "chk_test_token", "CHAMBER_BACKEND": backend, "CHAMBER_MODEL": model,
            "CHAMBER_LLM_URL": url or f"http://127.0.0.1:{port}", "CHAMBER_LLM_KEY": key, "CHAMBER_CONTEXT_CMDS": ctx, "CHAMBER_TOOL_ALLOW": allow, "CHAMBER_STATE": "/tmp/chamber-agent-test-state.json"}
@@ -295,7 +308,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.30.0")
+check("the connector reports its version", m.AGENT_VERSION == "3.31.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -892,6 +905,76 @@ check("when Chamber says the workspace is locked, the connector says so once, wa
       w1 == 60 and w2 == 60 and w0 == 0 and n_locked == 1 and "locked by its owner" in said[0] and len(said) == 2 and "open again" in said[1], said)
 src = open(HERE / "chamber-agent.py", encoding="utf-8").read()
 check("the main loop and the start-up both wait on a lock instead of failing", "w = locked_wait(e.code)" in src and src.count("locked_wait(e.code)") == 2 and "locked_over(); ME = me[\"username\"]" in src)
+print("Codex as a full agent, held to the attached folders (3.31.0, T-0193)")
+r193 = tempfile.mkdtemp(prefix="t193-"); K193 = lambda *p: os.path.join(r193, *p)
+os.makedirs(K193("proj", "private")); os.makedirs(K193("state")); os.makedirs(K193("loose"))
+open(K193("proj", "a.txt"), "w").write("hello"); open(K193("loose", "server.key"), "w").write("k"); open(K193("loose", "notes.txt"), "w").write("n")
+att193 = lambda **kw: open(K193("attached.json"), "w").write(json.dumps({"paths": [K193("proj"), K193("loose", "server.key"), K193("loose", "notes.txt")], "private": [K193("proj", "private")], **kw}))
+att193()
+FAKE193 = '#!/usr/bin/env python3\nimport json, os, sys\na = sys.argv[1:]; mode = os.environ.get("FAKE_CODEX_MODE", "ok")\nwith open(os.environ["FAKE_CODEX_LOG"], "a") as f:\n    f.write(json.dumps({"argv": a, "codex_home": os.environ.get("CODEX_HOME"), "chamber_env": sorted(k for k in os.environ if k.startswith("CHAMBER_"))}) + "\\n")\nif a[:1] == ["--version"]: print("codex-cli " + os.environ.get("FAKE_CODEX_VERSION", "0.169.0")); sys.exit(0)\nif a[:2] == ["features", "list"]:\n    print("browser_use                stable             true\\ncomputer_use               stable             true\\nshell_tool                 stable             true\\n"\n          "unified_exec               stable             true\\nbrand_new_thing            under development  true\\nmemories                   experimental       false\\nsqlite                     removed            true")\n    sys.exit(0)\nif a[:1] == ["sandbox"]:\n    cmd = a[a.index("--") + 1:]\n    if cmd[:1] == ["readlink"]: print("/opt/fake-codex/bin/codex"); sys.exit(0)\n    if mode == "blocked": print("bwrap: setting up uid map: Permission denied", file=sys.stderr); sys.exit(1)\n    if mode == "leaky": print("chamber-selftest-ok\\nLEAK-FILE\\nselftest-done"); sys.exit(0)\n    print("chamber-selftest-ok\\nselftest-done"); sys.exit(0)\nif a[:1] == ["exec"]:\n    if mode == "signin":\n        print(json.dumps({"type": "error", "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"}))\n        print(json.dumps({"type": "turn.failed", "error": {"message": "unexpected status 401 Unauthorized"}})); sys.exit(1)\n    ev = [{"type": "thread.started", "thread_id": "th-1"}, {"type": "turn.started"},\n          {"type": "item.started", "item": {"id": "i1", "type": "command_execution", "command": "bash -lc \'cat a.txt\'", "aggregated_output": "", "exit_code": None, "status": "in_progress"}},\n          {"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": "bash -lc \'cat a.txt\'", "aggregated_output": "hello sk_live_ABCDEFGHIJKLMNOPQRSTUVWX", "exit_code": 0, "status": "completed"}},\n          {"type": "item.completed", "item": {"id": "i2", "type": "command_execution", "command": "cat /etc/shadow", "aggregated_output": "Permission denied", "exit_code": 1, "status": "failed"}},\n          {"type": "item.completed", "item": {"id": "i3", "type": "file_change", "changes": [{"path": "a.txt", "kind": "update"}], "status": "completed"}},\n          {"type": "item.completed", "item": {"id": "i5", "type": "web_search", "query": "chamber"}},\n          {"type": "item.completed", "item": {"id": "i4", "type": "agent_message", "text": "The file says hello. token chk_deadbeef_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"}},\n          {"type": "turn.completed", "usage": {"input_tokens": 1200, "cached_input_tokens": 1000, "output_tokens": 40, "reasoning_output_tokens": 10}}]\n    for e in ev: print(json.dumps(e), flush=True)\n    sys.exit(0)\nsys.exit(2)\n'
+open(K193("codex"), "w").write(FAKE193); os.chmod(K193("codex"), 0o755); os.environ["FAKE_CODEX_LOG"] = K193("calls.jsonl")
+env193 = {"CHAMBER_STATE": K193("state", "state.json"), "CHAMBER_REACH": "attached", "CHAMBER_ATTACHED_FILE": K193("attached.json"), "CHAMBER_CODEX_BIN": K193("codex"), "CHAMBER_ALLOWED_TOOLS": "Read,Grep,Glob"}
+def calls193():
+    try: return [json.loads(x) for x in open(K193("calls.jsonl"))]
+    finally: open(K193("calls.jsonl"), "w").close()
+def run193(mode="ok", tools="Read,Grep,Glob", version="0.169.0", text="@test-bot what is in a.txt?"):
+    os.environ["FAKE_CODEX_MODE"], os.environ["FAKE_CODEX_VERSION"] = mode, version
+    mm = load("codex", "", extra={**env193, "CHAMBER_ALLOWED_TOOLS": tools}); open(K193("calls.jsonl"), "w").close(); rr = mm.Run("general", msg)
+    out = mm.ask("general", hist, {**msg, "text": text}, run=rr); return mm, out, rr, calls193()
+try: load("codex", "", extra={**env193, "CHAMBER_REACH": "all"}); r193all = "started"
+except SystemExit as e: r193all = str(e.code)
+m193, out193, run193r, c193 = run193()
+ex = [c for c in c193 if c["argv"][:1] == ["exec"]]; ex = ex[-1]["argv"] if ex else []
+cfg = {ex[i + 1].split("=", 1)[0]: ex[i + 1].split("=", 1)[1] for i in range(len(ex) - 1) if ex[i] == "-c"}
+prof = m193.codex_profile([K193("proj"), K193("loose", "server.key"), K193("loose", "notes.txt")], [K193("proj", "private")], False, ["/opt/fake-codex/bin"], K193("tmp"), linux=True)
+fs = prof["filesystem"]
+check("a Codex agent needs no model name, but refuses to start unless it is held to attached folders",
+      "CHAMBER_REACH=attached" in r193all and m193.BACKEND == "codex", r193all[:120])
+check("Codex runs unattended with every lock: JSON events, strict config, no session file, the machine's own rules ignored, approvals never, no web search, no keys in its commands' environment, its own profile",
+      ex[:1] == ["exec"] and all(x in ex for x in ("--json", "--strict-config", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-C")) and cfg.get("approval_policy") == '"never"'
+      and cfg.get("web_search") == '"disabled"' and cfg.get("shell_environment_policy.inherit") == '"core"' and cfg.get("default_permissions") == '"chamber"' and cfg.get("project_doc_max_bytes") == "0"
+      and "permissions.chamber" in cfg and "--" in ex and "what is in a.txt" in ex[-1] and ex.index("--") == len(ex) - 2, " ".join(ex)[:400])
+offs = [ex[i + 1] for i in range(len(ex) - 1) if ex[i] == "--disable"]
+check("every Codex feature that is on is switched off unless it is reviewed plumbing: a brand-new one too; running commands stays",
+      sorted(offs) == ["brand_new_thing", "browser_use", "computer_use"], str(offs))
+check("the profile: the attached folder readable with key-file patterns closed inside it, the private folder, a key file attached on its own, Codex's sign-in and the connector's files closed, the key folders under /etc closed where they exist, no network",
+      fs[K193("proj")]["."] == "read" and fs[K193("proj")]["**/*.key"] == "deny" and fs[K193("proj", "private")] == "deny" and K193("loose", "server.key") not in fs
+      and fs[K193("loose", "notes.txt")] == "read" and "/etc" not in fs
+      and fs[":minimal"] == "read" and fs["/opt/fake-codex/bin"] == "read" and fs[K193("tmp")] == "write" and prof["network"] == {"enabled": False} and "/proc" not in fs, json.dumps(fs)[:500])
+fs2 = m193.codex_profile([r193], [K193("proj", "nope")], False, linux=True)["filesystem"]; fs3 = m193.codex_profile([K193("state", ".chamber-codex")], [], False, linux=True)["filesystem"]
+check("a closed path is written only where something above it is open and it exists (Codex's sandbox cannot close a folder inside a closed or read-only one): attaching a folder that holds Codex's sign-in closes the sign-in inside it; nothing is written for closed paths elsewhere; attaching the sign-in folder itself gives nothing",
+      fs2[m193.CODEX_HOME] == "deny" and fs2[K193("attached.json")] == "deny" and fs2[r193]["."] == "read" and K193("proj", "nope") not in fs2
+      and m193.CODEX_HOME not in fs and all((fs.get(p) == "deny") == os.path.lexists(p) for p in ("/etc/chamber", "/etc/chamber-agent.env", "/etc/wireguard", "/etc/ssh", "/etc/letsencrypt")) and os.path.expanduser("~/.ssh") not in fs and K193("state", ".chamber-codex") not in fs3, json.dumps(fs2)[:400])
+check("the same profile is what Codex was given for the answer (its own program folder found by asking the sandbox)",
+      '"/opt/fake-codex/bin" = "read"' in cfg.get("permissions.chamber", "") and toml_ok(cfg.get("permissions.chamber", "")), cfg.get("permissions.chamber", "")[:300])
+check("Codex gets its own home folder and none of the CHAMBER_ settings (the agent key among them); the lock-down test alone gets a test key, to prove it does not reach the command",
+      all(c["codex_home"] == m193.CODEX_HOME for c in c193) and all(c["chamber_env"] == [] for c in c193 if c["argv"][:1] != ["sandbox"] or "readlink" in c["argv"])
+      and any(c["chamber_env"] == ["CHAMBER_SELFTEST_SECRET"] for c in c193 if c["argv"][:1] == ["sandbox"] and "readlink" not in c["argv"]), json.dumps(c193)[:300])
+tl = run193r.tools
+check("every command and file change Codex made is on the record with its exit code, secrets redacted; a switched-off tool that still showed up is recorded as an error",
+      [t["tool"] for t in tl] == ["command", "command", "edit", "web_search"] and tl[0]["exit"] == 0 and "sk_live_" not in tl[0]["out"] and "[redacted secret]" in tl[0]["out"]
+      and tl[1]["exit"] == 1 and tl[1].get("error") and tl[3].get("error"), json.dumps(tl)[:300])
+check("the answer is Codex's last message, redacted, with the token counts on the record",
+      out193.startswith("The file says hello") and "chk_deadbeef" not in out193 and run193r.state == "done" and run193r.usage.get("tokens_in") == 1200 and run193r.usage.get("tokens_out") == 40, out193)
+check("the connector's own files are tidy afterwards: no scratch folder left, Codex's home private", not os.listdir(m193.CODEX_TMP) and oct(os.stat(m193.CODEX_HOME).st_mode & 0o777) == "0o700"
+      and "sandbox_mode" not in open(os.path.join(m193.CODEX_HOME, "config.toml")).read())
+check("People and agents shows what a Codex agent can reach: the attached folders by name, and that it runs commands", m193.reach_report() == {"mode": "attached", "private": 1, "names": ["proj", "server.key", "notes.txt"], "cmd": True}, str(m193.reach_report()))
+mW, outW, _, cW = run193(tools="Read,Edit")
+exW = [c for c in cW if c["argv"][:1] == ["exec"]][-1]["argv"]
+check("with Edit allowed the attached folder becomes writable; the private folder stays closed", '"." = "write"' in [exW[i + 1] for i in range(len(exW) - 1) if exW[i] == "-c" and exW[i + 1].startswith("permissions.chamber=")][0]
+      and '"' + K193("proj", "private") + '" = "deny"' in " ".join(exW))
+mB, outB, rB, cB = run193(mode="blocked")
+check("where the sandbox cannot start (Ubuntu 23.10+), Codex is not run at all and the agent says why in plain words", "lock-down cannot start" in outB and "AppArmor" in outB and not [c for c in cB if c["argv"][:1] == ["exec"]] and rB.state == "failed", outB[:200])
+mL, outL, _, cL = run193(mode="leaky")
+check("if the lock-down test finds a leak, Codex is not run", "did not hold" in outL and not [c for c in cL if c["argv"][:1] == ["exec"]], outL[:200])
+mO, outO, _, cO = run193(version="0.120.0")
+check("a Codex too old for permission profiles is refused with how to update", "0.120.0" in outO and "0.138" in outO and not [c for c in cO if c["argv"][:1] in (["exec"], ["sandbox"])], outO[:200])
+mS, outS, _, _ = run193(mode="signin")
+check("not signed in: plain steps to sign in on that machine, not the raw 401", " login --device-auth" in outS and "CODEX_HOME=" in outS and "401" not in outS, outS[:300])
+att193(all=True); mA, outA, _, cA = run193()
+check("\"attach everything\" is not offered for Codex: the agent says to attach folders one by one, and runs nothing", "one by one" in outA and not [c for c in cA if c["argv"][:1] == ["exec"]], outA[:200])
+att193(); shutil.rmtree(r193, ignore_errors=True)
+for k in ("FAKE_CODEX_MODE", "FAKE_CODEX_VERSION", "FAKE_CODEX_LOG"): os.environ.pop(k, None)
 sys.argv = ["chamber-agent.py"]
 srv.shutdown()
 print(f"\n{passed} passed, {failed} failed")

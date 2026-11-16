@@ -11,3 +11,9 @@ messages that @mention it, and runs Claude Code non-interactively with only the 
 5. In the chat: `@pi-agent what changed today?`
 
 Only the usernames in `CHAMBER_COMMANDERS` can instruct the agent. Chat text is treated as untrusted data.
+
+OpenAI's Codex instead of Claude Code (T-0193): `CHAMBER_BACKEND=codex` with `CHAMBER_REACH=attached` and Codex CLI 0.138 or newer.
+Codex runs in its own sandbox, held to the attached folders, with no network and its extras switched off; the connector proves
+the lock-down on the machine before the first answer and refuses to run Codex where it cannot start (Ubuntu 23.10 and later
+block it by default). Sign in once as the account the connector runs as:
+`CODEX_HOME=<state folder>/.chamber-codex codex login --device-auth`. Not yet run end to end with a real Codex account.

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """chamber-agent: lets an AI model read and reply in a Chamber workspace (T-0011, T-0055).
 
-Backends (CHAMBER_BACKEND): claude (default, Claude Code CLI with a locked tool sandbox) | ollama | openai (any /v1/chat/completions
+Backends (CHAMBER_BACKEND): claude (default, Claude Code CLI with a locked tool sandbox) | codex (OpenAI's Codex CLI in its own
+sandbox, held to the attached folders: T-0193) | ollama | openai (any /v1/chat/completions
 server: OpenAI, Groq, Together, Mistral, LM Studio, vLLM, llama.cpp) | gemini. Non-Claude models have no sandboxed tool harness, so
 they answer from the conversation plus the output of CHAMBER_CONTEXT_CMDS: an operator-set allowlist of read-only commands that the
 connector runs itself before asking the model. The model never chooses or runs commands. Everything else (commanders, no
@@ -26,6 +27,10 @@ Setup (once):  create an agent token in Chamber (account page > AI AGENTS), then
                                                     #   leave a chamber-attach command). Without it: whatever the account can read.
     Bring your own model (T-0055), instead of CHAMBER_CLAUDE_BIN / CHAMBER_ALLOWED_TOOLS:
         CHAMBER_BACKEND=ollama                      # ollama | openai | gemini   (default: claude)
+    OpenAI's Codex with tools, under the same limits as Claude Code (T-0193, 3.31.0; needs Codex CLI 0.138+ and CHAMBER_REACH=attached):
+        CHAMBER_BACKEND=codex                       # sign in once: CODEX_HOME=<state folder>/.chamber-codex codex login --device-auth
+        CHAMBER_CODEX_BIN=codex                     # path to the codex program if not on PATH; CHAMBER_MODEL is optional (Codex default)
+                                                    # CHAMBER_ALLOWED_TOOLS decides only whether it may change attached files (Edit or Write)
         CHAMBER_MODEL=llama3.1:8b                   # model name for that backend (gpt-4o-mini, gemini-2.0-flash, ...)
                                                     # 3.16.1: honoured for the claude backend too (a Claude Code model id, e.g. claude-opus-5-5); empty = Claude Code default
         CHAMBER_LLM_URL=http://127.0.0.1:11434      # base URL (ollama default shown; openai default https://api.openai.com; gemini default Google's)
@@ -52,6 +57,10 @@ Guardrails (T-0015, first cut):
     what it read and did; a new top-level mention starts a fresh session. Sessions end after CHAMBER_SESSION_IDLE_MIN minutes
     without a reply (60). Claude Code keeps the conversation on this machine in its usual place (~/.claude, which the agent
     itself may not read). CHAMBER_SESSIONS=off goes back to one fresh run per mention with no session file. Replies are redacted for anything that looks like a secret.
+  - T-0193 (3.31.0): CHAMBER_BACKEND=codex runs OpenAI's Codex CLI with tools, held to what was attached here by its own sandbox:
+    no network, no escape, no keys in its commands' environment, its extras (browser, connectors, plugins, hooks, web search)
+    switched off, every command on the record. The lock-down is proven on this machine before the first answer; where it
+    cannot start (Ubuntu 23.10 and later block it by default) the agent says so and runs nothing. See ask_codex.
   - T-0222 (3.30.0): when the workspace owner has locked the workspace (owner lock), Chamber answers 423; the connector says so once
     and tries again every minute, instead of failing or restarting, and says when it is open again.
   - T-0222 (3.29.0): the agent key only travels over https. A CHAMBER_URL that starts with http:// is refused at start, except for
@@ -166,7 +175,7 @@ CLAUDE_BIN = os.environ.get("CHAMBER_CLAUDE_BIN", "claude")
 POLL_SEC = int(os.environ.get("CHAMBER_POLL_SEC", "5"))
 CLAUDE_TIMEOUT = int(os.environ.get("CHAMBER_CLAUDE_TIMEOUT", "300"))
 STATE = os.environ.get("CHAMBER_STATE", os.path.expanduser("~/.chamber-agent-state.json"))
-AGENT_VERSION = "3.30.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
+AGENT_VERSION = "3.31.0"    # T-0041/T-0046/T-0047/T-0071/T-0072/T-0070/T-0086/T-0087/T-0088/T-0090/T-0091/T-0129: sent in User-Agent and /api/ping; the server tells us the latest
 FALLBACK_SEC = int(os.environ.get("CHAMBER_FALLBACK_SEC", "20"))   # T-0046: poll + presence ping interval while the event stream is up
 BACKEND = os.environ.get("CHAMBER_BACKEND", "claude").strip().lower()           # T-0055
 MODEL = os.environ.get("CHAMBER_MODEL", "").strip()
@@ -177,8 +186,8 @@ CONTEXT_CMDS = [c.strip() for c in os.environ.get("CHAMBER_CONTEXT_CMDS", "").sp
 TOOL_ALLOW = [c.strip() for c in os.environ.get("CHAMBER_TOOL_ALLOW", "").split(";") if c.strip()]   # T-0056
 TOOL_ROUNDS = int(os.environ.get("CHAMBER_TOOL_ROUNDS", "3"))
 SHELL_META = set("|&;<>$`\\\n")                                                 # a RUN line may not smuggle a second command
-if BACKEND not in ("claude", "ollama", "openai", "gemini"): sys.exit(f"CHAMBER_BACKEND must be claude, ollama, openai or gemini (got {BACKEND!r})")
-if BACKEND != "claude" and not MODEL: sys.exit("CHAMBER_MODEL is required for the " + BACKEND + " backend")
+if BACKEND not in ("claude", "codex", "ollama", "openai", "gemini"): sys.exit(f"CHAMBER_BACKEND must be claude, codex, ollama, openai or gemini (got {BACKEND!r})")
+if BACKEND not in ("claude", "codex") and not MODEL: sys.exit("CHAMBER_MODEL is required for the " + BACKEND + " backend")   # T-0193: Codex picks its own default
 MAX_REPLY = 19000           # the server allows 20,000 characters per message (T-0014); long replies are split
 REFUSAL_COOLDOWN = 600      # seconds between refusals in the same room (T-0041: no refusal ping-pong)
 HOP_CAP = int(os.environ.get("CHAMBER_HOP_CAP", "3"))    # T-0060: max agent messages in one thread before agents go quiet and tag the commander
@@ -234,6 +243,8 @@ ATTACH_HINT = os.environ.get("CHAMBER_ATTACH_HINT", "").strip() or f"python3 {os
 START_DIR = os.path.join(os.path.dirname(os.path.abspath(STATE)), "start")   # stays empty
 ATTACH_MAX = 50
 ATTACH_BAD_RE = re.compile(r"[*?\[\]\\\n]")                           # a permission rule would read these as a pattern, not as part of a name
+if BACKEND == "codex" and REACH != "attached":                        # T-0193: Codex is only ever held to attached folders
+    sys.exit("CHAMBER_BACKEND=codex needs CHAMBER_REACH=attached: Codex reads only the folders attached on this machine (python3 chamber-agent.py --attach <folder>)")
 FILE_TOOLS = ("Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit")
 
 def rule_path(p):
@@ -311,9 +322,9 @@ def reach_text():
 
 def reach_report():
     """What Chamber is told and shows under People and agents: the names of attached folders, never full paths."""
-    if BACKEND != "claude": return None                              # other models have no file tools at all
+    if BACKEND not in ("claude", "codex"): return None               # other models have no file tools at all
     names = {t.strip().split("(")[0] for t in ALLOWED_TOOLS.split(",") if t.strip()}
-    mode, paths, private = reach_now(); cmd = "Bash" in names
+    mode, paths, private = reach_now(); cmd = "Bash" in names or BACKEND == "codex"   # T-0193: Codex looks things up with commands (inside its sandbox)
     if not names & set(FILE_TOOLS) and not cmd: return {"mode": "none"}
     r = {"mode": mode, "private": len(private)}
     if mode == "attached": r["names"] = [os.path.basename(p.rstrip("/")) or p for p in paths][:12]
@@ -1829,6 +1840,7 @@ def ask(room, history, msg, run=None):
 
 def _ask(room, history, msg, files, scratch, run):
     if BACKEND == "claude": return ask_claude(room, history, msg, files, scratch, run)
+    if BACKEND == "codex": return ask_codex(room, history, msg, files, scratch, run)      # T-0193
     try:
         if CONTEXT_CMDS: run.step("Gathering context (%d command%s)" % (len(CONTEXT_CMDS), "" if len(CONTEXT_CMDS) == 1 else "s"))
         data = data_text(room, history, msg, (gather_context() + "\n\n" + digest_text(msg)).strip(), memory_text(room), files, False); ran = []   # T-0072: digest facts
@@ -1966,6 +1978,319 @@ def ask_claude(room, history, msg, files=None, scratch=None, run=None, _fresh=Fa
     if run.state == "done" and SESSIONS_ON: session_save(key, st.get("session_id") or sid, room)   # T-0187: the next reply in this thread continues here
     return out or "(no reply)"
 
+# ── T-0193 (3.31.0): OpenAI's Codex as a full agent ──────────────────────────────────────────────────────────────────────────
+# CHAMBER_BACKEND=codex runs `codex exec` (the Codex CLI, 0.138 or newer) instead of Claude Code, under the same rules:
+#   * it reads only what was attached on this machine (CHAMBER_REACH=attached is required), never what was marked private and
+#     never the key files in DENY_PATHS; it changes files there only when CHAMBER_ALLOWED_TOOLS has Edit or Write (for Codex
+#     that is the only thing the tool list decides: it looks things up with commands, which always run inside the sandbox);
+#   * its commands get no network, no way out of the sandbox (approval_policy never, the machine's own Codex rules ignored), and
+#     none of the keys in this process's environment (shell_environment_policy core: measured, a key in Codex's environment
+#     reached the commands with Codex's default setting and did not with this one);
+#   * every command it runs and every file it changes goes on the run record in Chamber, like Claude Code's tool calls.
+# Codex enforces this with a permission profile (bubblewrap + seccomp on Linux, Seatbelt on macOS). The connector builds the
+# profile for every answer from the attach list as it is at that moment, and passes it with -c, which outranks any config file.
+# Codex's extras that its sandbox does not cover (browser and computer use, app connectors, plugins, hooks, image tools, helper
+# agents, skills that install things, web search) are switched off: every feature that is on is switched off unless it is in
+# CODEX_KEEP (plumbing that adds no reach), so a feature a later Codex version adds starts off too.
+# Before the first answer, and again after every Codex update, the connector proves the lock-down on this machine
+# (codex_selftest): a file inside the profile is readable, one outside it is not, and a key in Codex's environment does not
+# reach the command. If that fails (Ubuntu 23.10 and later stop ordinary programs from building the sandbox), the agent says
+# why instead of answering: it never runs Codex unlocked.
+# Measured 2026-11-16 with Codex 0.169.0 and the profile this file writes: it holds on Amazon Linux 2023 (attached folder
+# readable; private folder, other folders, links out of the attached folder, writes, Codex's sign-in, the connector's files,
+# other people's home folders, the internet and this machine's own services all refused; key-file patterns refused nine folders
+# deep; keys in Codex's environment invisible to its commands); on Ubuntu 24.04 the sandbox cannot start, so Codex runs nothing
+# there. Not yet run end to end with a real Codex account (T-0193's last step).
+# Sign-in, once, on this machine, as the account the connector runs as:  CODEX_HOME=<CODEX_HOME> codex login --device-auth
+# (or CODEX_API_KEY=... in this connector's settings file). Not yet for Codex: continuing a thread's session (each answer starts
+# fresh, with the conversation as background), asking a person mid-job (T-0188), and network access for its commands.
+CODEX_BIN = os.environ.get("CHAMBER_CODEX_BIN", "").strip() or "codex"
+CODEX_HOME = os.path.abspath(os.environ.get("CHAMBER_CODEX_HOME", "").strip() or os.path.join(os.path.dirname(os.path.abspath(STATE)), ".chamber-codex"))
+CODEX_TMP = os.path.join(os.path.dirname(os.path.abspath(STATE)), ".chamber-codex-runs")     # one scratch folder per answer, removed after it
+CODEX_MIN = (0, 138)                                                  # the first Codex with permission profiles
+# Reviewed 2026-11-16 (Codex 0.169.0) as plumbing that adds no reach: running commands (inside the sandbox), request compression,
+# bookkeeping of tool output and images, model speed and effort, treating tool output as untrusted. CHAMBER_CODEX_KEEP=a,b keeps
+# more features on, at the operator's own risk; the log says which ones were switched off.
+CODEX_KEEP = {"shell_tool", "unified_exec", "unified_exec_tty", "write_stdin_approval", "enable_request_compression", "content_item_kinds",
+              "compaction_image_budget", "unified_image_budget", "deferred_tool_world_state", "incremental_tools", "incremental_tools_legacy_gcp",
+              "retain_client_tool_outputs", "untrusted_as_tool_output", "reasoning_effort_override", "api_key_model_discovery",
+              "unbounded_connection_retries", "instant_interrupt", "system_proxy_fallback", "fast_mode"}
+CODEX_KEEP_EXTRA = {x.strip() for x in os.environ.get("CHAMBER_CODEX_KEEP", "").split(",") if x.strip()}
+CODEX_MINIMAL_ROOTS = ["/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64"]   # what Codex's ":minimal" lets commands read on Linux (measured for /etc and /usr)
+CODEX_BLOCKED_RE = re.compile(r"bwrap: (?:setting up uid map|loopback: Failed|creating new namespace|No permissions to create)|bubblewrap is unavailable", re.I)
+CODEX_SIGNIN_RE = re.compile(r"not logged in|\b401\b|unauthori[sz]ed|invalid[_ ]api[_ ]key|codex login|missing bearer", re.I)
+CODEX_SEEN = {"version": None, "selftest": None, "why": "", "exe_dir": None, "off": None}   # remembered until Codex changes version
+
+def toml_str(s):
+    """A TOML basic string. JSON's escapes are valid TOML, and the attach list never holds the characters that would need more."""
+    return json.dumps(str(s))
+
+def toml_inline(v):
+    """A value as inline TOML (what -c takes): tables become { "k" = v, ... }."""
+    if isinstance(v, dict): return "{" + ", ".join(f"{toml_str(k)} = {toml_inline(x)}" for k, x in v.items()) + "}"
+    if isinstance(v, bool): return "true" if v else "false"
+    return toml_str(v)
+
+def codex_profile(paths, private, can_write, extra_read=(), tmp=None, linux=None):
+    """The permission profile for one answer: {"filesystem": {...}, "network": {...}}. Pure, so the tests can try any attach list.
+    For the same path deny beats write beats read, and a more specific path beats a broader one (Codex's own rules)."""
+    import fnmatch
+    linux = sys.platform.startswith("linux") if linux is None else linux
+    fs = {":minimal": "read"}                                         # the system's programs, libraries and ordinary settings files (/etc as any account sees it)
+    # /etc stays readable as it is for every account on the machine, minus the key folders in DENY_PATHS. Closing all of /etc was
+    # measured too: Codex cannot open single files again inside it (time zone, user list, and on Debian /etc/alternatives, which
+    # common commands such as awk go through), so that broke more than it protected; the files that matter are mode 600 anyway.
+    for p in extra_read: fs[p] = "read"                               # the Codex program's own folder, the files sent in the chat
+    if tmp: fs[tmp] = "write"                                         # a scratch folder of its own, removed after the answer
+    globs = [p for p in DENY_PATHS if p.startswith("**/")]            # key-file patterns: closed inside every attached folder, at any depth (measured)
+    closed = set(private)                                             # "for my eyes only"
+    for p in DENY_PATHS:
+        if p.startswith("**/") or p == "/proc/**": continue           # /proc: commands see only their own processes (own PID namespace, measured)
+        q = os.path.expanduser(p); q = q[:-3] if q.endswith("/**") else q
+        if os.path.isabs(q) and not ATTACH_BAD_RE.search(q): closed.add(q)
+    closed |= {os.path.abspath(p) for p in (CODEX_HOME, os.path.expanduser("~/.codex"), STATE, ATTACH_FILE, SIGNIN_FILE)}   # Codex's sign-in, the connector's own files
+    under = lambda p, roots: any(p == r or p.startswith(r.rstrip("/") + "/") for r in roots)
+    access = "write" if can_write else "read"
+    for p in paths:
+        if under(p, closed): continue                                 # attached inside something closed: closed wins, as for Claude Code
+        if os.path.isdir(p): fs[p] = {".": access, **{g: "deny" for g in globs}}
+        elif not any(fnmatch.fnmatch(os.path.basename(p), g[3:]) for g in globs): fs[p] = access   # a key file attached on its own stays closed
+    def nearest(p):                                                   # the closest folder above p that has a rule of its own
+        q = os.path.dirname(p.rstrip("/"))
+        while True:
+            if q in fs: return fs[q]
+            if q in ("/", ""): return "read" if linux and under(p, CODEX_MINIMAL_ROOTS) else None
+            q = os.path.dirname(q)
+    # A closed path is written only where something above it is open (an attached folder, or what ":minimal" opens) and it
+    # exists. Elsewhere nothing is there to close, and Codex's sandbox cannot make a mount point inside a folder that is itself
+    # closed (measured: closing /etc/chamber inside a closed /etc stopped every command), so such a rule would only break it.
+    for c in sorted(closed):
+        if os.path.lexists(c) and nearest(c) not in (None, "deny"): fs[c] = "deny"
+    return {"filesystem": fs, "network": {"enabled": False}}
+
+def codex_env(extra=None):
+    """Codex's environment: this process's, without the CHAMBER_ settings (the agent key among them), with Codex's own home."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CHAMBER_")}
+    env["CODEX_HOME"] = CODEX_HOME
+    env.update(extra or {})
+    return env
+
+def codex_call(args, env, timeout=60):
+    return subprocess.run([CODEX_BIN, *args], capture_output=True, text=True, timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+
+def codex_settings():
+    """Settings that never change, as -c overrides: they outrank every config file Codex reads."""
+    return ['approval_policy="never"', 'web_search="disabled"', "project_doc_max_bytes=0", 'shell_environment_policy.inherit="core"',
+            "check_for_update_on_startup=false", "analytics.enabled=false", 'history.persistence="none"']
+
+def codex_write_home():
+    """Codex's home folder belongs to the connector: its config file is rewritten with the same settings (a sandbox_mode line
+    left there would switch Codex back to its older, wider sandbox settings). The sign-in (auth.json) is left alone."""
+    os.makedirs(CODEX_HOME, mode=0o700, exist_ok=True); os.chmod(CODEX_HOME, 0o700)
+    text = "# Written by chamber-agent (T-0193); rewritten before every answer. Change the connector's settings instead.\n" + "\n".join(
+        ['approval_policy = "never"', 'web_search = "disabled"', "project_doc_max_bytes = 0", "check_for_update_on_startup = false",
+         "", "[analytics]", "enabled = false", "", "[history]", 'persistence = "none"', "", "[shell_environment_policy]", 'inherit = "core"']) + "\n"
+    path = os.path.join(CODEX_HOME, "config.toml"); tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f: f.write(text)
+    os.replace(tmp, path)
+
+def codex_exe_dir(env):
+    """On Linux Codex starts itself again inside the sandbox, so its own folder must be readable there. Where the program really
+    lives (an npm install puts it deep in node_modules) is asked of the sandbox once, with a fixed command."""
+    if not sys.platform.startswith("linux"): return None
+    try:
+        r = codex_call(["sandbox", "-c", 'default_permissions="chamberfind"', "-c", 'permissions.chamberfind={filesystem = {":root" = "read"}, network = {enabled = false}}',
+                        "--", "readlink", "/proc/1/exe"], env, 60)
+        p = ((r.stdout or "").strip().splitlines() or [""])[-1].replace(" (deleted)", "").strip()
+        return os.path.dirname(p) if os.path.isabs(p) and not ATTACH_BAD_RE.search(p) else None
+    except (OSError, subprocess.TimeoutExpired): return None
+
+def codex_selftest(env):
+    """The lock-down, proven on this machine with a fixed command (the model is not involved): a file inside the profile can be
+    read, one outside it cannot, and a key in Codex's own environment does not reach the command. Returns (ok, why)."""
+    import shlex
+    base = os.path.dirname(os.path.abspath(STATE)); os.makedirs(base, exist_ok=True)
+    root = tempfile.mkdtemp(prefix="codex-selftest-", dir=base)
+    try:
+        inside, outside = os.path.join(root, "in"), os.path.join(root, "out"); os.makedirs(inside); os.makedirs(outside)
+        with open(os.path.join(inside, "ok.txt"), "w") as f: f.write("chamber-selftest-ok\n")
+        with open(os.path.join(outside, "no.txt"), "w") as f: f.write("x\n")
+        fs = {":minimal": "read", inside: "read"}
+        if CODEX_SEEN.get("exe_dir"): fs[CODEX_SEEN["exe_dir"]] = "read"
+        script = (f"cat {shlex.quote(os.path.join(inside, 'ok.txt'))}; cat {shlex.quote(os.path.join(outside, 'no.txt'))} >/dev/null 2>&1 && echo LEAK-FILE; "
+                  "env | grep -q chamber-selftest-secret && echo LEAK-ENV; echo selftest-done")
+        r = codex_call(["sandbox", "-c", 'default_permissions="chamberselftest"', "-c", "permissions.chamberselftest=" + toml_inline({"filesystem": fs, "network": {"enabled": False}}),
+                        "-c", 'shell_environment_policy.inherit="core"', "--", "sh", "-c", script], dict(env, CHAMBER_SELFTEST_SECRET="chamber-selftest-secret"), 90)
+        out = (r.stdout or "") + (r.stderr or "")
+        if "LEAK" in out: return False, "(Codex's lock-down did not hold on this machine in the connector's own test, so I do not run Codex here. Check that no Codex config file on this machine sets sandbox_mode, then restart me.)"
+        if CODEX_BLOCKED_RE.search(out): return False, codex_blocked_text()
+        if "chamber-selftest-ok" in out and "selftest-done" in out: return True, ""
+        return False, f"(Codex's lock-down test did not run on this machine, so I do not run Codex here: {redact(out.strip())[-200:] or 'exit ' + str(r.returncode)})"
+    except (OSError, subprocess.TimeoutExpired) as e: return False, f"(Codex's lock-down test did not run on this machine, so I do not run Codex here: {redact(str(e))[:160]})"
+    finally: shutil.rmtree(root, ignore_errors=True)
+
+def codex_blocked_text():
+    return (f"(Codex's lock-down cannot start on this machine ({socket.gethostname()}): the system does not let ordinary programs build the sandbox it "
+            "needs (Ubuntu 23.10 and later block this by default). So I do not run Codex here at all. An administrator can allow it for Codex's sandbox "
+            "program alone with an AppArmor rule, or this machine can use Claude Code instead.)")
+
+def codex_signin_help():
+    try: import getpass; user = getpass.getuser()
+    except Exception: user = "chamber-agent"
+    login = f"CODEX_HOME={CODEX_HOME} {shutil.which(CODEX_BIN) or CODEX_BIN} login"
+    if os.environ.get("CHAMBER_INSTALL") == "laptop":
+        return (f"I am running on {socket.gethostname()}, but Codex is not signed in there yet, so I cannot answer. On that computer, open a terminal and run "
+                f"`{login}` once with your own ChatGPT or OpenAI account, then ask me again. The sign-in stays on that computer; Chamber never sees it.")
+    return (f"Codex is not signed in on {socket.gethostname()} yet, so I cannot answer. On that machine run `sudo -u {user} -H env {login} --device-auth` and open the "
+            "link it shows (or put CODEX_API_KEY=<an OpenAI API key> in this agent's settings file and restart it). Then ask me again. "
+            "The sign-in stays on that machine; Chamber never sees it.")
+
+def codex_check(env):
+    """'' when Codex is here, new enough, and its lock-down holds on this machine; else what to tell people. The version and
+    the self-test are remembered until the version changes, so a Codex update is tested again before its first answer."""
+    try: v = codex_call(["--version"], env, 30)
+    except FileNotFoundError: return f"(Codex is not installed here: '{CODEX_BIN}' not found.)"
+    except (OSError, subprocess.TimeoutExpired) as e: return f"(Codex did not start here: {redact(str(e))[:160]})"
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", (v.stdout or "") + (v.stderr or ""))
+    if not m: return "(Codex did not say which version it is, so I cannot tell whether it can be locked down here.)"
+    ver = tuple(int(x) for x in m.groups())
+    if ver[:2] < CODEX_MIN: return (f"(Codex {'.'.join(map(str, ver))} is installed here. Chamber needs {CODEX_MIN[0]}.{CODEX_MIN[1]} or newer, which can be held "
+                                    "to the attached folders. Update it (npm install -g @openai/codex) and ask again.)")
+    sysconf = "/etc/codex/config.toml"
+    try:
+        if re.search(r"^\s*sandbox_mode\s*=", open(sysconf, encoding="utf-8", errors="replace").read(), re.M):
+            return f"(This machine's {sysconf} sets sandbox_mode, which switches Codex to its older, wider sandbox settings, so I do not run Codex here.)"
+    except OSError: pass
+    if CODEX_SEEN["version"] == ver and CODEX_SEEN["selftest"] is not None and (CODEX_SEEN["selftest"] or time.time() - CODEX_SEEN.get("at", 0) < 300):
+        return CODEX_SEEN["why"]                                      # a failed test is tried again after 5 minutes (an administrator may have fixed it)
+    CODEX_SEEN.update(version=ver, selftest=None, why="", exe_dir=None)
+    codex_write_home()
+    CODEX_SEEN["exe_dir"] = codex_exe_dir(env)
+    ok, why = codex_selftest(env)
+    CODEX_SEEN.update(selftest=ok, why="" if ok else why, at=time.time())
+    log(f"codex {'.'.join(map(str, ver))}: lock-down self-test {'passed' if ok else 'FAILED'}" + ("" if ok else f": {why[:200]}"))
+    return CODEX_SEEN["why"]
+
+def codex_off(env):
+    """The features to switch off for this answer: every one that is on, except the reviewed plumbing. None if Codex would not say."""
+    try: r = codex_call(["features", "list"], env, 30)
+    except (OSError, subprocess.TimeoutExpired): return None
+    if r.returncode != 0: return None
+    on = []
+    for line in (r.stdout or "").splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[-1] == "true" and "removed" not in f[1:-1] and re.match(r"^[a-z0-9_]+$", f[0]): on.append(f[0])
+    return sorted(set(on) - CODEX_KEEP - CODEX_KEEP_EXTRA)
+
+def codex_event(run, obj, st):
+    """Fold one `codex exec --json` event into the run (steps + transcript) and the result slot `st`. Pure apart from run.flush,
+    so it is tested with canned events. Event shapes: codex-rs/exec/src/exec_events.rs (0.169.0)."""
+    t = obj.get("type"); it = obj.get("item") if isinstance(obj.get("item"), dict) else {}; kind = it.get("type")
+    if t == "thread.started": st["thread"] = str(obj.get("thread_id") or "")[:80]; return
+    if t == "item.started" and kind == "command_execution":
+        st["pending"][it.get("id")] = time.time(); run.step("$ " + str(it.get("command") or "")[:150], tool=True); return
+    if t == "item.completed":
+        if kind == "command_execution":
+            t0 = st["pending"].pop(it.get("id"), None)
+            if t0 is None: run.step("$ " + str(it.get("command") or "")[:150], tool=True)
+            code, out = it.get("exit_code"), str(it.get("aggregated_output") or "")
+            err = it.get("status") in ("failed", "declined") or (isinstance(code, int) and code != 0)
+            if CODEX_BLOCKED_RE.search(out): st["blocked"] = True
+            run.tool("command", it.get("command") or "", out, exit_code=code, error=err, ms=(time.time() - t0) * 1000 if t0 else None); run.finish_step(not err); return
+        if kind == "file_change":
+            ok = it.get("status") == "completed"; what = ", ".join(f"{c.get('kind')} {c.get('path')}" for c in (it.get("changes") or [])[:20] if isinstance(c, dict))
+            run.step("Changing files: " + what[:140], tool=True); run.tool("edit", what, "", error=not ok); run.finish_step(ok); return
+        if kind == "agent_message": st["text"] = str(it.get("text") or ""); return
+        if kind == "error": st["errors"].append(str(it.get("message") or "")); return
+        if kind in ("mcp_tool_call", "web_search", "collab_tool_call"):   # switched off; if one ever happens it is on the record and in the log
+            st["unexpected"].append(kind); run.step(f"Codex used {kind} (switched off)", tool=True)
+            run.tool(kind, json.dumps({k: it.get(k) for k in ("server", "tool", "query", "arguments") if it.get(k) is not None})[:400], "", error=True); run.finish_step(False); return
+        return
+    if t == "turn.completed":
+        u = obj.get("usage") or {}
+        if isinstance(u.get("input_tokens"), int): run.usage["tokens_in"] = u["input_tokens"]
+        if isinstance(u.get("output_tokens"), int): run.usage["tokens_out"] = u["output_tokens"]
+        return
+    if t == "turn.failed": st["errors"].append(str((obj.get("error") or {}).get("message") or "the turn failed")); return
+    if t == "error": st["errors"].append(str(obj.get("message") or ""))
+
+def ask_codex(room, history, msg, files=None, scratch=None, run=None):
+    """Hand the mention to Codex, held to the attached folders. Same prompt and the same record as Claude Code (ask_claude)."""
+    import queue
+    run = run or Run(room, msg); run.usage["model"] = MODEL or "codex"; env = codex_env()
+    run.step("Checking Codex and its lock-down on this machine")
+    why = codex_check(env)
+    off = codex_off(env) if not why else None
+    if not why and off is None: why = "(Codex did not list its features, so I cannot switch off the ones its sandbox does not cover. I do not run it like that.)"
+    if why: run.finish_step(False); run.state = "failed"; note_error(why[:120]); return why
+    if CODEX_SEEN["off"] != off: CODEX_SEEN["off"] = off; log("codex: switched off for every answer: " + (", ".join(off) or "nothing"))
+    rmode, rpaths, rprivate = reach_now()
+    if rmode == "all":
+        run.finish_step(False); run.state = "failed"
+        return "(For Codex, folders are attached one by one; \"everything this account can read\" is not offered for Codex. On this machine:  " + ATTACH_HINT + ")"
+    names = {t.strip().split("(")[0] for t in ALLOWED_TOOLS.split(",") if t.strip()}
+    os.makedirs(CODEX_TMP, mode=0o700, exist_ok=True); tmp = tempfile.mkdtemp(prefix="run-", dir=CODEX_TMP)
+    try:
+        codex_write_home()
+        has_files = bool(scratch and any(f.get("path") for f in files or []))
+        extra = [p for p in (CODEX_SEEN.get("exe_dir"), os.path.realpath(scratch) if has_files else None) if p]
+        profile = codex_profile(rpaths, rprivate, bool(names & {"Edit", "Write"}), extra, os.path.realpath(tmp))
+        prompt = rules_text(room, True, msg) + "\n" + data_text(room, history, msg, digest_text(msg), memory_text(room), files, True, project_notes())
+        prompt = prompt.replace("<- use the Read tool on this path", "<- read this file")
+        cmd = [CODEX_BIN, "exec", "--json", "--strict-config", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-C", tmp]
+        for s in codex_settings() + ['default_permissions="chamber"', "permissions.chamber=" + toml_inline(profile), "shell_environment_policy.set=" + toml_inline({"TMPDIR": os.path.realpath(tmp)})]:
+            cmd += ["-c", s]
+        for f in off: cmd += ["--disable", f]
+        if MODEL: cmd += ["-m", MODEL]
+        for f in files or []:
+            if f.get("path") and str(f.get("mime", "")).startswith("image/"): cmd += ["--image", f["path"]]
+        cmd += ["--", prompt]
+        run.finish_step(True); run.step("Asking Codex")
+        try: proc = subprocess.Popen(cmd, cwd=tmp, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        except FileNotFoundError: run.state = "failed"; note_error(f"{CODEX_BIN} not found"); return f"(Codex is not installed here: '{CODEX_BIN}' not found.)"
+        q, errbuf = queue.Queue(), []
+        def reader():
+            try:
+                for line in proc.stdout: q.put(line)
+            finally: q.put(None)
+        def errreader():                                              # drained all along, so a chatty stderr can never stall Codex
+            for line in proc.stderr:
+                if sum(len(x) for x in errbuf) < 20000: errbuf.append(line)
+        threading.Thread(target=reader, daemon=True).start(); te = threading.Thread(target=errreader, daemon=True); te.start()
+        st = {"pending": {}, "text": None, "errors": [], "unexpected": [], "blocked": False}; deadline = time.time() + CLAUDE_TIMEOUT; why = None
+        while True:
+            if run.stopped(): why = "stopped"; break
+            if time.time() > deadline: why = "timeout"; break
+            try: line = q.get(timeout=1)
+            except queue.Empty: continue
+            if line is None: break
+            line = line.strip()
+            if not line.startswith("{"): continue
+            try: obj = json.loads(line)
+            except ValueError: continue
+            if isinstance(obj, dict): codex_event(run, obj, st)
+        if why:
+            proc.terminate()
+            try: proc.wait(5)
+            except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+        else: proc.wait()
+        te.join(2); err = "".join(errbuf).strip()
+    finally: shutil.rmtree(tmp, ignore_errors=True)
+    if st["unexpected"]: note_error("Codex used " + ", ".join(sorted(set(st["unexpected"]))) + " although it was switched off"); log("WARNING: Codex used " + ", ".join(sorted(set(st["unexpected"]))) + " although it was switched off")
+    if why == "stopped": run.finish_step(False); run.state = "stopped"; return stop_text(run, st.get("text"))
+    if why == "timeout": run.finish_step(False); run.state = "failed"; note_error(f"Codex timed out after {CLAUDE_TIMEOUT}s"); return f"(I ran out of time after {CLAUDE_TIMEOUT}s on that one.)"
+    text = redact((st.get("text") or "").strip()); problems = "\n".join(st["errors"] + [err])
+    if not text and (st["blocked"] or CODEX_BLOCKED_RE.search(problems)):
+        CODEX_SEEN["selftest"] = None; run.finish_step(False); run.state = "failed"; note_error("Codex's sandbox could not start"); return codex_blocked_text()
+    if not text and CODEX_SIGNIN_RE.search(problems): run.finish_step(False); run.state = "failed"; note_error("Codex is not signed in"); return codex_signin_help()
+    if not text:
+        run.finish_step(False); run.state = "failed"; last = (st["errors"] or [err] or [""])[-1]
+        note_error(f"Codex exit {proc.returncode}: {redact(last)[:120]}"); return f"(I hit an error running Codex: {redact(last)[:300] or 'exit ' + str(proc.returncode)})"
+    if st["blocked"]: CODEX_SEEN["selftest"] = None; text += "\n\n(Codex's sandbox would not start for its commands just now, so it could not look at any file; I will test it again before the next answer.)"
+    run.finish_step(True); run.state = "done"
+    return text
+
 PAUSE_RE = re.compile(r"^\s*/?(?:pause|stop|halt|freeze|hold|quiet)(?:\s+(?:all|looping|everything|now|up|please|it))?\s*[.!]*\s*$", re.I)   # T-0090
 RESUME_RE = re.compile(r"^\s*/?(?:resume|unpause|continue|go|proceed|carry on|wake up)(?:\s+(?:now|please))?\s*[.!]*\s*$", re.I)              # T-0090
 def pause_resume(text):                                                                           # T-0090: is this short commander message a pause/resume control command?
@@ -2026,7 +2351,7 @@ def main():
     global MAY_ASK; MAY_ASK = bool(me.get("mayAsk"))                                            # T-0188
     last_me = time.time()
     mention = re.compile(r"(^|[^\w])@" + re.escape(ME) + r"\b", re.I)
-    log(f"chamber-agent {AGENT_VERSION} connected to {URL} as {ME}; rooms={ROOMS}; commanders={sorted(COMMANDERS) or 'nobody'}; " + (f"tools={ALLOWED_TOOLS} (locked spawn)" if BACKEND == 'claude' else f"backend={BACKEND} model={MODEL} context_cmds={len(CONTEXT_CMDS)} (no tools)"))
+    log(f"chamber-agent {AGENT_VERSION} connected to {URL} as {ME}; rooms={ROOMS}; commanders={sorted(COMMANDERS) or 'nobody'}; " + (f"tools={ALLOWED_TOOLS} (locked spawn)" if BACKEND == 'claude' else f"backend=codex model={MODEL or 'Codex default'} reach={REACH} (Codex sandbox, T-0193)" if BACKEND == 'codex' else f"backend={BACKEND} model={MODEL} context_cmds={len(CONTEXT_CMDS)} (no tools)"))
     def version_check(latest):                                                            # T-0046: say so when a newer connector exists
         if latest and latest != AGENT_VERSION:
             log(f"NOTE: this connector is {AGENT_VERSION} but the server ships {latest}; download agent/chamber-agent.py from {URL}/source and restart")
