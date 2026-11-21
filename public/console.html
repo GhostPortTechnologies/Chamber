@@ -34,6 +34,7 @@
   <form id="f" autocomplete="off"><span id="ps">~ $</span><input id="cmd" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="type a command, Enter to run"></form>
 </div>
 <div id="gate" hidden></div>
+<script src="/screenlock.js"></script>   <!-- T-0241: the screen lock and "confirm it is you" on the Terminal page too -->
 <script>
 var out = document.getElementById('out'), psEl = document.getElementById('ps'), input = document.getElementById('cmd');
 var cwd = '~', hist = [], hi = 0, busy = false;

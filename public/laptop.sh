@@ -12,7 +12,8 @@
 #          --no-attach       attach nothing and ask nothing       --workdir /path   the older name for --attach
 #          --token -         ask for the key instead (it is then not left in this computer's command history)
 #          --background      keep it running after the terminal closes, and start it again at log-in
-#                            (a launchd agent on macOS, a user service on Linux)
+#                            (a launchd agent on macOS, a user service on Linux; where there is no service manager,
+#                            like Termux on an Android phone or a container, a small loop that restarts it: T-0319)
 #          --stop            stop the background agent        --uninstall   remove everything this script put here
 # Everything stays in your own home folder: ~/.chamber (the agent and its state) and ~/.config/chamber/agent.env (its
 # settings and key, readable only by you). Nothing needs sudo. The agent reads what you attached and does not change it,
@@ -59,9 +60,23 @@ PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
 UNIT=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/chamber-agent.service
 
 stop_bg() {
+  if [ -f "$DIR/agent.pid" ]; then kill "$(cat "$DIR/agent.pid")" 2>/dev/null || true; rm -f "$DIR/agent.pid"; fi   # T-0319: the keep-alive loop (it stops its agent too)
   if [ "$OS" = Darwin ]; then
     if [ -f "$PLIST" ]; then launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true; fi
-  elif command -v systemctl >/dev/null 2>&1; then systemctl --user disable --now chamber-agent >/dev/null 2>&1 || true; fi
+  elif [ "${CHAMBER_NO_SYSTEMD:-0}" != 1 ] && command -v systemctl >/dev/null 2>&1; then systemctl --user disable --now chamber-agent >/dev/null 2>&1 || true; fi
+}
+# T-0319: no service manager here (Termux on a phone, a container), or it would not start a user service: a small loop keeps the
+# agent running and starts it again 10 s after it stops. It is run through sh (Termux has no /bin/sh for a #! line), and on
+# TERM it stops the agent too. It does not come back after the phone or computer restarts.
+start_loop() {
+  cat > "$DIR/run-loop.sh" <<LOOP
+# Chamber agent keep-alive (T-0319), written by laptop.sh where there is no service manager. Stop it: laptop.sh --stop
+trap 'kill "\$c" 2>/dev/null; exit 0' TERM INT
+while :; do "$PY" "$DIR/chamber-agent.py" --env "$CONF" >> "$DIR/agent.log" 2>&1 & c=\$!; wait "\$c"; sleep 10; done
+LOOP
+  chmod 600 "$DIR/run-loop.sh"
+  if [ "$NOSTART" = 1 ]; then return 0; fi
+  ( cd "$WORKDIR" || exit 1; PATH="$P"; export PATH; exec nohup sh "$DIR/run-loop.sh" >/dev/null 2>&1 ) & echo $! > "$DIR/agent.pid"   # exec: the saved number is the loop itself, so --stop reaches it
 }
 if [ "$STOP" = 1 ]; then stop_bg; say "The background agent is stopped. Start it again with: curl -fsSL $URL/laptop.sh | sh -s -- --background"; exit 0; fi
 if [ "$UNINSTALL" = 1 ]; then
@@ -189,6 +204,16 @@ PL
       launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl load -w "$PLIST" || die "macOS did not accept the background agent. Run it without --background instead."
     fi
     LOGHINT="tail -f ~/.chamber/agent.log"
+  elif [ "${CHAMBER_NO_SYSTEMD:-0}" = 1 ] || ! command -v systemctl >/dev/null 2>&1; then   # T-0319: no service manager
+    start_loop
+    LOGHINT="tail -f ~/.chamber/agent.log"
+    say "Done. The agent runs in the background, kept going by a small loop (this computer or phone has no service manager)."
+    say "It does not start again by itself after a restart: run this again with --background then."
+    "$ATT" || true
+    say "Attach or remove folders any time: ~/.chamber/chamber-attach --help"
+    say "See what it does: $LOGHINT"
+    say "Stop it: curl -fsSL $URL/laptop.sh | sh -s -- --stop      Remove it: curl -fsSL $URL/laptop.sh | sh -s -- --uninstall"
+    exit 0
   else
     mkdir -p "$(dirname "$UNIT")"
     cat > "$UNIT" <<UN
@@ -207,7 +232,12 @@ RestartSec=10
 WantedBy=default.target
 UN
     if [ "$NOSTART" != 1 ]; then
-      systemctl --user daemon-reload && systemctl --user enable --now chamber-agent || die "could not start it as a user service. Run it without --background instead."
+      if ! { systemctl --user daemon-reload && systemctl --user enable --now chamber-agent; } >/dev/null 2>&1; then   # T-0319: no user service here after all (a container): the loop instead
+        rm -f "$UNIT"; start_loop
+        say "Done. This computer would not start a user service, so a small loop keeps the agent running. It does not start again by itself after a restart: run this again with --background then."
+        say "See what it does: tail -f ~/.chamber/agent.log      Stop it: curl -fsSL $URL/laptop.sh | sh -s -- --stop"
+        exit 0
+      fi
     fi
     LOGHINT="journalctl --user -u chamber-agent -f"
   fi

@@ -175,6 +175,19 @@
   nav.tabs button:hover { color: var(--text); } nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
   nav.tabs .badge { display: inline-block; background: var(--accent-soft); color: var(--accent); font-size: 10px; line-height: 16px; padding: 0 6px; border-radius: 999px; letter-spacing: 0; }
   .view { display: none; flex: 1; overflow: hidden; min-height: 0; } .view.active { display: flex; }
+  /* T-0311: the Billing tab */
+  #billing-view.active { display: block; overflow-y: auto; } #billing-view [hidden] { display: none !important; }
+  .bl-wrap { max-width: 760px; margin: 0 auto; padding: 14px 16px 48px; }
+  .bl-card { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 0 0 14px; background: var(--surface); }
+  .bl-card h3 { margin: 0 0 8px; font-size: 15px; } .bl-card p { margin: 6px 0; }
+  .bl-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  .bl-pick { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 8px 0 0; } .bl-pick label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .bl-pick input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+  .bl-bar { height: 10px; border-radius: 6px; background: var(--line); overflow: hidden; margin: 8px 0 4px; } .bl-bar > span { display: block; height: 100%; background: var(--accent); }
+  .bl-bar.over > span { background: var(--danger); }
+  .bl-confirm { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
+  .bl-pw { display: flex; flex-direction: column; gap: 4px; max-width: 320px; margin-top: 8px; } .bl-pw input { width: 100%; }
+  .bl-warn { color: var(--danger); } .bl-msg { margin: 4px 0 0; min-height: 1.2em; } .bl-msg.err { color: var(--danger); } .bl-msg.ok { color: var(--accent); }
 
   /* ── Chat: sidebar ──────────────────────────────────────────────────────────── */
   .sidebar { width: 224px; background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; padding-bottom: 10px; }
@@ -201,6 +214,7 @@
   .avatar.human { border-radius: 50%; } .avatar.sm { width: 22px; height: 22px; font-size: 10px; border-radius: 6px; } .avatar.sm.human { border-radius: 50%; }
   .avatar .st { position: absolute; right: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); border: 2px solid var(--surface); } .avatar .st.online { background: var(--accent); }
   #backdrop { display: none; }
+  .aw-secret { -webkit-text-security: disc; } .aw-warn { margin-top: 4px; }   /* T-0320: the key field shows dots until Show */
 
   /* ── Chat: messages ─────────────────────────────────────────────────────────── */
   .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; position: relative; }
@@ -307,10 +321,12 @@
   .tk-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; padding: 12px; margin: 0 0 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
   .tk-form label { display: flex; flex-direction: column; gap: 4px; } .tk-f-title { flex: 1 1 260px; }
   .tk-form input, .tk-form select { background: var(--bg); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 7px 9px; font: inherit; font-size: 13px; }
+  .tk-f-agent { flex-basis: 100%; } .tk-f-agent > span:first-child { display: flex; gap: 8px; align-items: center; font-size: 13px; } .tk-f-agent input { width: auto; }   /* T-0245 */ .tk-agentnote { color: var(--text-dim); font-style: italic; }
   .tk-f-acts { display: flex; gap: 8px; } .tk-f-msg { flex-basis: 100%; color: var(--danger); } .tk-f-msg:empty { display: none; }
   .tk-sec { margin: 0 0 16px; } .tk-sec h3 { display: flex; gap: 8px; align-items: baseline; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); margin: 0 0 6px; font-weight: 600; }
   .tk-sec h3 .count { text-transform: none; letter-spacing: 0; font-weight: 400; }
   .tk-row { display: flex; gap: 10px; align-items: center; padding: 9px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); margin-bottom: 6px; }
+  .tk-remind { display: flex; gap: 6px; } .tk-remind input { width: auto; } .tk-row.proposed { border-style: dashed; } .tk-prop { color: var(--accent); }   /* T-0264 */
   .tk-row.late { border-color: rgba(255, 107, 107, .45); } .tk-row.done .tk-title { color: var(--text-dim); text-decoration: line-through; text-decoration-color: var(--line-strong); }
   .tk-box { flex: none; width: 26px; height: 26px; border-radius: 6px; border: 2px solid var(--line-strong); background: var(--bg); color: transparent; cursor: pointer; font-size: 15px; line-height: 1; display: grid; place-items: center; padding: 0; }
   .tk-box:hover:not(:disabled) { border-color: var(--accent); } .tk-box[aria-checked=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink, #04170c); } .tk-box:disabled { cursor: default; opacity: .7; }
@@ -323,14 +339,21 @@
   .rv-found { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; } .rv-found[hidden] { display: none; }
   .rv-row { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; font-size: 12px; text-align: left; color: var(--text); width: 100%; font: inherit; } .rv-row:hover { border-color: var(--accent-line); }
   .rv-row .id { color: var(--text-dim); flex-shrink: 0; } .rv-row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rv-fresh { margin: 0 0 8px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r); color: var(--text-dim); line-height: 1.7; } .rv-fresh a { color: var(--accent); }
+  /* T-0309: the Reviews tab scrolls as ONE page on every screen and every column lists all its tickets (no scroll boxes inside it,
+     no "and N more"); find and Check next stay at the top. A card reads like a Tickets card. The answer buttons sit inside the
+     opened ticket, after the whole close note and the checks. */
+  #reviews-view.active { overflow-y: auto; } #reviews-view > * { flex-shrink: 0; }
+  #reviews-view .rv-bar { position: sticky; top: 0; z-index: 3; background: var(--bg); padding: 4px 0; margin: -4px 0 0; }
+  #reviews-view .reviews-grid { flex: none; overflow: visible; align-items: start; } #reviews-view .review-col { max-height: none; overflow: visible; } #reviews-view .review-cards { overflow: visible; } #reviews-view .rv-old { height: auto; }
+  .check-card .title { color: var(--text); font-size: 12px; margin: 4px 0 6px; line-height: 1.35; overflow-wrap: anywhere; } .check-card .meta + .meta { margin-top: 4px; } .check-card .rv-st { color: var(--text); }
+  #check-modal .ck-go { border-top: 1px solid var(--line); margin-top: 12px; padding: 12px 0 0; } #ck-done { max-height: none; }
   .rv-pasted { margin-top: 8px; flex-shrink: 0; } .rv-pasted > summary { cursor: pointer; font-size: 12px; color: var(--text-dim); padding: 4px 2px; } .rv-pasted .toolbar { margin: 6px 0; flex-wrap: wrap; gap: 8px; }
-  .rv-old { height: 30vh; flex: none; } .check-card .ttl { font-size: 12px; color: var(--text); margin: 2px 0 5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .rv-old { height: 30vh; flex: none; }
   .ck-name { font-size: 15px; color: var(--text); margin-bottom: 4px; overflow-wrap: anywhere; } .ck-text { max-height: 30vh; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; background: var(--bg); }
   .ck-state { margin-top: 10px; font-size: 13px; color: var(--text); } .ck-state:empty { display: none; } #ck-reason { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 8px 10px; font: inherit; font-size: 13px; }
   #check-modal .modal-head { gap: 10px; } #check-modal .modal-head .close-x { margin-left: auto; }
   @media (max-width: 760px) {                                                  /* on a phone the whole tab scrolls and To check gets room first */
-    #reviews-view.active { display: block; overflow-y: auto; } #reviews-view .reviews-grid { overflow: visible; margin-bottom: 8px; } #reviews-view .review-col { max-height: 60vh; } .rv-old { height: auto; }
+    #reviews-view .rv-bar > .dim.small { display: none; }   /* T-0309: on a phone the bar stays at the top, so it holds only the find box and Check next */
     #rv-find { max-width: none; flex-basis: 150px; }
   }
   .reviews-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; flex: 1; overflow: hidden; min-height: 0; }
@@ -389,6 +412,7 @@
   .fselbar { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 6px 10px; border: 1px solid var(--accent-line); border-radius: var(--r); background: var(--surface); } .fselbar[hidden] { display: none; }
   .fcard { position: relative; } .fcard.folder { cursor: pointer; } .fcard.folder .thumb { font-size: 40px; } .fcard .fsel { position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; z-index: 2; margin: 0; } .fcard.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .fcard .facts a.danger:hover { color: var(--danger); } .fcard .ffolder { color: var(--accent); }
+  .ver-row { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; } .ver-row a { margin-left: 8px; } .fcard .fver { color: var(--accent); }   /* T-0266 */
   .att-wrap { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; } .att-x { all: unset; cursor: pointer; color: var(--text-dim); font-size: 12px; padding: 2px 5px; } .att-x:hover { color: var(--danger); } .att-file.removed { opacity: .6; border-style: dashed; } .att-file.removed .ico { color: var(--text-dim); }
 
   /* ── Code pad ───────────────────────────────────────────────────────────────── */
@@ -509,7 +533,10 @@
   #thread-panel { width: min(380px, 40vw); flex-shrink: 0; border-left: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; min-width: 0; } #thread-panel[hidden] { display: none; }
   #thread-panel .thread-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--text-dim); } #thread-panel .thread-head b { color: var(--text); }
   #thread-list { flex: 1; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; } #thread-list .msg { grid-template-columns: 24px 1fr; } #thread-list .msg .actions, #thread-list .thread-sum { display: none !important; }
-  #thread-compose { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--line); align-items: flex-end; position: relative; }  /* T-0147: relative so #ac can sit above it */
+  #thread-compose { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--line); position: relative; }   /* T-0269: tag row and attachments above the input row */
+  #thread-compose .thread-row { display: flex; gap: 6px; align-items: flex-end; } #thread-attach-bar { display: none; flex-wrap: wrap; gap: 6px; } #thread-attach-bar.show { display: flex; }
+  .tag-row { padding-bottom: 6px; } .tag-row .lbl { font-size: 11px; color: var(--text-faint); } .tag-row button.off { opacity: .6; }   /* T-0269: tap an agent to tag it */
+  #thread-compose .tag-row { padding-bottom: 0; }  /* T-0147: relative so #ac can sit above it */
   #thread-compose #ac { left: 12px; right: 12px; } #thread-compose textarea { flex: 1; min-height: 36px; max-height: 120px; resize: none; }
   #sheet-actions .emoji-row { display: flex; justify-content: space-around; padding: 8px 10px; border-bottom: 1px solid var(--line); } #sheet-actions .emoji-row button { all: unset; cursor: pointer; font-size: 22px; padding: 4px 8px; }
   @media (max-width: 760px) {
@@ -585,6 +612,9 @@
     <div class="menu-wrap">
       <button id="gear-btn" class="btn btn-ghost btn-icon" aria-label="Settings and account" aria-haspopup="true" aria-expanded="false" onclick="toggleMenu()"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-width="4" stroke-dasharray="3.53 3.54" stroke-dashoffset="1.77"/><circle cx="12" cy="12" r="5.75" stroke-width="3.5"/></svg></button>
       <div id="menu" role="menu">
+        <!-- T-0329: with accounts on, the gear menu is only Settings, Help, Lock now and Sign out (#menu-short); everything else is on
+             the Settings page. A Chamber without accounts has no Settings page, so it keeps this full menu (#menu-full). -->
+        <div id="menu-full">
         <div class="mtitle">Accent colour</div>
         <!-- Theme picker: sets --accent only; the whole palette derives from it in :root, so one pick recolours all. -->
         <div id="theme-picker" role="group" aria-label="Accent colour">
@@ -616,11 +646,18 @@
         <a class="mi" href="/help/api" target="_blank" rel="noopener">API reference <span class="dim">for scripts and agents</span></a>
         <button class="mi" id="menu-install" hidden onclick="installApp()">Install Chamber <span class="dim">app + notifications</span></button>
         <button class="mi" onclick="showShortcuts()">Keyboard shortcuts <span class="dim">?</span></button>
-        <button class="mi" id="menu-notify" hidden onclick="openNotify()">Notifications <span class="dim">per-room, quiet hours</span></button>
         <a class="mi" id="menu-terminal" hidden href="#" onclick="switchView('terminal');document.getElementById('menu').classList.remove('open');return false;">Terminal <span class="dim">owner console</span></a>
+        <button class="mi" id="menu-chips" hidden onclick="toggleChips()">Suggestion buttons <span class="dim" id="chips-state">on</span></button>   <!-- 18 Nov: the way back after the x hides them -->
         <button class="mi" id="menu-plain" onclick="togglePlain()">Plain-language replies <span class="dim" id="plain-state">off</span></button>
         <div class="sep"></div>
         <a class="mi" href="/source"><span>Source of this version</span> <span class="dim">AGPL-3.0</span></a>
+        </div>
+        <div id="menu-short" hidden>
+          <a class="mi" id="menu-settings" href="/settings">Settings <span class="dim">display, notifications, account, agents</span></a>
+          <a class="mi" id="menu-help" href="/help" target="_blank" rel="noopener">Help <span class="dim">guide</span></a>
+          <div class="sep"></div>
+        </div>
+        <button class="mi" id="menu-lock" hidden onclick="window.ChamberScreenLock && ChamberScreenLock.lockNow()">Lock now <span class="dim">asks for your password</span></button>
         <button class="mi" id="menu-signout" hidden onclick="signOut()">Sign out</button>
       </div>
     </div>
@@ -636,6 +673,7 @@
   <button class="tab" data-view="activity" role="tab" aria-selected="false" aria-controls="activity-view" onclick="switchView('activity')">Activity</button>
   <button class="tab" data-view="code" role="tab" aria-selected="false" aria-controls="code-view" onclick="switchView('code')">Code</button>
   <button class="tab" data-view="terminal" role="tab" aria-selected="false" aria-controls="terminal-view" onclick="switchView('terminal')" id="tab-terminal" hidden>Terminal</button>
+  <button class="tab" data-view="billing" role="tab" aria-selected="false" aria-controls="billing-view" onclick="switchView('billing')" id="tab-billing" hidden>Billing</button>   <!-- T-0311: owner and admins -->
 </nav>
 
 <div id="start-card" class="start-card" hidden role="region" aria-label="Getting started"></div>   <!-- T-0160 -->
@@ -667,6 +705,7 @@
       <div id="reply-hint" class="ctx"></div>
       <div id="wrap-hint" class="ctx"></div>
       <div id="attach-bar"></div>
+      <div id="tag-row" class="chips tag-row" hidden></div>   <!-- T-0269 -->
       <div id="chips" class="chips" hidden></div>
       <div id="ac" role="listbox" aria-label="Suggestions" hidden></div>
       <div class="input-bar">
@@ -684,7 +723,16 @@
   <aside id="thread-panel" aria-label="Thread" hidden>
     <div class="thread-head"><b>Thread</b><span id="thread-where"></span><span class="grow" style="flex:1"></span><button class="close-x" aria-label="Close thread" onclick="closeThread()">×</button></div>
     <div id="thread-list" role="log" aria-live="polite"></div>
-    <div id="thread-compose"><label for="thread-input" class="sr-only">Reply in thread</label><textarea id="thread-input" rows="1" placeholder="Reply in thread"></textarea><button class="btn btn-primary" onclick="sendThreadReply()">Reply</button></div>
+    <div id="thread-compose">   <!-- T-0269: the same tools as the main box -->
+      <div id="thread-tags" class="chips tag-row" hidden></div>
+      <div id="thread-attach-bar"></div>
+      <div class="thread-row">
+        <input type="file" id="thread-file-input" multiple hidden onchange="queueThreadFiles(this.files);this.value=''">
+        <button id="thread-attach-btn" class="btn btn-ghost btn-icon" type="button" title="Attach a photo or file (or paste / drop one)" aria-label="Attach a photo or file to the reply" onclick="document.getElementById('thread-file-input').click()">📎</button>
+        <button id="thread-mic-btn" class="btn btn-ghost btn-icon" type="button" title="Speak instead of typing" aria-label="Voice input for the reply" onclick="toggleMic('thread')" hidden>🎤</button>
+        <label for="thread-input" class="sr-only">Reply in thread</label><textarea id="thread-input" rows="1" placeholder="Reply in thread"></textarea><button id="thread-send" class="btn btn-primary" onclick="sendThreadReply()">Reply</button>
+      </div>
+    </div>
   </aside>
 </div>
 
@@ -713,10 +761,9 @@
     <input id="rv-find" type="search" placeholder="Find a ticket: number or words" aria-label="Find a ticket to review" oninput="rvFind()" autocomplete="off">
     <button class="btn btn-primary" id="rv-next" onclick="checkNext()">Check next →</button>
     <span class="spacer"></span>
-    <span class="dim small">Finished work lands here by itself. Look at it, then: looks good, or send it back.</span>
+    <span class="dim small">Finished work lands here by itself. Open a ticket, read what was done, then: looks good, or send it back.</span>
   </div>
   <div id="rv-found" class="rv-found" hidden></div>
-  <div id="rv-fresh" class="rv-fresh small" hidden></div>
   <div class="reviews-grid">
     <div class="review-col"><h3>To check <span class="count" id="rvcount-todo">0</span></h3><div class="review-cards" id="rvcol-todo"></div></div>
     <div class="review-col"><h3>Checked <span class="count" id="rvcount-ok">0</span></h3><div class="review-cards" id="rvcol-ok"></div></div>
@@ -733,6 +780,10 @@
   </details>
 </div>
 
+<div id="billing-view" class="view" role="tabpanel">   <!-- T-0311: everything about money in one place; the server refuses everyone but the owner and admins -->
+  <div class="bl-wrap"><div id="bl-body"><p class="dim">Loading…</p></div><p class="bl-msg small" id="bl-msg" role="status"></p></div>
+</div>
+
 <div id="tasks-view" class="view" role="tabpanel">
   <div class="toolbar tk-bar">
     <button class="btn btn-primary" id="tk-add-btn" onclick="taskForm()" hidden>+ Add a task</button>
@@ -744,6 +795,8 @@
     <label><span class="dim small">How often</span><select id="tk-every" onchange="taskEveryShown()"><option value="day">Every day</option><option value="week" selected>Every week</option><option value="month">Every month</option></select></label>
     <label id="tk-wday-l"><span class="dim small">On</span><select id="tk-wday"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="7">Sunday</option></select></label>
     <label id="tk-mday-l" hidden><span class="dim small">On the</span><select id="tk-mday"></select></label>
+    <label id="tk-remind-l"><span class="dim small">Remind an agent at (optional)</span><span class="tk-remind"><input id="tk-remind-at" type="time" aria-label="Reminder time"><select id="tk-remind-agent" aria-label="Agent to remind"><option value="">no reminder</option></select></span></label>   <!-- T-0264 -->
+    <label class="tk-f-agent" id="tk-agent-l"><span><input type="checkbox" id="tk-agent"> An agent may tick this off</span><span class="dim small">It must say what it checked. Only when the owner lets agents see the Tasks list.</span></label>
     <div class="tk-f-acts"><button class="btn btn-primary" type="submit" id="tk-save">Add task</button><button class="btn" type="button" onclick="taskFormClose()">Cancel</button></div>
     <div class="tk-f-msg small" id="tk-form-msg" role="status"></div>
   </form>
@@ -881,7 +934,7 @@
 </div>
 
 <!-- Dialogs: one .modal/.modal-box pattern; Esc closes the topmost, focus returns to the opener. -->
-<div id="newreview-modal" class="modal" onclick="if(event.target===this)closeNewReview()" role="dialog" aria-modal="true" aria-labelledby="nr-title">
+<div id="newreview-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeNewReview()" role="dialog" aria-modal="true" aria-labelledby="nr-title">
   <div class="modal-box">
     <div class="modal-head"><h2 id="nr-title">New review</h2><button class="close-x" aria-label="Close" onclick="closeNewReview()">×</button></div>
     <div class="modal-body form">
@@ -894,7 +947,7 @@
   </div>
 </div>
 
-<div id="check-modal" class="modal" onclick="if(event.target===this)closeCheck()" role="dialog" aria-modal="true" aria-labelledby="ck-title">
+<div id="check-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeCheck()" role="dialog" aria-modal="true" aria-labelledby="ck-title">
   <div class="modal-box wide">
     <div class="modal-head"><h2 id="ck-title">T-0000</h2><span class="dim small" id="ck-pos"></span><button class="close-x" aria-label="Close" onclick="closeCheck()">×</button></div>
     <div class="modal-body">
@@ -907,12 +960,12 @@
       <div id="ck-back" hidden><label for="ck-reason" class="section-title">What is wrong or missing?</label><textarea id="ck-reason" rows="3" maxlength="4000" placeholder="Say it the way you would tell a person. It becomes a follow-up ticket for whoever did the work."></textarea>
         <label class="dim small" style="display:block;margin-top:6px"><input type="checkbox" id="ck-start" checked> Start the follow-up right away (approve it)</label></div>
       <div id="ck-error" class="err"></div>
+      <div class="actions ck-go" id="ck-actions"></div>   <!-- T-0309: after the close note and the checks, inside the opened ticket -->
     </div>
-    <div class="actions" id="ck-actions"></div>
   </div>
 </div>
 
-<div id="review-modal" class="modal" onclick="if(event.target===this)closeReviewModal()" role="dialog" aria-modal="true" aria-labelledby="rm-id-title">
+<div id="review-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeReviewModal()" role="dialog" aria-modal="true" aria-labelledby="rm-id-title">
   <div class="modal-box wide">
     <div class="modal-head"><h2 id="rm-id-title">R-XXXX</h2><button class="close-x" aria-label="Close" onclick="closeReviewModal()">×</button></div>
     <div class="modal-body">
@@ -935,20 +988,21 @@
   </div>
 </div>
 
-<div id="agent-wizard" class="modal" onclick="if(event.target===this)closeAgentWizard()" role="dialog" aria-modal="true" aria-labelledby="aw-title">
+<div id="agent-wizard" class="modal" onclick="if(event.target===this&&backdropDown===this)closeAgentWizard()" role="dialog" aria-modal="true" aria-labelledby="aw-title">
   <div class="modal-box">
     <div class="modal-head"><h2 id="aw-title">Add an agent</h2><button class="close-x" aria-label="Close" onclick="closeAgentWizard()">×</button></div>
     <div class="modal-body" id="aw-body">
       <p class="meta-row">Three steps: name it, paste one command on the machine it should work on, and watch it appear here. <a href="/help#agents" target="_blank" rel="noopener">Which kind do I want?</a></p>
       <div class="aw-step"><b>1. What kind?</b>
         <label class="aw-opt"><input type="radio" name="aw-kind" value="connector" checked onchange="awRender()"> <b>Chat agent</b> <span class="dim">answers when you @mention it, and from the Ask AI tab. Start with this one.</span></label>
-        <label class="aw-opt"><input type="radio" name="aw-kind" value="laptop" onchange="awRender()"> <b>Chat agent on my own computer</b> <span class="dim">the same chat agent, on your Mac or Linux laptop, with no admin rights. It reads nothing there until you attach a folder; the installer asks which.</span></label>
+        <label class="aw-opt"><input type="radio" name="aw-kind" value="laptop" onchange="awRender()"> <b>Chat agent on my own computer</b> <span class="dim">the same chat agent, on your Mac or Linux laptop, with no admin rights. It reads nothing there until you attach a folder; the installer asks which. It also runs without a service manager (a container, or Termux on an Android phone: not tried by us on a phone yet).</span></label>
         <label class="aw-opt"><input type="radio" name="aw-kind" value="worker" onchange="awRender()"> <b>Ticket worker</b> <span class="dim">carries out approved agent tickets on one code project: change, test, release, roll back. Needs a git project on that machine.</span></label>
-        <label class="aw-opt"><input type="radio" name="aw-kind" value="mcp" onchange="awRender()"> <b>Any AI tool (MCP)</b> <span class="dim">lets Claude Code, Cursor, Codex or another AI tool you already use read rooms and tickets, post, and propose tickets. It cannot approve anything.</span></label></div>
+        <label class="aw-opt"><input type="radio" name="aw-kind" value="mcp" onchange="awRender()"> <b>Any AI tool (MCP)</b> <span class="dim">lets Claude Code, Cursor, Codex, Antigravity, Gemini CLI or another AI tool you already use read rooms and tickets, post, and propose tickets. It cannot approve anything.</span></label>
+        <p class="dim small aw-fit">Which fits? A server: <b>Chat agent</b> (needs sudo). Your laptop, no admin rights: <b>Chat agent on my own computer</b>. A phone, or an AI app you already use: <b>Any AI tool (MCP)</b>, or the own-computer agent inside Termux.</p></div>   <!-- T-0319 -->
       <div class="aw-step"><b>2. Name it</b>
         <div class="aw-grid"><label>Its name in chat <input id="aw-name" maxlength="32" value="my-agent" oninput="awRender()"></label></div>
         <div class="aw-row"><button class="btn btn-primary btn-sm" id="aw-mkkey" onclick="awCreateToken()">Create its key</button><span id="aw-token-status" class="small dim">The key lets this one agent into your workspace. It goes straight into the command below.</span></div>
-        <details class="aw-more"><summary class="dim small">I already have a key</summary><label>Agent key <input id="aw-token" placeholder="chk_… (shown once when created)" oninput="awRender()" autocomplete="off"></label>
+        <details class="aw-more"><summary class="dim small">I already have a key</summary><label>Agent key <input id="aw-token" class="aw-secret" placeholder="chk_… (shown once when created)" oninput="awRender()" autocomplete="off" spellcheck="false"></label> <button class="btn btn-sm" type="button" onclick="awShowKey(this)">Show</button>
         <div class="dim small">Keys are made here or under Account, AI agents. Owners and admins only. Never reuse another agent's key.</div></details></div>
       <div class="aw-step" id="aw-connector-fields"><details class="aw-more"><summary><b>More choices</b> <span class="dim small">who it listens to, which rooms, which AI. The defaults are fine: it listens to you, in this room, with Claude Code.</span></summary>
         <div class="aw-grid"><label>Commanders <input id="aw-commanders" oninput="awRender()"></label><label>Rooms <input id="aw-rooms" oninput="awRender()"></label>
@@ -961,9 +1015,12 @@
         <label>Health URL (optional) <input id="aw-health" placeholder="http://127.0.0.1:8080/health" oninput="awRender()"></label><label>Approvers <input id="aw-approvers" oninput="awRender()"></label>
         <label>What it owns, one line <input id="aw-scope" placeholder="the shop API and its deploy scripts" oninput="awRender()"></label></div>
         <p class="dim small">Triage (worker 1.3+): before claiming, the worker checks a ticket is about this repo. One it cannot do is left unclaimed with the reason in the ticket's run log, and it tells the approver when it is the only worker online. A ticket that fails after claiming is released, not left in progress.</p></div>
+      <div class="aw-step" id="aw-mcp-fields" hidden><b>Which AI tool?</b> <span class="dim small">the command is the same for all; this says where its result goes</span>   <!-- T-0281, T-0283 -->
+        <div class="aw-grid"><label>Tool <select id="aw-mcp-tool" onchange="awRender()"><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="antigravity">Google Antigravity (not tried by us yet)</option><option value="gemini">Gemini CLI (not tried by us yet)</option><option value="devin">Devin Desktop or CLI, Windsurf (not tried by us yet)</option><option value="vscode">VS Code with Copilot (not tried by us yet)</option><option value="zed">Zed (not tried by us yet)</option><option value="jetbrains">JetBrains AI Assistant (not tried by us yet)</option><option value="other">Another tool that speaks MCP</option></select></label></div></div>
       <div class="aw-step"><b>3. Paste this on the machine</b> <span class="dim small" id="aw-where">(as a user who can sudo; the installer refuses to run without root)</span>
         <pre id="aw-cmd" class="aw-cmd"></pre><div class="aw-row"><button class="btn btn-primary btn-sm" onclick="awCopy()">Copy command</button><span id="aw-copied" class="dim small"></span></div>
         <div class="aw-row" id="aw-key-row"><button class="btn btn-sm" type="button" onclick="awCopyKey()">Copy key</button><span id="aw-key-copied" class="dim small"></span><span class="dim small">The command asks for the key: paste it then. This keeps the key out of that computer's command history.</span></div>
+        <div class="dim small aw-warn">Don't share screenshots of this window. The key lets anyone post as this agent; Chamber shows only its first letters.</div>
         <label class="dim small" style="display:block;margin-top:4px"><input type="checkbox" id="aw-keyin" onchange="awRender()"> Put the key in the command instead (one paste, but the key stays in that computer's command history)</label>
         <div class="dim small" id="aw-signin"></div></div>
       <div class="aw-step"><b>Then check it arrived</b> <span class="dim small">the installer checks itself; this confirms it from Chamber's side</span>
@@ -980,20 +1037,20 @@
   </div>
 </div>
 
-<div id="fleet-modal" class="modal" onclick="if(event.target===this)closeFleet()" role="dialog" aria-modal="true" aria-labelledby="fl-title">   <!-- T-0153 -->
+<div id="fleet-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeFleet()" role="dialog" aria-modal="true" aria-labelledby="fl-title">   <!-- T-0153 -->
   <div class="modal-box">
     <div class="modal-head"><h2 id="fl-title">GhostPort routers</h2><button class="close-x" aria-label="Close" onclick="closeFleet()">×</button></div>
     <div class="modal-body" id="fl-body"></div>
   </div>
 </div>
-<div id="archive-modal" class="modal" onclick="if(event.target===this)closeArchives()" role="dialog" aria-modal="true" aria-labelledby="arc-title">   <!-- T-0112 -->
+<div id="archive-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeArchives()" role="dialog" aria-modal="true" aria-labelledby="arc-title">   <!-- T-0112 -->
   <div class="modal-box wide">
     <div class="modal-head"><h2 id="arc-title">Archive</h2><button class="close-x" aria-label="Close" onclick="closeArchives()">×</button></div>
     <div class="modal-body" id="arc-body"></div>
   </div>
 </div>
 
-<div id="memory-modal" class="modal" onclick="if(event.target===this)closeMemory()" role="dialog" aria-modal="true" aria-labelledby="mem-title">
+<div id="memory-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeMemory()" role="dialog" aria-modal="true" aria-labelledby="mem-title">
   <div class="modal-box">
     <div class="modal-head"><h2 id="mem-title">memory</h2><button class="close-x" aria-label="Close" onclick="closeMemory()">×</button></div>
     <div class="modal-body">
@@ -1005,26 +1062,7 @@
   </div>
 </div>
 
-<div id="notify-modal" class="modal" onclick="if(event.target===this)closeNotify()" role="dialog" aria-modal="true" aria-labelledby="nt-title">
-  <div class="modal-box">
-    <div class="modal-head"><h2 id="nt-title">Notifications</h2><button class="close-x" aria-label="Close" onclick="closeNotify()">×</button></div>
-    <div class="modal-body">
-      <p class="meta-row">What rings your phone. Per person, across your devices. Direct messages always reach you, even in a muted room.</p>
-      <div id="nt-rooms" style="display:flex;flex-direction:column;gap:6px"></div>
-      <div class="sep" style="margin:12px 0"></div>
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="nt-quiet-on" onchange="ntQuietToggle()"> Quiet hours — hold pushes, deliver one summary when the window ends</label>
-      <div id="nt-quiet-fields" style="display:none;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
-        <label style="font-size:12px">From <input type="time" id="nt-quiet-start" value="22:00"></label>
-        <label style="font-size:12px">to <input type="time" id="nt-quiet-end" value="07:00"></label>
-        <label style="font-size:12px">zone <input type="text" id="nt-quiet-tz" placeholder="America/New_York" style="width:180px"></label>
-      </div>
-      <div id="nt-summary" class="dim small" style="margin-top:12px"></div>
-    </div>
-    <div class="actions"><button class="btn btn-ghost" onclick="closeNotify()">Close</button><button class="btn btn-primary" onclick="saveNotify()">Save quiet hours</button></div>
-  </div>
-</div>
-
-<div id="ticket-modal" class="modal" onclick="if(event.target===this)closeTicketModal()" role="dialog" aria-modal="true" aria-labelledby="tm-id-title">
+<div id="ticket-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeTicketModal()" role="dialog" aria-modal="true" aria-labelledby="tm-id-title">
   <div class="modal-box">
     <div class="modal-head"><h2 id="tm-id-title">T-XXXX</h2><button class="close-x" aria-label="Close" onclick="closeTicketModal()">×</button></div>
     <div class="modal-body">
@@ -1050,7 +1088,7 @@
   </div>
 </div>
 
-<div id="propose-modal" class="modal" onclick="if(event.target===this)closeProposeModal()" role="dialog" aria-modal="true" aria-labelledby="prop-modal-title">
+<div id="propose-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeProposeModal()" role="dialog" aria-modal="true" aria-labelledby="prop-modal-title">
   <div class="modal-box">
     <div class="modal-head"><h2 id="prop-modal-title">Propose ticket</h2><button class="close-x" aria-label="Close" onclick="closeProposeModal()">×</button></div>
     <div class="modal-body form">
@@ -1076,7 +1114,7 @@
   </div>
 </div>
 
-<div id="standing-modal" class="modal" onclick="if(event.target===this)closeStanding()" role="dialog" aria-modal="true" aria-labelledby="sa-title">   <!-- T-0200 -->
+<div id="standing-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeStanding()" role="dialog" aria-modal="true" aria-labelledby="sa-title">   <!-- T-0200 -->
   <div class="modal-box">
     <div class="modal-head"><h2 id="sa-title">Standing approvals</h2><button class="close-x" aria-label="Close" onclick="closeStanding()">×</button></div>
     <div class="modal-body form">
@@ -1105,7 +1143,13 @@
   </div>
 </div>
 
-<div id="build-modal" class="modal" onclick="if(event.target===this)closeBuild()" role="dialog" aria-modal="true" aria-labelledby="bd-title">
+<div id="ver-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeVersions()" role="dialog" aria-modal="true" aria-labelledby="ver-title">   <!-- T-0266 -->
+  <div class="modal-box">
+    <div class="modal-head"><h2 id="ver-title">Versions</h2><button class="close-x" aria-label="Close" onclick="closeVersions()">×</button></div>
+    <div class="modal-body"><div id="ver-list"></div></div>
+  </div>
+</div>
+<div id="build-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeBuild()" role="dialog" aria-modal="true" aria-labelledby="bd-title">
   <div class="modal-box">
     <div class="modal-head"><h2 id="bd-title">Build something</h2><button class="close-x" aria-label="Close" onclick="closeBuild()">×</button></div>
     <div class="modal-body form">
@@ -1120,7 +1164,7 @@
   </div>
 </div>
 
-<div id="msg-sheet" class="modal" role="dialog" aria-modal="true" aria-label="Message actions" onclick="if(event.target===this)closeSheet()">
+<div id="msg-sheet" class="modal" role="dialog" aria-modal="true" aria-label="Message actions" onclick="if(event.target===this&&backdropDown===this)closeSheet()">
   <div class="modal-box narrow"><div id="sheet-actions"></div></div>
 </div>
 
@@ -1132,7 +1176,7 @@
   </div>
 </div>
 
-<div id="shortcuts-modal" class="modal" onclick="if(event.target===this)closeShortcuts()" role="dialog" aria-modal="true" aria-labelledby="sc-title">
+<div id="shortcuts-modal" class="modal" onclick="if(event.target===this&&backdropDown===this)closeShortcuts()" role="dialog" aria-modal="true" aria-labelledby="sc-title">
   <div class="modal-box">
     <div class="modal-head"><h2 id="sc-title">Keyboard shortcuts</h2><button class="close-x" aria-label="Close" onclick="closeShortcuts()">&times;</button></div>
     <div class="modal-body">
@@ -1157,7 +1201,7 @@
   </div>
 </div>
 
-<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image" onclick="if(event.target===this)closeLightbox()">
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image" onclick="if(event.target===this&&backdropDown===this)closeLightbox()">
   <button class="close-x" aria-label="Close" onclick="closeLightbox()">×</button>
   <img id="lb-img" alt="">
   <pre id="lb-text" style="display:none" tabindex="0"></pre>
@@ -1166,11 +1210,13 @@
 
 <script src="/markdown.js"></script>
 <script src="/theme.js"></script>
+<script src="/screenlock.js"></script>
 <script>
 const API = location.origin;                                          // [changed] same origin; works behind an HTTPS proxy
 let currentUser = null;
 let currentRole = 'ai';
 let currentWsRole = 'member';   // T-0071: owners and admins may stop any agent run
+let accountsMode = false;       // T-0247: workspaces with roles (the classic single board has none: everyone acts as the owner)
 let presenceCache = [], myPrefs = {};   // T-0072: who is here (for the recipe chips) and my preferences
 let proposeInFlight = false;   // [new] T-0116: one propose at a time; repeated Enter cloned tickets
 let proposeMode = 'propose';   // 'propose' (new ticket) or 'edit' (existing) — drives which endpoint submitPropose hits
@@ -1283,56 +1329,24 @@ async function loadNotify() {
     myNotify = { rooms: d.rooms || {}, quiet: d.quiet || { enabled: false }, held: d.held || 0 }; loadRooms(); } catch {}
 }
 const NT_LABEL = { all: 'All messages', mentions: 'Mentions & DMs', muted: 'Muted' };
-function openNotify() {
-  toggleMenu(false);
-  const wrap = document.getElementById('nt-rooms');
-  const rooms = Object.entries(roomsCache || {});
-  const labelOf = (key, room) => room.dm ? '@' + (room.dm.find(n => n !== currentUser) || room.dm[0]) : '#' + (room.name || key);
-  wrap.innerHTML = rooms.length ? rooms.map(([key, room]) => {
-    const cur = myNotify.rooms[key] || 'mentions';
-    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(labelOf(key, room))}</span>`
-      + `<select data-room="${escA(key)}" onchange="setRoomNotify(this.dataset.room, this.value)" style="flex:none">`
-      + Object.keys(NT_LABEL).map(l => `<option value="${l}"${l === cur ? ' selected' : ''}>${NT_LABEL[l]}</option>`).join('') + '</select></div>';
-  }).join('') : '<div class="dim" style="font-size:12px">No rooms yet.</div>';
-  const q = myNotify.quiet || {};
-  document.getElementById('nt-quiet-on').checked = !!q.enabled;
-  document.getElementById('nt-quiet-start').value = q.start || '22:00';
-  document.getElementById('nt-quiet-end').value = q.end || '07:00';
-  document.getElementById('nt-quiet-tz').value = q.tz || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  ntQuietToggle(); renderNotifySummary();
-  document.getElementById('notify-modal').classList.add('show');
-}
-function closeNotify() { document.getElementById('notify-modal').classList.remove('show'); }
-function ntQuietToggle() { document.getElementById('nt-quiet-fields').style.display = document.getElementById('nt-quiet-on').checked ? 'flex' : 'none'; }
-async function setRoomNotify(room, level) {
-  try { const r = await fetch(`${API}/account/notify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room, level }) });
-    if (!r.ok) { toast('Could not save that', 'err'); return; }
-    if (level === 'mentions') delete myNotify.rooms[room]; else myNotify.rooms[room] = level;
-    renderNotifySummary(); loadRooms(); } catch { toast('Could not save that', 'err'); }
-}
-function renderNotifySummary() {
-  const muted = Object.values(myNotify.rooms).filter(l => l === 'muted').length;
-  const all = Object.values(myNotify.rooms).filter(l => l === 'all').length;
-  const q = myNotify.quiet || {}; const bits = [];
-  bits.push(all ? `${all} room${all > 1 ? 's' : ''} on every message` : 'mentions & DMs');
-  if (muted) bits.push(`${muted} muted (DMs still reach you)`);
-  if (q.enabled) bits.push(`quiet ${q.start}–${q.end} ${q.tz}`);
-  document.getElementById('nt-summary').textContent = 'You are notified for: ' + bits.join(' · ') + '.';
-}
-async function saveNotify() {
-  const on = document.getElementById('nt-quiet-on').checked;
-  const body = on ? { enabled: true, start: document.getElementById('nt-quiet-start').value, end: document.getElementById('nt-quiet-end').value, tz: document.getElementById('nt-quiet-tz').value.trim() || 'UTC' } : { enabled: false };
-  try { const r = await fetch(`${API}/account/quiet`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const d = await r.json(); if (!r.ok) { toast(d.error || 'Could not save quiet hours', 'err'); return; }
-    myNotify.quiet = d.quiet; renderNotifySummary(); toast('Saved'); closeNotify(); } catch { toast('Could not save', 'err'); }
+// T-0329: Settings is a page of its own. The app's walkthroughs and windows open from it with /app?open=<what> (and &room=<key>
+// for a room's archive). The address is tidied at once, so a reload does not open the window again. Each one keeps its own rule
+// about who may use it (Getting started: owner and admins; Terminal: the owner; routers: only where the fleet link is on).
+async function openFromLink(me) {
+  const q = new URLSearchParams(location.search), what = q.get('open'), room = q.get('room'); if (!what) return;
+  q.delete('open'); q.delete('room'); history.replaceState(null, '', location.pathname + (q.toString() ? '?' + q : '') + location.hash);
+  if (room) { if (!roomsCache[room]) await loadRooms(); if (roomsCache[room] && room !== currentRoom) switchRoom(room); }
+  const go = { 'add-agent': () => openAgentWizard(), start: () => ['owner', 'admin'].includes(currentWsRole) && openStart(), fleet: () => me.fleetLink && openFleet(),
+    archives: () => openArchives(), shortcuts: () => showShortcuts(), terminal: () => currentWsRole === 'owner' && switchView('terminal') }[what];
+  if (go) go();
 }
 // T-0222: the owner locked the workspace (or the machine restarted and the owner has not unlocked it yet). Nothing inside can be
 // shown, so the app says exactly that, and shows the owner where to unlock it.
 function showWorkspaceLocked(canUnlock) {
   if (document.getElementById('ws-locked')) return;
   document.body.innerHTML = `<main id="ws-locked" style="max-width:520px;margin:12vh auto;padding:0 16px;color:var(--text);line-height:1.6"><h1 style="font-size:20px;margin:0 0 10px">This workspace is locked</h1>`
-    + `<p>${canUnlock ? 'It is locked with your passphrase (you locked it, or the machine Chamber runs on restarted). Unlock it on your Account page with your passphrase or recovery code.' : 'Its owner has locked it. It opens again when they unlock it. Meanwhile nobody can read anything in it, and agents wait.'}</p>`
-    + `${canUnlock ? '<p><a class="btn btn-primary" href="/billing#owner-lock">Unlock on the Account page</a></p>' : '<p><a href="/billing">Account page</a></p>'}</main>`;
+    + `<p>${canUnlock ? 'It is locked with your passphrase (you locked it, or the machine Chamber runs on restarted). Unlock it in Settings, Data, with your passphrase or recovery code.' : 'Its owner has locked it. It opens again when they unlock it. Meanwhile nobody can read anything in it, and agents wait.'}</p>`
+    + `${canUnlock ? '<p><a class="btn btn-primary" href="/billing#owner-lock">Unlock in Settings</a></p>' : '<p><a href="/settings">Settings</a></p>'}</main>`;
 }
 let lockCheckAt = 0;
 async function checkLocked() {                                                 // after a dropped live connection: was it a lock?
@@ -1348,18 +1362,22 @@ async function checkLocked() {                                                 /
     const me = await r.json();
     if (me.locked) { showWorkspaceLocked(me.locked.canUnlock); return; }        // T-0222
     if (me.accounts) {
-      document.getElementById('menu-account').hidden = false; document.getElementById('menu-signout').hidden = false;   // T-0065: in the gear menu
-      document.getElementById('menu-notify').hidden = false;   // T-0078
+      document.getElementById('menu-account').hidden = false; document.getElementById('menu-signout').hidden = false; document.getElementById('menu-lock').hidden = false;   // T-0241: Lock now   // T-0065: in the gear menu
+      document.getElementById('menu-full').hidden = true; document.getElementById('menu-short').hidden = false;   // T-0329: the rest is on the Settings page
       window.serverConsole = !!me.serverConsole;                                 // T-0181
       if (me.fleetLink) document.getElementById('menu-fleet').hidden = false;    // T-0153: only where the operator switched it on
     }
     repoUrl = me.repoUrl || '';
     currentWsRole = me.wsRole || 'member';                                     // T-0071
+    accountsMode = !!me.accounts;                                              // T-0247
+    if (accountsMode && !me.selfHosted && ['owner', 'admin'].includes(currentWsRole)) {   // T-0311: approvers, viewers, requesters and members see no prices
+      document.getElementById('tab-billing').hidden = false; if (location.hash === '#billing') setTimeout(() => switchView('billing'), 0); }
     if (['owner', 'admin'].includes(currentWsRole)) { document.getElementById('menu-start').hidden = false; startRefresh(); }   // T-0160
     if (currentWsRole === 'owner') { document.getElementById('menu-terminal').hidden = false; document.getElementById('tab-terminal').hidden = false; }   // [changed] T-0108: braces -- without them the tab was revealed to every member, not just the owner
     myPrefs = me.prefs || {}; updatePlainState();                                // T-0072                                              // T-0047
     enterChamber(me.username, me.role);
     showBilling(me.billing);                                                // T-0028
+    openFromLink(me).catch(() => {});                                      // T-0329: /app?open=<what> from the Settings page
     if (me.budget && me.budget.monthlyCents) { const bl = document.getElementById('budget-line'); if (bl) { bl.hidden = false; bl.textContent = `AI budget: $${(me.budget.spentCents / 100).toFixed(2)} of $${(me.budget.monthlyCents / 100).toFixed(2)} used this month${me.budget.over ? ' (used up)' : ''}`; } }   // T-0203: the board shows what is left
     window.meCanApprove = me.canApprove; renderCheck();                      // T-0190: read by the ticket window; T-0223: and by the Reviews tab
     if (currentWsRole === 'viewer') {                                         // T-0199: a viewer reads everything and, when named, approves; nothing else
@@ -1397,7 +1415,8 @@ function showBilling(b) {
   if (b.state === 'free') {                                                              // T-0225: the free plan. Nothing to warn the owner about; files are not part of it
     const att = document.getElementById('attach-btn');
     if (b.access !== 'readonly') { el.style.display = 'none'; if (att) { att.disabled = true; att.title = 'Files are part of the paid plan: the free plan has no cloud storage'; } return; }
-    el.innerHTML = `This workspace is on Chamber's free plan, which is for one person, ${esc(b.payer || 'the owner')}. You can still read and export everything; ask them to subscribe so you can post here again.`;
+    el.innerHTML = (b.freePeople || 1) > 1 ? `This workspace is on Chamber's free plan, which covers ${b.freePeople} people: its owner, ${esc(b.payer || 'the owner')}, and the ${b.freePeople - 1} who joined first. You can still read and export everything; ask ${esc(b.payer || 'the owner')} to subscribe so you can post here again.`   // T-0288
+      : `This workspace is on Chamber's free plan, which is for one person, ${esc(b.payer || 'the owner')}. You can still read and export everything; ask them to subscribe so you can post here again.`;
     el.style.background = '#5a3b00'; el.style.display = 'block';
     document.getElementById('msg-input').disabled = true; if (att) att.disabled = true; updateSendState();
     document.getElementById('msg-input').placeholder = 'Read-only: this workspace is on the free plan'; return;
@@ -1405,14 +1424,14 @@ function showBilling(b) {
   if (b.state === 'trial') {                                                             // T-0159: a quiet reminder in the last days, to the owner only
     const d = Math.max(0, Math.ceil((b.trialEndsAt - Date.now()) / 86400e3));
     if (!b.isPayer || d > 5) { el.style.display = 'none'; return; }
-    el.innerHTML = `Free trial: ${d} day${d === 1 ? '' : 's'} left. <a href="/billing" style="color:#fff;text-decoration:underline">Subscribe on the Account page</a> to keep your team and your files after that; on its own it moves to the free plan, for you alone. Nothing is deleted either way.`;
+    el.innerHTML = `Free trial: ${d} day${d === 1 ? '' : 's'} left. <a href="/billing" style="color:#fff;text-decoration:underline">Subscribe in Settings</a> to keep your team and your files after that; on its own it moves to the free plan, for you alone. Nothing is deleted either way.`;
     el.style.background = '#5a3b00'; el.style.display = 'block'; return;
   }
   const who = b.isPayer ? 'your' : `${b.payer || 'the owner'}'s`;
-  const fix = b.isPayer ? '<a href="/billing" style="color:#fff;text-decoration:underline">Fix it on the Account page</a>.' : `Ask ${b.payer || 'the workspace owner'} to update the card.`;
+  const fix = b.isPayer ? '<a href="/billing" style="color:#fff;text-decoration:underline">Fix it in Settings</a>.' : `Ask ${b.payer || 'the workspace owner'} to update the card.`;
   el.innerHTML = b.state === 'grace'
     ? `Payment problem: ${who} card could not be charged. This workspace becomes read-only on ${new Date(b.graceEndsAt).toLocaleDateString()}. ${fix}`
-    : b.trialOver ? `The free trial has ended. This workspace is read-only until ${b.isPayer ? 'you subscribe' : (b.payer || 'the owner') + ' subscribes'}. Nothing was deleted, and you can still read and export. ${b.isPayer ? '<a href="/billing" style="color:#fff;text-decoration:underline">Subscribe on the Account page</a>.' : ''}`
+    : b.trialOver ? `The free trial has ended. This workspace is read-only until ${b.isPayer ? 'you subscribe' : (b.payer || 'the owner') + ' subscribes'}. Nothing was deleted, and you can still read and export. ${b.isPayer ? '<a href="/billing" style="color:#fff;text-decoration:underline">Subscribe in Settings</a>.' : ''}`
     : `This workspace is read-only until ${who} payment goes through. You can still read and export. ${fix}`;
   el.style.background = b.state === 'readonly' ? '#5a1a1a' : '#5a3b00'; el.style.display = 'block';
   const ro = b.state === 'readonly';
@@ -1479,8 +1498,9 @@ function sessionExpired() {                                               // [ne
 // Poll for messages
 const renderedIds = new Set();                                            // T-0021: ids already on screen (poll + live events can overlap)
 let polling = false;
+let pollAgain = false;                                                     // T-0292: something changed while a poll was under way
 async function poll() {
-  if (polling) return;                                                     // T-0021: one poll at a time
+  if (polling) { pollAgain = true; return; }                               // T-0021: one poll at a time; T-0292: but fetch again right after it, not 15 s later
   polling = true;
   try {
     const r = await fetch(`${API}/api/messages?room=${currentRoom}&since=${lastTs}`);
@@ -1516,6 +1536,7 @@ async function poll() {
   } catch {}
   polling = false;
   clearTimeout(pollTimer);
+  if (pollAgain) { pollAgain = false; pollTimer = setTimeout(poll, 0); return; }   // T-0292: a change arrived meanwhile: get it now
   pollTimer = setTimeout(poll, eventsLive ? 15000 : 2000);                 // [changed] T-0016: slow fallback when live
 }
 
@@ -1616,7 +1637,7 @@ function renderMsg(m, users) {
   const mine = currentUser && m.username.toLowerCase() === currentUser.toLowerCase();
   const body = m.deleted ? '<div class="text deleted">message deleted</div>' : `<div class="text" data-raw="${escA(m.text)}">${renderText(m.text, { own: mine })}${m.edited ? '<span class="edited" title="' + new Date(m.edited).toLocaleString() + '">(edited)</span>' : ''}</div>`;
   if (!m.deleted) msgCache[m.id] = { username: m.username, text: m.text };                                  // T-0049: for quoting replies
-  const actions = m.deleted ? '' : `<span class="actions"><a onclick="startReply('${escJ(m.id)}')">reply</a><a onclick="copyLink('${escJ(m.id)}')" title="copy a link to this message">link</a><a onclick="togglePin('${escJ(m.id)}', ${m.pinned ? 'false' : 'true'})">${m.pinned ? 'unpin' : 'pin'}</a><a onclick="copyText('${escJ(m.id)}')">copy</a><a onclick="showPicker('${escJ(m.id)}')" title="react">react</a>${mine ? `<a onclick="startEdit('${escJ(m.id)}')">edit</a><a onclick="deleteMsg('${escJ(m.id)}', this)">delete</a>` : ''}</span>`;
+  const actions = m.deleted ? '' : `<span class="actions"><a onclick="startReply('${escJ(m.id)}')">reply</a><a onclick="copyLink('${escJ(m.id)}')" title="copy a link to this message">link</a><a onclick="togglePin('${escJ(m.id)}', ${m.pinned ? 'false' : 'true'})">${m.pinned ? 'unpin' : 'pin'}</a><a onclick="copyText('${escJ(m.id)}')">copy</a><a onclick="showPicker('${escJ(m.id)}')" title="react">react</a>${mine ? `<a onclick="startEdit('${escJ(m.id)}')">edit</a><a onclick="deleteMsg('${escJ(m.id)}', this)">delete</a>` : ''}${!mine && canRemoveOthers() ? `<a onclick="deleteMsg('${escJ(m.id)}', this)" title="Remove this message (owner and admins). The activity record keeps who removed it.">remove</a>` : ''}</span>`;
   let quote = '';
   if (m.reply_to) {                                                                                           // T-0049: quoted parent, or a jump link if it is not loaded
     const p = msgCache[m.reply_to];
@@ -1646,7 +1667,7 @@ function cancelEdit() { editingId = null; document.getElementById('editing-hint'
 document.getElementById('edit-cancel').onclick = cancelEdit;
 async function deleteMsg(id, a) {
   if (!a) { const ok = await askDialog({ title: 'Delete this message?', label: 'Type delete to confirm', min: 6, ok: 'Delete', placeholder: 'delete' }); if (!ok || ok.trim().toLowerCase() !== 'delete') return; }   // T-0069: from the long-press sheet
-  if (a && a.textContent !== 'confirm delete') { a.textContent = 'confirm delete'; setTimeout(() => { if (a.textContent === 'confirm delete') a.textContent = 'delete'; }, 4000); return; }
+  if (a && !a.dataset.armed) { a.dataset.armed = a.textContent; a.textContent = 'confirm ' + a.textContent; setTimeout(() => { if (a.dataset.armed) { a.textContent = a.dataset.armed; delete a.dataset.armed; } }, 4000); return; }   // T-0247: 'delete' or 'remove'
   const r = await fetch(`${API}/api/messages/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
   if (!r.ok) { const d = await r.json().catch(() => ({})); toast('Delete failed: ' + (d.error || r.statusText), 'err'); return; }
   const d = await r.json(); const el = document.querySelector(`[data-id="${id}"]`); if (el) el.outerHTML = renderMsg(d.message, {});
@@ -1760,6 +1781,7 @@ function switchView(view) {
   if (view === 'tasks') loadTaskList();                                          // T-0224
   if (view === 'files') loadFiles();
   if (view === 'terminal') terminalInit();                                             // T-0064/T-0065
+  if (view === 'billing') loadBilling();                                               // T-0311
   closeSidebar();
   tabsReveal();                                                                         // T-0135
 }
@@ -1968,7 +1990,7 @@ function terminalInit(){
   line('Ask AI: type a question in plain English and the AI on your own machine answers it. Start a line with ! to run a shell command instead.', 'sys');
   if (window.serverConsole) line('Shell mode and the "Chamber server" target run on the Chamber server as the chamber user (not root). Operator only; every command is logged.', 'sys');
   else { var t0 = document.querySelector('#term-target option[value=""]'); if (t0) { t0.textContent = 'Pick one of your machines'; t0.disabled = true; }   // T-0181: customers never get the server itself as a target
-    line('Commands and questions run on your own machines, never on ours. Connect one with gear menu, Add an agent, then pick it above.', 'sys'); }
+    line('Commands and questions run on your own machines, never on ours. Connect one in Settings, AI agents, Add an agent. Then pick it above.', 'sys'); }
   // [changed] T-0109: on a phone, autofocus raises the keyboard over the output the instant the tab opens
   try { if (!window.matchMedia('(max-width: 760px)').matches) input.focus(); } catch (e) { input.focus(); }
 }
@@ -2115,8 +2137,8 @@ function openTicketModal(id) {
   const actions = document.getElementById('tm-actions');
   actions.innerHTML = '';
   if (t.status === 'proposed') {
-    // EDIT is available pre-approval to anyone (proposer or reviewer); the CLI enforces proposed-only.
-    let html = `<button onclick="openEditModal('${escJ(t.id)}')">Edit</button>`;
+    // EDIT before approval: the proposer, the owner or an admin (T-0247); the CLI enforces proposed-only.
+    let html = mayManageTicket(t.proposed_by) ? `<button onclick="openEditModal('${escJ(t.id)}')">Edit</button>` : '';
     if (t.changes) html = `<span class="note">Changes asked for by ${esc(t.changes.by)} on version ${esc(t.changes.version)}${t.changes.note ? ': ' + esc(t.changes.note) : ''}. Waiting for a new version.</span>` + html;   // T-0189
     if (t.reviewer) html = `<span class="note">Reviewer: ${esc(t.reviewer)}</span>` + html;
     if (Array.isArray(t.approvals) && t.approvals.length) html = `<span class="note">Approved by ${t.approvals.map(a => esc(a.by)).join(', ')} (${t.approvals.length} of ${esc(t.approvals_needed || 2)}). Waits for another person to approve.</span>` + html;   // T-0190
@@ -2134,14 +2156,14 @@ function openTicketModal(id) {
     }
     actions.innerHTML = html;
   } else if (t.status === 'approved') {
-    actions.innerHTML = (currentRole === 'human' ? forFlipBtn(t) + `<button class="danger" onclick="ticketAction('${escJ(t.id)}','cancel')">Cancel</button>` : '') +   // T-0143; T-0155 flip
+    actions.innerHTML = (currentRole === 'human' ? forFlipBtn(t) + (mayManageTicket(t.proposed_by) ? `<button class="danger" onclick="ticketAction('${escJ(t.id)}','cancel')">Cancel</button>` : '') : '') +   // T-0143; T-0155 flip; T-0262 cancel: proposer, owner, admin
       `<button class="primary" onclick="ticketAction('${escJ(t.id)}','claim')">Claim</button>`;
   } else if (t.status === 'in_progress') {
-    actions.innerHTML = (currentRole === 'human' ? `
-      <button class="danger" onclick="ticketAction('${escJ(t.id)}','cancel')">Cancel</button>
-      <button onclick="ticketAction('${escJ(t.id)}','release')" title="Back to approved: the agent retries it, or someone else can claim it">Release / retry</button>` : '') + `
+    actions.innerHTML = (currentRole === 'human' ? (mayManageTicket(t.proposed_by) ? `
+      <button class="danger" onclick="ticketAction('${escJ(t.id)}','cancel')">Cancel</button>` : '') + (mayManageTicket(t.assignee) ? `
+      <button onclick="ticketAction('${escJ(t.id)}','release')" title="Back to approved: the agent retries it, or someone else can claim it">Release / retry</button>` : '') : '') + (mayManageTicket(t.assignee) ? `
       <button onclick="ticketUpdate('${escJ(t.id)}')">Add note</button>
-      <button class="primary" onclick="ticketAction('${escJ(t.id)}','close')">Mark done</button>`;   // T-0143: humans can release or cancel a stuck ticket
+      <button class="primary" onclick="ticketAction('${escJ(t.id)}','close')">Mark done</button>` : `<span class="note">${esc(t.assignee || 'Someone')} holds this ticket: they, the owner or an admin add notes and mark it done.</span>`);   // T-0143: humans can release or cancel a stuck ticket; T-0247: notes and done for the holder
   }
   if (t.changes) actions.querySelectorAll('button').forEach(b => { if (/,'approve'\)/.test(b.getAttribute('onclick') || '')) b.remove(); });   // T-0189: nothing to approve until the new version arrives
   if (currentWsRole === 'viewer') actions.querySelectorAll('button').forEach(b => { if (!/,'approve'\)|ticketReject\(|askForChanges\(/.test(b.getAttribute('onclick') || '')) b.remove(); });   // T-0199: a viewer keeps only Approve / Reject
@@ -2341,6 +2363,17 @@ function renderRunLog(t) {                                                      
 
 // ── T-0148: Add-an-agent wizard. Builds the install.sh line from a few answers, then watches /api/presence until the agent is online.
 let awTimer = null, awSeenAt = 0, meInfo = null;
+// T-0315: where the last press started. A window closes on a backdrop click only when the press started on the backdrop too, so
+// selecting text inside it (the one-time key, say) and letting go outside no longer closes it.
+let backdropDown = null; ['pointerdown', 'mousedown', 'touchstart'].forEach(t => document.addEventListener(t, e => { backdropDown = e.target; }, { capture: true, passive: true }));
+// T-0320: an agent key is shown as chk_ab12…•••• (screenshots get shared); Copy always copies the real key.
+function maskKey(k) { k = String(k || ''); return k.length > 12 ? k.slice(0, 8) + '••••••••' : k; }
+let awCmdReal = '';
+function awMaskCmd() {                                                        // the command as shown: the key masked; awCopy copies the real one
+  const el = document.getElementById('aw-cmd'), k = document.getElementById('aw-token').value.trim();
+  awCmdReal = el.textContent; if (k.length > 12 && awCmdReal.includes(k)) el.textContent = awCmdReal.split(k).join(maskKey(k));
+}
+function awShowKey(btn) { const i = document.getElementById('aw-token'), on = i.classList.toggle('aw-secret'); btn.textContent = on ? 'Show' : 'Hide'; }
 function awKind() { return (document.querySelector('input[name="aw-kind"]:checked') || {}).value || 'connector'; }
 function awQ(v) { v = String(v || ''); return /^[\w./:@,=-]+$/.test(v) ? v : "'" + v.replace(/'/g, "'\\''") + "'"; }   // shell-quote only when needed
 
@@ -2401,17 +2434,33 @@ function openAgentWizard() {
   if (kind === 'worker' && document.getElementById('aw-name').value === 'my-agent') document.getElementById('aw-name').value = 'chamber-worker';
   awRender(); document.getElementById('agent-wizard').classList.add('show');
 }
+// T-0281, T-0283: where the result of chamber-mcp --setup goes in each AI tool. [name, tried by us?, what to do]. The untried
+// ones follow each tool's own documentation (read 19 Nov 2026) and say so until a person has tried them.
+const MCP_TOOLS = {
+  claude: ['Claude Code', true, 'run the <code>claude mcp add</code> line it prints'],
+  codex: ['Codex', true, 'add the lines it prints to <code>~/.codex/config.toml</code>'],
+  cursor: ['Cursor', true, 'add the entry it prints to <code>~/.cursor/mcp.json</code>, inside "mcpServers"'],
+  antigravity: ['Google Antigravity', false, 'add the entry it prints to <code>~/.gemini/config/mcp_config.json</code>, inside "mcpServers"'],
+  gemini: ['Gemini CLI', false, 'run the <code>gemini mcp add</code> line it prints'],
+  devin: ['Devin Desktop or CLI (Windsurf)', false, 'run the <code>devin mcp add</code> line it prints'],
+  vscode: ['VS Code', false, 'in VS Code run <b>MCP: Add Server</b> from the Command Palette, choose <b>Command (stdio)</b> and paste the command it prints'],
+  zed: ['Zed', false, 'in Zed open Settings, AI, MCP Servers, Add Server, Add Local Server and paste the entry it prints'],
+  jetbrains: ['JetBrains AI Assistant', false, 'open Settings, Tools, AI Assistant, Model Context Protocol (MCP), click Add and paste the JSON it prints'],
+  other: ['your tool', true, 'add a stdio MCP server with the command it prints'],
+};
 function closeAgentWizard() { document.getElementById('agent-wizard').classList.remove('show'); clearInterval(awTimer); awTimer = null; }
 function awRender() {
   const keyIn = document.getElementById('aw-keyin').checked; document.getElementById('aw-key-row').hidden = keyIn;   // T-0217: by default the command asks for the key instead of carrying it
   const kind = awKind(), name = document.getElementById('aw-name').value.trim() || (kind === 'worker' ? 'chamber-worker' : 'my-agent');
   document.getElementById('aw-connector-fields').hidden = kind === 'worker' || kind === 'mcp'; document.getElementById('aw-worker-fields').hidden = kind !== 'worker';
+  document.getElementById('aw-mcp-fields').hidden = kind !== 'mcp';              // T-0281
   if (kind === 'mcp') {                                                        // T-0198: an MCP server for an AI tool the person already uses; no root, the key in a file only they can read
     const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN';
     document.getElementById('aw-cmd').textContent = `curl -fsSLo ~/.local/bin/chamber-mcp --create-dirs ${location.origin}/chamber-mcp.py && chmod +x ~/.local/bin/chamber-mcp \\\n    && ~/.local/bin/chamber-mcp --setup --url ${location.origin} --token ${keyIn ? awQ(token) : '-'}`;
     document.getElementById('aw-where').textContent = '(in a terminal on the computer where your AI tool runs, as yourself, no sudo; it needs python3)';
-    document.getElementById('aw-signin').innerHTML = 'It checks the key, saves it in a file only you can read, and prints the line that adds it to Claude Code, Codex or Cursor. Your AI can then read rooms and tickets, post, propose tickets and add notes, never approve. Everything it does is on the record under this name, and it shows as online while your AI tool is in use.';
-    document.getElementById('aw-copied').textContent = ''; return;
+    const mt = MCP_TOOLS[document.getElementById('aw-mcp-tool').value] || MCP_TOOLS.other;   // T-0281, T-0283
+    document.getElementById('aw-signin').innerHTML = `It checks the key, saves it in a file only you can read, and prints how to add it to each AI tool. For ${mt[0]}: ${mt[2]}.${mt[1] ? '' : ' <b>Not tried by us yet:</b> this follows that tool\'s own documentation, so tell us how it goes.'} Your AI can then read rooms and tickets, post, propose tickets and add notes, never approve. Everything it does is on the record under this name, and it shows as online while your AI tool is in use.`;
+    document.getElementById('aw-copied').textContent = ''; awMaskCmd(); return;   // T-0320
   }
   if (kind === 'laptop') {                                                     // T-0186: no root, everything in the user's home folder
     const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN', cmd = document.getElementById('aw-commanders').value.trim(), rooms = document.getElementById('aw-rooms').value.trim(), be = document.getElementById('aw-backend').value, model = document.getElementById('aw-model').value.trim();
@@ -2420,7 +2469,7 @@ function awRender() {
     document.getElementById('aw-cmd').textContent = lp.join(' \\\n    ');
     document.getElementById('aw-where').textContent = '(in a terminal on your Mac or Linux computer, as yourself, no sudo. Add --background to keep it running after you close the terminal.)';
     document.getElementById('aw-signin').innerHTML = 'The agent reads nothing on that computer until you attach a folder (T-0218). The installer asks which folder, if any, and whether anything inside it is for your eyes only. Later: <code>~/.chamber/chamber-attach ~/code/my-project</code>. What it can read shows under its name in People and agents.<br>It uses the Claude Code that is already signed in on that computer. If it is not signed in yet, run <code>claude</code> there once and log in.';
-    document.getElementById('aw-copied').textContent = ''; return;
+    document.getElementById('aw-copied').textContent = ''; awMaskCmd(); return;   // T-0320
   }
   document.getElementById('aw-where').textContent = '(as a user who can sudo; the installer refuses to run without root)';
   const token = document.getElementById('aw-token').value.trim() || 'chk_PASTE_THE_TOKEN';
@@ -2442,7 +2491,7 @@ function awRender() {
     document.getElementById('aw-signin').innerHTML = `The worker makes its changes with Claude Code, so it needs the same sign-in: add <code>--oauth-token …</code> (from <code>claude setup-token</code>) or put <code>CLAUDE_CODE_OAUTH_TOKEN=…</code> in <code>/etc/chamber-worker.env</code> afterwards. Root-owned files, secrets, databases and <code>backups/</code> in the repo are deliberately left out of the write grant.`;
   }
   document.getElementById('aw-cmd').textContent = parts.join(' \\\n    ');
-  document.getElementById('aw-copied').textContent = '';
+  document.getElementById('aw-copied').textContent = ''; awMaskCmd();   // T-0320
 }
 async function awCreateToken() {                                            // T-0180: the key is made here, no trip to the account page
   const name = document.getElementById('aw-name').value.trim(), st = document.getElementById('aw-token-status');
@@ -2450,11 +2499,13 @@ async function awCreateToken() {                                            // T
   st.textContent = 'creating…';
   try { const r = await fetch(`${API}/account/workspace/tokens`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, username: name }) }); const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.token) { st.textContent = d.error || 'Could not create the key.'; return; }
-    document.getElementById('aw-token').value = d.token; st.textContent = '✓ Key created and put into the command below. It is shown only this once, so copy the command now.'; document.getElementById('aw-mkkey').disabled = true; awRender();
+    document.getElementById('aw-token').value = d.token; st.textContent = `✓ Key created: ${maskKey(d.token)}. It is shown only this once. Use Copy key below and paste it when the command asks for it.`; document.getElementById('aw-mkkey').disabled = true; awRender();   // T-0320: never in full on screen
   } catch (e) { st.textContent = 'Could not reach the server. Try again.'; }
 }
-async function awCopyKey() { const k = document.getElementById('aw-token').value.trim(), el = document.getElementById('aw-key-copied'); if (!k) { el.textContent = 'make the key first (step 1)'; return; } try { await navigator.clipboard.writeText(k); el.textContent = 'copied \u2713'; } catch { el.textContent = 'open "I already have a key" above and copy it from there'; } }   // T-0217
-async function awCopy() { try { await navigator.clipboard.writeText(document.getElementById('aw-cmd').textContent); document.getElementById('aw-copied').textContent = 'copied ✓'; } catch { document.getElementById('aw-copied').textContent = 'select the text and copy it'; } }
+async function awCopyKey() { const k = document.getElementById('aw-token').value.trim(), el = document.getElementById('aw-key-copied'); if (!k) { el.textContent = 'make the key first (step 2)'; return; } try { await navigator.clipboard.writeText(k); el.textContent = 'copied \u2713'; } catch { el.textContent = 'this browser blocks copying: open "I already have a key" above, tap Show and copy it from there'; } }   // T-0217; T-0320
+async function awCopy() { const real = awCmdReal || document.getElementById('aw-cmd').textContent;   // T-0320: the real command, key included when asked for
+  try { await navigator.clipboard.writeText(real); document.getElementById('aw-copied').textContent = 'copied ✓'; }
+  catch { document.getElementById('aw-cmd').textContent = real; document.getElementById('aw-copied').textContent = 'this browser blocks copying, so the command is shown in full: select it and copy it, and don\'t share a screenshot of it'; } }
 function awWatch() {
   const name = document.getElementById('aw-name').value.trim(); if (!name) return;
   const st = document.getElementById('aw-status'); st.textContent = `waiting for ${name} to come online…`; awSeenAt = Date.now();
@@ -2744,22 +2795,17 @@ function checkQueue() { return ticketsCache.filter(t => t.status === 'done' && !
 function checkCardHtml(t) {
   const c = t.check, f = c && c.followup ? ticketsCache.find(x => x.id === c.followup) : null;
   const line = !c ? `done ${ageStr(t.closed_at)} · ${esc(t.closed_by || '?')}` : c.state === 'back' ? `sent back ${ageStr(c.at)} · ${esc(c.by)}${c.followup ? ` · ${esc(c.followup)}${f ? ' ' + esc(f.status.replace('_', ' ')) : ''}` : ''}` : `checked ${ageStr(c.at)} · ${esc(c.by)}${c.bulk ? ' · start fresh' : ''}`;
-  return `<div class="review-card check-card" data-check="${escA(t.id)}" onclick="openCheck('${escJ(t.id)}')"><div class="id">${esc(t.id)}</div><div class="ttl">${esc(t.title)}</div><div class="meta"><span>${line}</span></div></div>`;
+  // T-0309: the same facts as the card on the Tickets tab (number, title, who does it, tags, priority, type, who asked, status), then where its check stands
+  return `<div class="review-card check-card" data-check="${escA(t.id)}" onclick="openCheck('${escJ(t.id)}')"><div class="id">${esc(t.id)}</div><div class="title">${esc(t.title)}</div>${forBadge(t)}${tagChips(t)}<div class="meta"><span class="pri-${esc(t.priority)}">● ${esc(t.priority)}</span><span>${esc(t.type)}</span><span>asked by ${esc(t.proposed_by || '?')}</span><span class="rv-st">status: ${esc(String(t.status || '').replace('_', ' '))}</span></div><div class="meta"><span>${line}</span></div></div>`;
 }
 function renderCheck() {
   if (!document.getElementById('rvcol-todo')) return;
   const todo = checkQueue(), ok = ticketsCache.filter(t => t.check && t.check.state === 'ok').sort((a, b) => (a.check.at < b.check.at ? 1 : -1)), back = ticketsCache.filter(t => t.check && t.check.state === 'back').sort((a, b) => (a.check.at < b.check.at ? 1 : -1));
-  const put = (col, cnt, list, shown, empty) => { document.getElementById(col).innerHTML = shown.map(checkCardHtml).join('') + (list.length > shown.length ? `<div class="empty">and ${list.length - shown.length} more</div>` : '') || `<div class="empty">${empty}</div>`; document.getElementById(cnt).textContent = list.length; };
-  put('rvcol-todo', 'rvcount-todo', todo, todo.slice(0, 60), 'Nothing waiting. Finished tickets show up here by themselves.');
-  put('rvcol-ok', 'rvcount-ok', ok, ok.slice(0, 30), 'Nothing checked yet');
-  put('rvcol-back', 'rvcount-back', back, back.slice(0, 30), 'Nothing sent back');
+  const put = (col, cnt, list, empty) => { document.getElementById(col).innerHTML = list.map(checkCardHtml).join('') || `<div class="empty">${empty}</div>`; document.getElementById(cnt).textContent = list.length; };   // T-0309: every ticket, as the Tickets tab does (it stopped at 60 and 30)
+  put('rvcol-todo', 'rvcount-todo', todo, 'Nothing waiting. Finished tickets show up here by themselves.');
+  put('rvcol-ok', 'rvcount-ok', ok, 'Nothing checked yet');
+  put('rvcol-back', 'rvcount-back', back, 'Nothing sent back');
   document.getElementById('rv-next').disabled = !todo.length || !ckCan();
-  const fresh = document.getElementById('rv-fresh'), now = Date.now(), olderThan = d => todo.filter(t => Date.parse(t.closed_at) < now - d * 864e5).length;
-  if (todo.length > 15 && ckCan()) {                                           // a backlog from before this tab worked this way: offer to start fresh, never do it unasked
-    const opt = (label, d) => { const n = olderThan(d); return n ? `<a href="#" onclick="event.preventDefault();checkFresh(${d}, ${n})">${label} (${n})</a>` : ''; };
-    const links = [opt('everything finished more than 7 days ago', 7), opt('more than a day ago', 1), opt('everything up to now', 0)].filter(Boolean).join(' · ');
-    fresh.innerHTML = `${todo.length} finished tickets are waiting, most from before this tab worked this way. Go through them with <b>Check next</b>, or start fresh and mark as checked without looking: ${links}`; fresh.hidden = !links;
-  } else fresh.hidden = true;
   const changes = ticketsCache.filter(t => t.hasDiff && t.status === 'proposed'), box = document.getElementById('rv-changes');
   box.innerHTML = changes.map(t => `<button class="rv-row" onclick="openTicketModal('${escJ(t.id)}')"><span class="id">${esc(t.id)}</span><span class="t">${esc(t.title)}</span><span class="pill warn">change to review</span></button>`).join('');
   const waiting = changes.length + reviewsCache.filter(r => r.status === 'pending').length; document.getElementById('rv-pasted-n').textContent = waiting;
@@ -2799,6 +2845,9 @@ function openCheck(id, line) {
   else b = `${checkLine ? '<button onclick="checkSkip()">Skip</button>' : ''}<button class="danger" id="ck-send-back" onclick="checkBack()">Send back</button><button class="primary" id="ck-ok" onclick="checkSend(true)">Looks good</button>`;
   state.innerHTML = s; act.innerHTML = b;
   document.getElementById('check-modal').classList.add('show');
+  document.querySelector('#check-modal .modal-body').scrollTop = 0;               // T-0309: each ticket opens at its top, so Looks good sits below what was done
+  const okB = document.getElementById('ck-ok');                                  // T-0309: and waits a moment, so a second tap meant for the last ticket cannot pass this one
+  if (okB) { okB.disabled = true; okB.title = 'Read what was done first'; setTimeout(() => { if (checkId === id && document.getElementById('ck-ok') === okB) { okB.disabled = false; okB.title = ''; } }, 800); }
 }
 function closeCheck() { document.getElementById('check-modal').classList.remove('show'); checkId = null; checkLine = false; }
 function ckOpenTicket() { const id = checkId; closeCheck(); openTicketModal(id); }
@@ -2829,11 +2878,102 @@ async function checkSend(what) {
     if (line && what !== 'undo') checkNext(); else closeCheck();
   } catch (e) { err.textContent = 'That did not work: ' + e.message; busy(false); }
 }
-async function checkFresh(days, n) {
-  if (!confirm(`Mark ${n} finished ticket${n === 1 ? '' : 's'} as checked without looking at ${n === 1 ? 'it' : 'them'}? They move to Checked, marked "start fresh".`)) return;
-  try { const r = await fetch(`${API}/api/tickets/check-all`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ before: Date.now() - days * 864e5 }) }), d = await r.json().catch(() => ({}));
-    if (!r.ok) { toast(d.error || 'That did not work', 'err'); return; }
-    toast(`${d.checked} ticket${d.checked === 1 ? '' : 's'} marked as checked`); await loadTickets(); } catch (e) { toast('That did not work', 'err'); }
+// ── T-0311: the Billing tab (owner and admins; only the owner changes anything). The server says what this person may do; every change is priced by Stripe's own
+// preview and shown BEFORE the confirm button; a charge needs the password; cancel is one tap and one confirmation. ──
+let blData = null;
+async function blReq(method, path, body) {
+  const r = await fetch(API + path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  let j = null; try { j = await r.json(); } catch {}
+  if (!r.ok) { const e = new Error((j && j.error) || ('HTTP ' + r.status)); e.data = j; throw e; }
+  return j;
+}
+const blMoney = (c, cur) => (cur && String(cur).toLowerCase() !== 'usd' ? String(cur).toUpperCase() + ' ' : '$') + (Math.abs(+c || 0) / 100).toFixed(2);
+const blDay = s => s ? new Date(s * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+const blSize = b => b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(0, Math.round(b / 1048576)) + ' MB';
+function blMsg(t, kind) { const el = document.getElementById('bl-msg'); if (el) { el.textContent = t || ''; el.className = 'bl-msg small' + (kind ? ' ' + kind : ''); } }
+async function loadBilling() {
+  const body = document.getElementById('bl-body'); if (!body) return;
+  try { blData = await blReq('GET', '/billing/overview'); } catch (e) { body.innerHTML = `<div class="bl-card"><p class="bl-warn">${esc(e.message)}</p></div>`; return; }
+  renderBillingTab();
+}
+function renderBillingTab() {
+  const d = blData, body = document.getElementById('bl-body'), pl = d.plans || {}, s = d.storage || {};
+  const name = p => p === 'company' ? 'Company' : 'Team', per = v => v === 'year' ? 'yearly' : 'monthly', yn = esc(pl.yearNote || '2 months free');
+  if (d.selfHosted) { body.innerHTML = '<div class="bl-card"><h3>Billing</h3><p>This Chamber is self-hosted: there is nothing to pay.</p></div>'; return; }
+  let h = '<div class="bl-card" id="bl-plan"><h3>Plan</h3>';
+  if (d.plan) {
+    h += `<p id="bl-plan-now"><b>${name(d.plan)}</b>, ${per(d.interval)}: ${esc(d.price || '')}</p>`;
+    if (d.cancelAtPeriodEnd) h += `<p class="bl-warn">Cancelled: it stays as it is until ${blDay(d.periodEnd)}, then the workspace moves to the free plan. Nothing is deleted.</p>`;
+    else if (d.next) h += `<p id="bl-next">Next charge: <b>${blMoney(d.next.amount, d.next.currency)}</b> on ${blDay(d.next.at || d.periodEnd)}.</p>`;
+    else if (d.periodEnd) h += `<p>Renews on ${blDay(d.periodEnd)}.</p>`;
+    if (d.paymentFailed) h += `<p class="bl-warn">The last payment did not go through. Extra storage is paused${d.graceEndsAt ? ` and the workspace becomes read-only on ${new Date(d.graceEndsAt).toLocaleDateString()}` : ''} until it does.${d.canPortal ? ' Update the card below.' : ` Ask ${esc(d.owner)} to update the card.`}</p>`;
+    if (d.founding) h += `<p class="dim small">Founding price, number ${d.founding.n} of the first 100: you keep ${esc(d.founding.label || 'this price')} for as long as you stay subscribed.</p>`;
+    h += `<p class="dim small">${d.builders.n} of ${d.plan === 'company' ? d.builders.company : d.builders.team} builder seats used. Approvers, viewers and requesters use no seat.${d.isOwner ? '' : ` It is paid with ${esc(d.owner)}'s card, so only ${esc(d.owner)} can change the plan or the storage.`}</p>`;
+  } else {
+    h += `<p>${d.trial ? `Free trial${d.trialEndsAt ? ` until ${new Date(d.trialEndsAt).toLocaleDateString()}` : ''}: everything included.` : d.free ? 'Free plan: up to 3 people, no file storage.' : 'No plan yet.'}</p>`;
+    if (d.canSubscribe) h += `<div class="bl-pick" role="radiogroup" aria-label="Pay monthly or yearly"><label><input type="radio" name="bl-sub-iv" value="month" checked> Monthly</label><label><input type="radio" name="bl-sub-iv" value="year"> Yearly (${yn})</label></div>`
+      + `<div class="bl-row">${['team', 'company'].filter(p => pl[p]).map(p => `<button class="btn${p === 'team' ? ' btn-primary' : ''}" data-bl-sub="${p}"><span>${name(p)}: <span data-bl-iv="${p}">${esc(pl[p].month || pl[p].label)}</span>, up to ${pl[p].builders} builders</span></button>`).join('')}</div>`;
+    else h += `<p class="dim small">Only the owner, ${esc(d.owner)}, can subscribe: it is their card.</p>`;
+  }
+  h += '</div>';
+  if (d.canChange) h += `<div class="bl-card" id="bl-change"><h3>Change the plan</h3>`
+    + `<div class="bl-pick" role="radiogroup" aria-label="Size">${['team', 'company'].filter(p => pl[p]).map(p => `<label><input type="radio" name="bl-plan" value="${p}"${p === d.plan ? ' checked' : ''}> ${name(p)}, up to ${pl[p].builders} builders</label>`).join('')}</div>`
+    + `<div class="bl-pick" role="radiogroup" aria-label="Pay monthly or yearly"><label><input type="radio" name="bl-iv" value="month"${d.interval === 'month' ? ' checked' : ''}> Monthly</label><label><input type="radio" name="bl-iv" value="year"${d.interval === 'year' ? ' checked' : ''}> Yearly (${yn})</label></div>`
+    + `<div class="bl-row"><button class="btn" id="bl-plan-see">See what it costs</button></div><div class="bl-confirm" id="bl-plan-confirm" hidden></div></div>`;
+  if (d.plan && s.offered) {
+    const limB = (s.limitMb || 0) * 1048576, pct = limB ? Math.min(100, Math.round(s.usedBytes / limB * 100)) : 0, over = !!limB && s.usedBytes > limB;
+    h += `<div class="bl-card" id="bl-storage"><h3>File storage</h3><div class="bl-bar${over ? ' over' : ''}" role="progressbar" aria-label="File storage used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>`
+      + `<p id="bl-st-used">Using ${blSize(s.usedBytes)} of ${blSize(limB)}: ${blSize(s.baseMb * 1048576)} with the plan${s.packs ? `, plus ${s.packs * s.packGb} GB extra (${s.packs} pack${s.packs === 1 ? '' : 's'} of ${s.packGb} GB)` : ''}.</p>`
+      + (over ? '<p class="bl-warn">The files are over the limit: nobody can add files until some are deleted or storage is added.</p>' : '')
+      + (s.paused ? '<p class="bl-warn">Extra storage is paused because the last payment did not go through. Files stay readable.</p>' : '')
+      + (d.canChange ? `<div class="bl-row">${s.soldOut ? '<span class="dim" id="bl-st-soon">More storage is coming soon.</span>' : s.label && s.packs < s.maxPacks ? `<button class="btn" id="bl-st-add">Add ${s.packGb} GB (${esc(s.label)})</button>` : ''}${s.packs ? `<button class="btn" id="bl-st-remove">Remove ${s.packGb} GB</button>` : ''}</div><div class="bl-confirm" id="bl-st-confirm" hidden></div>` : '')
+      + '</div>';
+  }
+  if (d.plan || d.canPortal) h += `<div class="bl-card" id="bl-pay"><h3>Payment method and invoices</h3>${d.canPortal ? '<p class="dim small">Change the card and download invoices on Stripe\'s secure page.</p><div class="bl-row"><button class="btn" id="bl-portal">Open payment and invoices</button></div>' : `<p class="dim small">Only the owner, ${esc(d.owner)}, can see the card and the invoices.</p>`}</div>`;
+  if (d.plan) h += `<div class="bl-card" id="bl-cancel"><h3>Cancel</h3>` + (!d.canCancel ? `<p class="dim small">Only the owner, ${esc(d.owner)}, can cancel the plan.</p>`
+    : d.cancelAtPeriodEnd ? `<p>The plan ends on ${blDay(d.periodEnd)}.</p><div class="bl-row"><button class="btn btn-primary" id="bl-keep">Keep my plan</button></div>`
+    : `<div class="bl-row"><button class="btn" id="bl-cancel-btn">Cancel the plan</button></div><div class="bl-confirm" id="bl-cancel-confirm" hidden><p>It stays as it is until ${blDay(d.periodEnd)}. Then the workspace moves to the free plan: nothing is deleted, and everyone can still read and export the record. Nothing more is charged.</p><div class="bl-row"><button class="btn btn-danger" id="bl-cancel-yes">Yes, cancel</button><button class="btn" id="bl-cancel-no">Keep my plan</button></div></div>`) + '</div>';
+  body.innerHTML = h;
+  blWire();
+}
+function blWire() {
+  const d = blData, $ = id => document.getElementById(id), ivSub = () => (document.querySelector('input[name="bl-sub-iv"]:checked') || {}).value || 'month';
+  document.querySelectorAll('input[name="bl-sub-iv"]').forEach(r => r.addEventListener('change', () => document.querySelectorAll('[data-bl-iv]').forEach(sp => { const p = d.plans[sp.dataset.blIv]; sp.textContent = (p && (p[ivSub()] || p.label)) || ''; })));
+  document.querySelectorAll('[data-bl-sub]').forEach(b => b.addEventListener('click', async () => { b.disabled = true; blMsg('Opening secure checkout…');
+    try { const r = await blReq('POST', '/billing/checkout', { plan: b.dataset.blSub, interval: ivSub() }); location.href = r.url; } catch (e) { blMsg(e.message, 'err'); b.disabled = false; } }));
+  $('bl-plan-see')?.addEventListener('click', () => blAsk('bl-plan-confirm', { plan: document.querySelector('input[name="bl-plan"]:checked')?.value, interval: document.querySelector('input[name="bl-iv"]:checked')?.value }, '/billing/plan'));
+  document.querySelectorAll('input[name="bl-plan"], input[name="bl-iv"]').forEach(r => r.addEventListener('change', () => { const c = $('bl-plan-confirm'); if (c) { c.hidden = true; c.innerHTML = ''; } }));
+  $('bl-st-add')?.addEventListener('click', () => blAsk('bl-st-confirm', { packs: d.storage.packs + 1 }, '/billing/storage'));
+  $('bl-st-remove')?.addEventListener('click', () => blAsk('bl-st-confirm', { packs: d.storage.packs - 1 }, '/billing/storage'));
+  $('bl-portal')?.addEventListener('click', async e => { e.target.disabled = true; try { const r = await blReq('POST', '/billing/portal', { from: 'app' }); location.href = r.url; } catch (err) { blMsg(err.message, 'err'); e.target.disabled = false; } });
+  $('bl-cancel-btn')?.addEventListener('click', () => { $('bl-cancel-confirm').hidden = false; $('bl-cancel-btn').hidden = true; });
+  $('bl-cancel-no')?.addEventListener('click', () => { $('bl-cancel-confirm').hidden = true; $('bl-cancel-btn').hidden = false; });
+  $('bl-cancel-yes')?.addEventListener('click', e => blDo(e.target, '/billing/cancel', {}, 'The plan is cancelled. It stays as it is until the end of the period; we sent a confirmation by email.'));
+  $('bl-keep')?.addEventListener('click', e => blDo(e.target, '/billing/cancel', { undo: true }, 'Your plan continues.'));
+}
+async function blAsk(boxId, change, route) {                                  // nothing is changed here: Stripe says what it would charge, then one confirm
+  const box = document.getElementById(boxId); if (!box) return;
+  box.hidden = false; box.innerHTML = '<p class="dim">Asking Stripe what this costs…</p>'; blMsg('');
+  let pv; try { pv = await blReq('POST', '/billing/preview', change); } catch (e) { box.innerHTML = `<p class="bl-warn">${esc(e.message)}</p>`; return; }
+  if (pv.same) { box.innerHTML = '<p class="dim">That is the plan you have now.</p>'; return; }
+  const removing = route === '/billing/storage' && change.packs < blData.storage.packs;
+  const today = pv.dueNow == null ? 'Stripe did not say the exact amount just now; it will be on the email we send.' : pv.dueNow > 0 ? `You'll be charged <b>${blMoney(pv.dueNow, pv.currency)}</b> today.`
+    : pv.total < 0 ? `Nothing is charged today: <b>${blMoney(-pv.total, pv.currency)}</b> is taken off your next bills.` : 'Nothing is charged today.';
+  const big = (blData.storage.biggest || []).map(f => `${esc(f.name)} (${blSize(f.size)})`).join(', ') || 'see the Files tab';
+  const over = !pv.overFiles ? '' : removing ? `<p class="bl-warn">The files use ${pv.usedMb} MB, more than the ${blSize(pv.limitMb * 1048576)} you would have. Delete files first. The biggest: ${big}.</p>`
+    : `<p class="bl-warn">The files use ${pv.usedMb} MB, more than the ${blSize(pv.limitMb * 1048576)} this gives. After the change nobody can add files until some are deleted or storage is added.</p>`;
+  box.innerHTML = (removing && pv.overFiles ? '' : `<p id="bl-today">${today}</p><p class="dim small">After that: ${esc(pv.then)}${pv.newPeriod ? ', with the new period starting today' : ''}.</p>`) + over   // a refused removal says only why
+    + (removing && pv.overFiles ? '<div class="bl-row"><button class="btn" id="bl-no">Close</button></div>'
+      : (pv.needsPassword ? '<label class="bl-pw"><span class="dim small">Your password, to confirm the charge</span><input type="password" id="bl-pw" autocomplete="current-password"></label>' : '')
+      + `<div class="bl-row"><button class="btn btn-primary" id="bl-yes">${pv.dueNow > 0 ? 'Confirm and pay ' + blMoney(pv.dueNow, pv.currency) : 'Confirm'}</button><button class="btn" id="bl-no">Cancel</button></div>`);
+  document.getElementById('bl-no')?.addEventListener('click', () => { box.hidden = true; box.innerHTML = ''; });
+  document.getElementById('bl-yes')?.addEventListener('click', e => { const pw = document.getElementById('bl-pw'); if (pw && !pw.value) { blMsg('Type your password to confirm the charge.', 'err'); pw.focus(); return; }
+    blDo(e.target, route, { ...change, ...(pw ? { password: pw.value } : {}), ...(pv.overFiles ? { confirmOver: true } : {}) }, 'Done. We sent you an email about the change.'); });
+}
+async function blDo(btn, route, body, okText) {
+  btn.disabled = true; blMsg('Working…');
+  try { await blReq('POST', route, body); await loadBilling(); blMsg(okText, 'ok'); }
+  catch (e) { blMsg(e.message, 'err'); btn.disabled = false; }
 }
 
 // ── T-0224: Tasks, a checklist that resets itself ──
@@ -2849,7 +2989,8 @@ async function loadTaskList() {
   renderTasks();
 }
 function tkDueText(t) {
-  if (t.done) return `<span class="ok">Done by ${esc(t.done.by)}, ${esc(tkWhen(t.done.at))}</span>`;
+  if (t.proposed) return `<span class="tk-prop">proposed by @${esc(t.by)}, waiting for the owner or an admin to confirm it</span>`;   // T-0264
+  if (t.done) return `<span class="ok">Done by ${esc(t.done.by)}${t.done.agent ? ' (agent)' : ''}, ${esc(tkWhen(t.done.at))}</span>${t.done.agent && t.done.note ? ` · <span class="tk-agentnote">“${esc(t.done.note)}”</span>` : ''}`;   // T-0245: an agent's tick says what it checked
   const on = t.every === 'week' ? t.dueOn : t.every === 'month' ? `the ${tkOrd(t.dueOn)}` : '';
   if (t.due === 'late') return `<span class="late">late: it was due ${t.every === 'week' ? '' : 'on '}${esc(on)}</span>`;
   if (t.due === 'today') return '<span class="today">due today</span>';
@@ -2864,7 +3005,7 @@ function renderTasks() {
     list.innerHTML = `<div class="tk-empty">No tasks yet. Add the jobs that keep coming back: check that the backup restores every Monday, pay the hosting bill on the 1st, read the security news every day. Tick one off and it comes back by itself the next time it is due.${taskData.canAdd ? '' : '<br>You are a viewer here, so you can see the list but not change it.'}</div>`;
     return;
   }
-  const order = { late: 0, today: 1, later: 2, done: 3 };
+  const order = { proposed: -1, late: 0, today: 1, later: 2, done: 3 };   // T-0264: proposals first
   list.innerHTML = ['day', 'week', 'month'].map(ev => {
     const ts = taskData.tasks.filter(t => t.every === ev).sort((a, b) => order[a.due] - order[b.due] || (a.day || 0) - (b.day || 0) || a.title.localeCompare(b.title));
     if (!ts.length) return '';
@@ -2872,9 +3013,9 @@ function renderTasks() {
     return `<section class="tk-sec" aria-label="${TK_EVERY[ev]}"><h3>${TK_EVERY[ev]} <span class="count">${done} of ${ts.length} done</span></h3>${ts.map(t => {
       const last = !t.done && t.last ? ` · last done ${esc(tkWhen(t.last.at))} by ${esc(t.last.by)}` : '', streak = t.streak > 1 ? ` · ${t.streak} in a row` : '';
       return `<div class="tk-row ${t.done ? 'done' : t.due}" data-task="${esc(t.id)}">
-        <button class="tk-box" role="checkbox" aria-checked="${t.done ? 'true' : 'false'}" aria-label="${esc(t.title)}: ${t.done ? 'done, tap to take back' : 'tick off'}" ${taskData.canAdd ? '' : 'disabled'} onclick="taskTick('${escJ(t.id)}', ${t.done ? 'false' : 'true'})"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <div class="tk-main"><div class="tk-title">${esc(t.title)}</div><div class="tk-meta">${tkDueText(t)}${last}${streak}</div></div>
-        ${t.canManage ? `<div class="tk-acts"><button class="btn btn-sm" onclick="taskForm('${escJ(t.id)}')">Edit</button><button class="btn btn-sm" onclick="taskRemove('${escJ(t.id)}')">Remove</button></div>` : ''}
+        <button class="tk-box" role="checkbox" aria-checked="${t.done ? 'true' : 'false'}" aria-label="${esc(t.title)}: ${t.done ? 'done, tap to take back' : 'tick off'}" ${taskData.canAdd && !t.proposed ? '' : 'disabled'} onclick="taskTick('${escJ(t.id)}', ${t.done ? 'false' : 'true'})"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="tk-main"><div class="tk-title">${esc(t.title)}</div><div class="tk-meta">${tkDueText(t)}${last}${streak}${t.agentTick && !t.done ? ' · an agent may tick it off' : ''}${t.remindAt ? ` · reminds @${esc(t.remindAgent)} at ${esc(t.remindAt)}` : ''}</div></div>
+        ${t.proposed && taskData.canConfirm ? `<div class="tk-acts"><button class="btn btn-sm btn-primary" onclick="taskConfirm('${escJ(t.id)}')">Confirm</button><button class="btn btn-sm" onclick="taskRemove('${escJ(t.id)}')">Reject</button></div>` : t.canManage ? `<div class="tk-acts"><button class="btn btn-sm" onclick="taskForm('${escJ(t.id)}')">Edit</button><button class="btn btn-sm" onclick="taskRemove('${escJ(t.id)}')">Remove</button></div>` : ''}
       </div>`; }).join('')}</section>`;
   }).join('');
 }
@@ -2895,6 +3036,9 @@ function taskForm(id) {
   if (!md.options.length) md.innerHTML = Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}">${tkOrd(i + 1)}${i + 1 > 28 ? ' (or the last day)' : ''}</option>`).join('');
   const t = id ? taskData.tasks.find(x => x.id === id) : null; taskEditing = t ? t.id : null;
   document.getElementById('tk-title').value = t ? t.title : '';
+  document.getElementById('tk-agent').checked = !!(t && t.agentTick);   // T-0245
+  { const sel = document.getElementById('tk-remind-agent'); sel.innerHTML = '<option value="">no reminder</option>' + (taskData.agents || []).map(n => `<option value="${escA(n)}">@${esc(n)}</option>`).join('');   // T-0264
+    sel.value = t && t.remindAgent ? t.remindAgent : ''; document.getElementById('tk-remind-at').value = t && t.remindAt ? t.remindAt : ''; document.getElementById('tk-remind-l').hidden = !(taskData.agents || []).length; }
   document.getElementById('tk-every').value = t ? t.every : 'week';
   document.getElementById('tk-wday').value = t && t.every === 'week' ? t.day : String(((new Date().getDay() + 6) % 7) + 1);
   md.value = t && t.every === 'month' ? t.day : '1';
@@ -2906,7 +3050,7 @@ function taskFormClose() { document.getElementById('tk-form').hidden = true; tas
 async function taskSave(e) {
   e.preventDefault();
   const ev = document.getElementById('tk-every').value, msg = document.getElementById('tk-form-msg'), btn = document.getElementById('tk-save');
-  const body = { title: document.getElementById('tk-title').value, every: ev, day: ev === 'week' ? +document.getElementById('tk-wday').value : ev === 'month' ? +document.getElementById('tk-mday').value : null };
+  const body = { title: document.getElementById('tk-title').value, every: ev, day: ev === 'week' ? +document.getElementById('tk-wday').value : ev === 'month' ? +document.getElementById('tk-mday').value : null, agentTick: document.getElementById('tk-agent').checked, remindAt: document.getElementById('tk-remind-at').value || null, remindAgent: document.getElementById('tk-remind-agent').value || null };   // T-0264
   if (!taskEditing) { try { body.tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { body.tz = 'UTC'; } }
   btn.disabled = true;
   try {
@@ -2914,6 +3058,11 @@ async function taskSave(e) {
     if (!r.ok) { msg.textContent = d.error || 'That did not work'; return; }
     toast(taskEditing ? 'Task changed' : 'Task added'); taskFormClose(); await loadTaskList();
   } catch { msg.textContent = 'Could not reach Chamber'; } finally { btn.disabled = false; }
+}
+async function taskConfirm(id) {                                                   // T-0264: the owner or an admin confirms an agent's proposal
+  const r = await fetch(`${API}/api/tasks/${id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }), d = await r.json().catch(() => ({}));
+  if (!r.ok) toast(d.error || 'That did not work', 'err'); else toast('Task confirmed. It now comes back by itself' + (d.task && d.task.remindAt ? `, and reminds @${d.task.remindAgent} at ${d.task.remindAt}` : '') + '.');
+  await loadTaskList();
 }
 async function taskRemove(id) {
   const t = taskData.tasks.find(x => x.id === id); if (!t) return;
@@ -3241,7 +3390,7 @@ async function loadPresence() {
       return `<li class="user-item"${dm}><div class="row">${avatar(p.username, p.role, 'sm', p.state === 'online')}<span class="uname">${esc(p.username)}</span>${roleBadge}</div>${claimedHtml}${agentLine}</li>`;
     };
     const ppl = data.presence || [], humans = ppl.filter(p => p.role === 'human'), agents = ppl.filter(p => p.role !== 'human');
-    presenceCache = ppl; renderChips(); renderStart();                                                             // T-0072
+    presenceCache = ppl; renderChips(); renderTagRows(); renderStart();                                                             // T-0072
     list.innerHTML = (humans.length ? '<li class="group">People</li>' + humans.map(rowOf).join('') : '') + (agents.length ? '<li class="group">Agents</li>' + agents.map(rowOf).join('') : '');
     const hint = document.getElementById('listen-hint');                                      // T-0045: room-level note, once per room
     if (hint) {
@@ -3511,10 +3660,10 @@ function uploadOne(item, f) {
   xhr.onload = () => {
     let d = {}; try { d = JSON.parse(xhr.responseText); } catch {}
     if (xhr.status === 201 && d.file) { item.id = d.file.id; item.status = 'ok'; }
-    else { item.status = 'err'; toast('Upload failed: ' + (d.error || xhr.statusText || xhr.status), 'err'); if (xhr.status === 402) fetch(`${API}/api/me`).then(x => x.json()).then(me => showBilling(me.billing)).catch(() => {}); setTimeout(() => removeAttach(item.key), 3500); }
-    renderAttachBar(); updateSendState();
+    else { item.status = 'err'; toast('Upload failed: ' + (d.error || xhr.statusText || xhr.status), 'err'); if (xhr.status === 402) fetch(`${API}/api/me`).then(x => x.json()).then(me => showBilling(me.billing)).catch(() => {}); setTimeout(() => (item.thread ? removeThreadAttach : removeAttach)(item.key), 3500); }
+    if (item.thread) { renderThreadAttach(); updateThreadSend(); } else { renderAttachBar(); updateSendState(); }   // T-0269
   };
-  xhr.onerror = () => { item.status = 'err'; toast('Upload failed: network error', 'err'); renderAttachBar(); setTimeout(() => removeAttach(item.key), 3500); };
+  xhr.onerror = () => { item.status = 'err'; toast('Upload failed: network error', 'err'); if (item.thread) renderThreadAttach(); else renderAttachBar(); setTimeout(() => (item.thread ? removeThreadAttach : removeAttach)(item.key), 3500); };
   xhr.send(f);
 }
 function removeAttach(key) { const i = pending.findIndex(p => p.key === key); if (i < 0) return; const [it] = pending.splice(i, 1); if (it.xhr && it.status === 'up') try { it.xhr.abort(); } catch {} if (it.preview) URL.revokeObjectURL(it.preview); renderAttachBar(); updateSendState(); }
@@ -3524,6 +3673,31 @@ function renderAttachBar() {
   if (pending.some(p => p.status === 'ok' && (p.mime || '').startsWith('image/')) && !document.getElementById('msg-input').value.trim() && defaultAgent())   // T-0072: screenshot -> fix
     bar.insertAdjacentHTML('beforeend', `<button type="button" class="chip act" onclick="insertRecipe(0, 'Fix what is in this screenshot. What I expected instead: <describe it>')">Fix what is in this picture</button>`);
   bar.classList.toggle('show', pending.length > 0);
+}
+// T-0269: the thread reply box's own attachments (same upload, same chips, same limits as the main box)
+const threadPending = [];
+function queueThreadFiles(files) {
+  if (!files || !files.length) return;
+  if (!currentUser) { toast('Sign in first', 'err'); return; }
+  for (const f of files) {
+    if (threadPending.length >= maxPerMsg) { toast(`At most ${maxPerMsg} files per message`, 'err'); break; }
+    if (f.size > maxFileMb * 1048576) { toast(`${f.name || 'That file'} is over ${maxFileMb} MB`, 'err'); continue; }
+    if (!f.size) { toast(`${f.name || 'That file'} is empty`, 'err'); continue; }
+    const ext = (f.type.split('/')[1] || 'bin').replace('jpeg', 'jpg');
+    const item = { key: Math.random().toString(36).slice(2), name: f.name || `pasted-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.${ext}`, size: f.size, mime: f.type || 'application/octet-stream', status: 'up', pct: 0, preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : null, thread: true };
+    threadPending.push(item); renderThreadAttach(); uploadOne(item, f);
+  }
+  updateThreadSend();
+}
+function removeThreadAttach(key) { const i = threadPending.findIndex(p => p.key === key); if (i < 0) return; const [it] = threadPending.splice(i, 1); if (it.xhr && it.status === 'up') try { it.xhr.abort(); } catch {} if (it.preview) URL.revokeObjectURL(it.preview); renderThreadAttach(); updateThreadSend(); }
+function renderThreadAttach() {
+  const bar = document.getElementById('thread-attach-bar'); if (!bar) return;
+  bar.innerHTML = threadPending.map(p => `<span class="chip ${p.status}" data-key="${p.key}" title="${escA(p.name)}">${p.preview ? `<img src="${p.preview}" alt="">` : `<span class="ico">${fileIcon(p.mime, p.name)}</span>`}<span class="nm">${esc(p.name)}</span><span class="sz">${p.status === 'up' ? (p.pct ? p.pct + '%' : '…') : p.status === 'err' ? 'failed' : fmtSize(p.size)}</span><button class="x" aria-label="Remove ${escA(p.name)}" onclick="removeThreadAttach('${p.key}')">×</button><span class="bar" style="width:${p.pct}%"></span></span>`).join('');
+  bar.classList.toggle('show', threadPending.length > 0);
+}
+function updateThreadSend() {
+  const btn = document.getElementById('thread-send'); if (!btn) return;
+  const uploading = threadPending.some(p => p.status === 'up'); btn.disabled = uploading; btn.textContent = uploading ? 'Uploading…' : 'Reply';
 }
 function updateSendState() {
   const inp = document.getElementById('msg-input'), btn = document.getElementById('send-btn');
@@ -3564,6 +3738,7 @@ function renderRun(m) {
       + (steps.length ? `<ul class="run-steps">${hidden > 0 ? `<li class="more"><span class="mk"></span><span>${hidden} earlier step${hidden === 1 ? '' : 's'}</span></li>` : ''}${shown.map((s, i) => stepLi(s, i === shown.length - 1)).join('')}</ul>` : '') + `</div>`;
   }
   const bits = [];
+  if (r.forAgent && r.for) bits.push(`<span class="run-peer" title="Another agent asked. This agent only answers: it reads, and never runs or changes anything because an agent asked.">replying to agent ${esc(r.for)} (answers only)</span>`);   // T-0317
   if (r.state === 'stopped') bits.push(`<span class="state-stopped">stopped${r.stop?.by ? ' by ' + esc(r.stop.by) : ''}</span>`);
   if (r.state === 'failed') bits.push('<span class="state-failed">failed</span>');
   if (r.model) bits.push(esc(r.model));
@@ -3608,14 +3783,37 @@ function defaultAgent() {
 }
 function renderChips() {
   const box = document.getElementById('chips'); if (!box) return;
-  const agent = defaultAgent(); let off = false; try { off = localStorage.getItem('chamber-chips') === 'off'; } catch {}
+  const agent = defaultAgent(), off = chipsOff();
   document.getElementById('build-btn').hidden = !agent || !currentUser || currentRole !== 'human';
+  const mc = document.getElementById('menu-chips'), st = document.getElementById('chips-state');   // 18 Nov: gear-menu switch mirrors the state
+  if (mc) mc.hidden = !agent || !currentUser || currentRole !== 'human'; if (st) st.textContent = off ? 'off' : 'on';
   if (!agent || off || !currentUser || currentRole !== 'human') { box.hidden = true; return; }
   box.hidden = false;
   box.innerHTML = RECIPES.map((r, i) => `<button type="button" onclick="insertRecipe(${i})" title="${escA('Asks @' + agent)}">${esc(r.label)}</button>`).join('')
-    + `<button type="button" class="build" onclick="openBuild()">Build…</button><button type="button" class="x" title="Hide these chips" aria-label="Hide recipe chips" onclick="hideChips()">×</button>`;
+    + `<button type="button" class="build" onclick="openBuild()">Build…</button><button type="button" class="x" title="Hide these suggestion buttons (bring them back in Settings, Display)" aria-label="Hide suggestion buttons" onclick="hideChips()">×</button>`;
 }
-function hideChips() { try { localStorage.setItem('chamber-chips', 'off'); } catch {} renderChips(); toast('Chips hidden. The Build button stays; clear site data to get them back.'); }
+// T-0269: tap an agent's name to tag it, in the main box and in a thread's reply box (people only; agents tag with @ as before).
+function renderTagRows() {
+  const ai = presenceCache.filter(p => p.role === 'ai'), show = !!currentUser && currentRole === 'human' && ai.length > 0;
+  for (const [boxId, inputId] of [['tag-row', 'msg-input'], ['thread-tags', 'thread-input']]) {
+    const box = document.getElementById(boxId); if (!box) continue;
+    box.hidden = !show; if (!show) { box.innerHTML = ''; continue; }
+    box.innerHTML = `<span class="lbl">Tag:</span>` + ai.map(p => `<button type="button" class="${p.state === 'offline' ? 'off' : ''}" title="${escA('Tag @' + p.username + (p.state === 'offline' ? ' (offline now)' : ''))}" onclick="insertTag('${escJ(inputId)}', '${escJ(p.username)}')">@${esc(p.username)}</button>`).join('');
+  }
+}
+function insertTag(inputId, name) {
+  const inp = document.getElementById(inputId); if (!inp || inp.disabled) return;
+  const tag = '@' + name + ' ', s = inp.selectionStart ?? inp.value.length, e = inp.selectionEnd ?? s, before = inp.value.slice(0, s), pad = before && !/\s$/.test(before) ? ' ' : '';
+  inp.value = before + pad + tag + inp.value.slice(e); const caret = (before + pad + tag).length; inp.focus(); try { inp.setSelectionRange(caret, caret); } catch {}
+  inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, inputId === 'thread-input' ? 120 : 180) + 'px';
+  if (inputId === 'msg-input') updateSendState(); else updateThreadSend();
+}
+// 18 Nov 2026: hiding used to be one-way ("clear site data to get them back"). Now the gear menu's
+// "Suggestion buttons" switch turns them on and off. The choice is per browser, as before.
+function chipsOff() { try { return localStorage.getItem('chamber-chips') === 'off'; } catch { return false; } }
+function setChips(on) { try { if (on) localStorage.removeItem('chamber-chips'); else localStorage.setItem('chamber-chips', 'off'); } catch {} renderChips(); }
+function hideChips() { setChips(false); toast(accountsMode ? 'Suggestion buttons hidden. To bring them back: Settings, then Display.' : 'Suggestion buttons hidden. To bring them back: gear menu, then Suggestion buttons.'); }
+function toggleChips() { toggleMenu(false); const on = chipsOff(); setChips(on); toast(on ? 'Suggestion buttons are back.' : 'Suggestion buttons hidden. Turn them on again from the gear menu.'); }
 function insertRecipe(i, text) {
   const agent = defaultAgent(), inp = document.getElementById('msg-input'); if (inp.disabled) return;
   inp.value = (agent ? `@${agent} ` : '') + (text || RECIPES[i].text); inp.focus();
@@ -3632,7 +3830,7 @@ function closeBuild() { document.getElementById('build-modal').classList.remove(
 async function submitBuild() {
   const agent = document.getElementById('bd-agent').value, what = document.getElementById('bd-what').value.trim(), where = document.getElementById('bd-where').value.trim(), done = document.getElementById('bd-done').value.trim();
   const err = document.getElementById('bd-error');
-  if (!agent) { err.textContent = 'Connect an agent first (gear menu → Account → AI agents).'; return; }
+  if (!agent) { err.textContent = 'Connect an agent first (Settings → AI agents).'; return; }
   if (what.length < 8) { err.textContent = 'Say a little more about what you want.'; return; }
   const text = `@${agent} BUILD REQUEST\nWhat: ${what}${where ? `\nWhere: ${where}` : ''}${done ? `\nDone when: ${done}` : ''}`;
   const r = await withBusy(() => fetch(`${API}/api/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: currentUser, text, room: currentRoom }) }));
@@ -3642,8 +3840,8 @@ async function submitBuild() {
 }
 // Voice input through the browser's own speech recognition (on-device where the phone supports it; nothing leaves until you press Send).
 let rec = null, recBase = '';
-function toggleMic() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition, btn = document.getElementById('mic-btn'), inp = document.getElementById('msg-input');
+function toggleMic(which) {                                                     // T-0269: 'thread' dictates into the thread's reply box
+  const th = which === 'thread', SR = window.SpeechRecognition || window.webkitSpeechRecognition, btn = document.getElementById(th ? 'thread-mic-btn' : 'mic-btn'), inp = document.getElementById(th ? 'thread-input' : 'msg-input');
   if (!SR || inp.disabled) return;
   if (rec) { rec.stop(); return; }
   rec = new SR(); rec.lang = navigator.language || 'en-US'; rec.interimResults = true; rec.continuous = false; recBase = inp.value ? inp.value.replace(/\s*$/, ' ') : '';
@@ -3652,7 +3850,7 @@ function toggleMic() {
   rec.onerror = e => { if (e.error !== 'aborted' && e.error !== 'no-speech') toast('Voice input: ' + e.error, 'err'); };
   btn.classList.add('on'); btn.title = 'Listening… tap to stop'; try { rec.start(); } catch { rec = null; btn.classList.remove('on'); }
 }
-if (window.SpeechRecognition || window.webkitSpeechRecognition) document.getElementById('mic-btn').hidden = false;
+if (window.SpeechRecognition || window.webkitSpeechRecognition) { document.getElementById('mic-btn').hidden = false; document.getElementById('thread-mic-btn').hidden = false; }   // T-0269
 // Plain-language preference: stored on the server, read by every connector that answers this person.
 function updatePlainState() { const el = document.getElementById('plain-state'); if (el) el.textContent = myPrefs.plain ? 'on' : 'off'; }
 async function togglePlain() {
@@ -3940,7 +4138,7 @@ function openSheet(id) {
   document.getElementById('sheet-actions').innerHTML = `<div class="who">${esc(el.dataset.user || '')} · ${fmtDate(+el.dataset.ts)}</div>`
     + (deleted ? '' : `<div class="emoji-row">${REACTIONS.map(e => `<button type="button" onclick="closeSheet();react('${escJ(id)}','${e}')">${e}</button>`).join('')}</div>` + b('Open thread', `openThread('${escJ(id)}')`))
     + (deleted ? '' : b('Reply', `startReply('${escJ(id)}')`) + b(pinned ? 'Unpin' : 'Pin', `togglePin('${escJ(id)}', ${pinned ? 'false' : 'true'})`) + b('Copy text', `copyText('${escJ(id)}')`))
-    + b('Copy link', `copyLink('${escJ(id)}')`) + (mine && !deleted ? b('Edit', `startEdit('${escJ(id)}')`) + b('Delete', `deleteMsg('${escJ(id)}')`, 'danger') : '') + b('Cancel', '');
+    + b('Copy link', `copyLink('${escJ(id)}')`) + (mine && !deleted ? b('Edit', `startEdit('${escJ(id)}')`) + b('Delete', `deleteMsg('${escJ(id)}')`, 'danger') : '') + (!mine && !deleted && canRemoveOthers() ? b('Remove', `deleteMsg('${escJ(id)}')`, 'danger') : '') + b('Cancel', '');   // T-0247
   document.getElementById('msg-sheet').classList.add('show');
 }
 function closeSheet() { document.getElementById('msg-sheet').classList.remove('show'); }
@@ -3966,7 +4164,7 @@ let threadRoot = null;
 async function openThread(id) {
   threadRoot = id; const panel = document.getElementById('thread-panel'); panel.hidden = false; await refreshThread(); document.getElementById('thread-input').focus();
 }
-function closeThread() { threadRoot = null; const p = document.getElementById('thread-panel'); if (p) p.hidden = true; }
+function closeThread() { threadRoot = null; const p = document.getElementById('thread-panel'); if (p) p.hidden = true; threadPending.splice(0).forEach(x => { if (x.xhr && x.status === 'up') try { x.xhr.abort(); } catch {} if (x.preview) URL.revokeObjectURL(x.preview); }); renderThreadAttach(); updateThreadSend(); }   // T-0269: unsent files go with the closed thread
 async function refreshThread() {
   if (!threadRoot) return;
   const r = await fetch(`${API}/api/messages/replies?id=${encodeURIComponent(threadRoot)}`); const d = await r.json().catch(() => ({}));
@@ -3978,13 +4176,20 @@ async function refreshThread() {
   if (atBottom || !list.dataset.seen) list.scrollTop = list.scrollHeight; list.dataset.seen = '1';
 }
 async function sendThreadReply() {
-  const inp = document.getElementById('thread-input'); const text = inp.value.trim(); if (!text || !threadRoot) return;
-  const secrets = ChamberMD.findSecrets(text); let body = text;
+  const inp = document.getElementById('thread-input'); const text = inp.value.trim(); if (!threadRoot) return;
+  if (threadPending.some(p => p.status === 'up')) { toast('Still uploading…'); return; }                 // T-0269
+  const files = threadPending.filter(p => p.status === 'ok').map(p => p.id);
+  if (!text && !files.length) return;
+  const secrets = text ? ChamberMD.findSecrets(text) : []; let body = text;
   if (secrets.length) { const d = await guardDialog(text, secrets); if (d === null) return; body = d; }
-  const r = await fetch(`${API}/api/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: currentUser, text: body, room: currentRoom, reply_to: threadRoot }) });
+  const r = await fetch(`${API}/api/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: currentUser, text: body, room: currentRoom, reply_to: threadRoot, attachments: files.length ? files : undefined }) });
   if (!r.ok) { const d = await r.json().catch(() => ({})); toast('Not sent: ' + (d.error || r.statusText), 'err'); return; }
+  threadPending.splice(0).forEach(p => { if (p.preview) URL.revokeObjectURL(p.preview); }); renderThreadAttach(); updateThreadSend();
   inp.value = ''; inp.style.height = 'auto'; await refreshThread(); poll();
 }
+document.getElementById('thread-input').addEventListener('paste', e => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); queueThreadFiles(files); } });   // T-0269
+document.getElementById('thread-compose').addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+document.getElementById('thread-compose').addEventListener('drop', e => { if (e.dataTransfer?.files?.length) { e.preventDefault(); e.stopPropagation(); queueThreadFiles(e.dataTransfer.files); } });
 document.getElementById('thread-input').addEventListener('focus', () => acAttach(document.getElementById('thread-input')));   // T-0147
 document.getElementById('thread-input').addEventListener('keydown', e => { if (acKey(e)) return; if (e.key === 'Enter' && (e.shiftKey ? !enterSends() : enterSends())) { e.preventDefault(); sendThreadReply(); } });   // T-0147: suggestion list first   // [changed] T-0077 item 2
 document.getElementById('thread-input').addEventListener('input', e => { e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; updateAC(); });   // T-0147
@@ -4057,6 +4262,10 @@ async function loadFiles() {
   filesData = d; renderFiles();
 }
 function canManageFile(f) { return !!currentUser && (f.by === currentUser || ['owner', 'admin'].includes(meInfo?.wsRole)); }
+// T-0247: the owner and admins remove anyone's message; a proposed ticket is changed, and a held one reported on and closed, by
+// its proposer or holder, the owner or an admin. The server decides; these only hide buttons that would be refused.
+function canRemoveOthers() { return accountsMode && ['owner', 'admin'].includes(currentWsRole); }
+function mayManageTicket(name) { return !accountsMode || ['owner', 'admin'].includes(currentWsRole) || (!!currentUser && String(name || '').toLowerCase() === currentUser.toLowerCase()); }
 function renderFiles() {
   const d = filesData; if (!d) return;
   const grid = document.getElementById('files-grid'), room = document.getElementById('files-room').value;
@@ -4064,7 +4273,7 @@ function renderFiles() {
   const parts = filesFolder ? filesFolder.split('/') : [];
   let crumbs = `<a onclick="openFolder('')" data-drop="">All files</a>`;                              // T-0163: breadcrumbs are drop targets too
   parts.forEach((p, i) => { const path = parts.slice(0, i + 1).join('/'); crumbs += ` <span class="sep">/</span> <a onclick="openFolder('${escJ(path)}')" data-drop="${escA(path)}">${esc(p)}</a>`; });
-  if (filesFolder) crumbs += `<span class="factions"><a onclick="renameFolder()">rename folder</a><a onclick="deleteFolder()">delete folder</a></span>`;
+  if (filesFolder && (d.folders || []).find(f => f.path === filesFolder)?.canChange) crumbs += `<span class="factions"><a onclick="renameFolder()">rename folder</a><a onclick="deleteFolder()">delete folder</a></span>`;   // T-0244: only where allowed
   document.getElementById('files-crumbs').innerHTML = crumbs;
   const subs = (d.folders || []).filter(f => filesFolder ? f.path.startsWith(filesFolder + '/') && !f.path.slice(filesFolder.length + 1).includes('/') : !f.path.includes('/'));
   let files = d.files.filter(f => !q || f.name.toLowerCase().includes(q) || (f.by || '').toLowerCase().includes(q));
@@ -4078,9 +4287,9 @@ function renderFiles() {
     const rm = roomsCache[f.room]; const rname = rq ? 'request ' + rq[1] : rm ? (rm.dm ? '@' + (rm.dm.find(n => n !== currentUser) || rm.dm[0]) : '#' + (rm.name || f.room)) : '#' + f.room;
     const sel = filesSelecting ? `<input type="checkbox" class="fsel" aria-label="Select ${escA(f.name)}" ${filesSel.has(f.id) ? 'checked' : ''} onchange="toggleSel('${escJ(f.id)}', this.checked)">` : '';
     const where = !filesFolder && f.folder ? ` · <span class="ffolder" title="in folder">${esc(f.folder)}</span>` : '';
-    return `<div class="fcard${filesSel.has(f.id) ? ' selected' : ''}" draggable="true" data-fid="${esc(f.id)}">${sel}<div class="thumb" onclick="${img ? `openLightbox('${escJ(f.id)}','${escJ(f.name)}')` : `openFilePreview('${escJ(f.id)}','${escJ(f.name)}','${escJ(f.mime)}')`}">${img ? `<img src="${url}" alt="${escA(f.name)}" loading="lazy">` : fileIcon(f.mime, f.name)}</div>
-      <div class="fbody"><div class="fname" title="${escA(f.name)}">${esc(f.name)}</div><div class="fmeta">${fmtSize(f.size)} · ${esc(f.by)} · ${esc(rname)} · ${fmtDate(f.ts)}${where}</div>
-      <div class="facts"><a href="${url}?download" download="${escA(f.name)}">download</a>${rq ? `<a onclick="switchView('tickets');openTicketModal('${escJ(rq[1])}')">open request</a>` : f.msg_id ? `<a onclick="switchView('chat');jumpTo('${escJ(f.room)}','${escJ(f.msg_id)}')">go to message</a>` : ''}<a onclick="moveFile(['${escJ(f.id)}'])">move</a>${canManageFile(f) ? `<a class="danger" onclick="deleteFile('${escJ(f.id)}','${escJ(f.name)}')">delete</a>` : ''}</div></div></div>`;
+    return `<div class="fcard${filesSel.has(f.id) ? ' selected' : ''}" draggable="${canManageFile(f) ? 'true' : 'false'}" data-fid="${esc(f.id)}">${sel}<div class="thumb" onclick="${img ? `openLightbox('${escJ(f.id)}','${escJ(f.name)}')` : `openFilePreview('${escJ(f.id)}','${escJ(f.name)}','${escJ(f.mime)}')`}">${img ? `<img src="${url}" alt="${escA(f.name)}" loading="lazy">` : fileIcon(f.mime, f.name)}</div>
+      <div class="fbody"><div class="fname" title="${escA(f.name)}">${esc(f.name)}</div><div class="fmeta">${f.version > 1 ? `<span class="fver" title="${escA('Version ' + f.version + ', updated ' + fmtDate(f.updated || f.ts) + (f.updated_by ? ' by ' + f.updated_by : ''))}">v${f.version}</span> · ` : ''}${fmtSize(f.size)} · ${esc(f.by)} · ${esc(rname)} · ${fmtDate(f.updated || f.ts)}${where}</div>
+      <div class="facts"><a href="${url}?download" download="${escA(f.name)}">download</a>${f.version > 1 ? `<a onclick="showVersions('${escJ(f.id)}')">versions</a>` : ''}${rq ? `<a onclick="switchView('tickets');openTicketModal('${escJ(rq[1])}')">open request</a>` : f.msg_id ? `<a onclick="switchView('chat');jumpTo('${escJ(f.room)}','${escJ(f.msg_id)}')">go to message</a>` : ''}${canManageFile(f) && !rq && f.msg_id ? `<a onclick="newFileVersion('${escJ(f.id)}','${escJ(f.name)}')" title="Replace it with a newer copy: same name, place and link; the earlier one is kept under versions">new version</a>` : ''}${canManageFile(f) ? `<a onclick="moveFile(['${escJ(f.id)}'])">move</a><a class="danger" onclick="deleteFile('${escJ(f.id)}','${escJ(f.name)}')">delete</a>` : ''}</div></div></div>`;
   }).join('');
   grid.innerHTML = (folderCards + cards) || (q ? '<div class="empty">Nothing matches that search here.</div>'
     : filesFolder ? '<div class="empty"><b>This folder is empty.</b><br>Upload here, drag a file onto a folder, or use a file\'s <em>move</em> link.</div>'
@@ -4110,6 +4319,30 @@ async function deleteFolder() {
   else if (!confirm(`Delete the empty folder "${filesFolder}"?`)) return;
   const d = await folderOp(body); if (d) { toast(d.moved ? `Folder deleted; ${d.moved} file${d.moved === 1 ? '' : 's'} moved up` : 'Folder deleted'); openFolder(parentFolder(filesFolder)); }
 }
+// T-0266: a new version keeps the file's name, place and link; the earlier ones stay downloadable under "versions".
+function newFileVersion(id, name) {
+  const inp = document.createElement('input'); inp.type = 'file';
+  inp.onchange = async () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    if (f.size > maxFileMb * 1048576) { toast(`${f.name || 'That file'} is over ${maxFileMb} MB`, 'err'); return; }
+    const r = await withBusy(() => fetch(`${API}/api/files/${id}/version`, { method: 'POST', headers: { 'Content-Type': f.type || 'application/octet-stream' }, body: f }));
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || 'Could not upload the new version', 'err'); return; }
+    toast(d.unchanged ? d.message : `${name}: version ${d.file.version} saved. The earlier one is under versions.`); loadFiles();
+  };
+  inp.click();
+}
+async function showVersions(id) {
+  const r = await fetch(`${API}/api/files/${id}/versions`); const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(d.error || 'Could not load the versions', 'err'); return; }
+  const f = d.file, url = `${API}/api/files/${encodeURIComponent(f.id)}`;
+  document.getElementById('ver-title').textContent = `Versions of ${f.name}`;
+  document.getElementById('ver-list').innerHTML = `<div class="ver-row"><b>Version ${f.version} (current)</b> · ${fmtSize(f.size)} · ${esc(f.updated_by || f.by)} · ${fmtDate(f.updated || f.ts)}<a href="${url}?download" download="${escA(f.name)}">download</a></div>`
+    + (d.versions || []).map(v => `<div class="ver-row">Version ${v.n} · ${fmtSize(v.size)} · ${esc(v.by)} · ${fmtDate(v.ts)}<a href="${url}/versions/${encodeURIComponent(v.id)}">download</a></div>`).join('')
+    + `<p class="dim small">The last ${d.keep} earlier versions are kept; older ones are removed. Earlier versions count toward the workspace's file space.</p>`;
+  document.getElementById('ver-modal').classList.add('show');
+}
+function closeVersions() { document.getElementById('ver-modal').classList.remove('show'); }
 async function deleteFile(id, name) {
   if (!confirm(`Delete "${name}"?\nThe message it was shared in stays and shows "(file removed)".`)) return;
   const r = await fetch(`${API}/api/files/${id}`, { method: 'DELETE' }); const d = await r.json().catch(() => ({}));
@@ -4133,7 +4366,8 @@ async function moveFilesTo(ids, to) {
   const clear = () => view.querySelectorAll('.drop-on').forEach(x => x.classList.remove('drop-on'));
   view.addEventListener('dragstart', e => {
     const card = e.target.closest && e.target.closest('.fcard[data-fid]'); if (!card) return;
-    const id = card.dataset.fid; dragIds = filesSel.has(id) && filesSel.size > 1 ? [...filesSel] : [id];
+    if (card.getAttribute('draggable') !== 'true') { e.preventDefault(); return; }   // T-0240: not yours to move
+    const id = card.dataset.fid; dragIds = movableIds(filesSel.has(id) && filesSel.size > 1 ? [...filesSel] : [id]); if (!dragIds) { e.preventDefault(); return; }
     try { e.dataTransfer.setData('text/plain', 'chamber-files'); e.dataTransfer.effectAllowed = 'move'; } catch (err) {}
     card.classList.add('dragging'); view.classList.add('fdragging');
   });
@@ -4164,7 +4398,13 @@ function toggleFileSelect() {
   document.getElementById('files-selbar').hidden = !filesSelecting; document.getElementById('files-select-btn').textContent = filesSelecting ? 'Cancel' : 'Select'; renderFiles();
 }
 function toggleSel(id, on) { if (on) filesSel.add(id); else filesSel.delete(id); renderFiles(); }
-function moveSelected() { if (!filesSel.size) { toast('Tick some files first', 'err'); return; } moveFile([...filesSel]); }
+// T-0240: only the sharer, the owner or an admin may move a file. Drop the others from a selection and say how many.
+function movableIds(ids) {
+  const ok = ids.filter(id => canManageFile((filesData?.files || []).find(f => f.id === id) || {})), skipped = ids.length - ok.length;
+  if (skipped) toast(`${skipped} file${skipped === 1 ? ' is' : 's are'} not yours to move${ok.length ? ', skipped' : ''}. The person who shared it, the owner or an admin can move it.`, ok.length ? undefined : 'err');
+  return ok.length ? ok : null;
+}
+function moveSelected() { if (!filesSel.size) { toast('Tick some files first', 'err'); return; } const ids = movableIds([...filesSel]); if (ids) moveFile(ids); }
 async function deleteSelected() {
   if (!filesSel.size) { toast('Tick some files first', 'err'); return; }
   if (!confirm(`Delete ${filesSel.size} file${filesSel.size === 1 ? '' : 's'}?\nMessages stay and show "(file removed)".`)) return;

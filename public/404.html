@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page not found · Chamber</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.ico">
+<!-- T-0257 (18 Nov 2026): the page an unknown address gets (status 404), in Chamber's colours, with a way back. -->
+<style>
+  :root { --bg: #0a0c0b; --panel: #101412; --line: #1d2621; --text: #d7e4dc; --dim: #8aa596; --accent: #00ff88; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg: #f6f8f7; --panel: #ffffff; --line: #d6e0da; --text: #13201a; --dim: #4d6458; --accent: #00804a; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; min-height: 100vh; display: flex; flex-direction: column; }
+  header, main, footer { width: 100%; max-width: 760px; margin: 0 auto; padding: 0 20px; }
+  header { padding-top: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--line); max-width: none; }
+  header a { color: var(--accent); text-decoration: none; font-family: var(--mono); letter-spacing: 3px; font-weight: 700; }
+  main { flex: 1; padding-top: 56px; padding-bottom: 40px; }
+  .code { font-family: var(--mono); font-size: 64px; color: var(--accent); margin: 0; line-height: 1; }
+  h1 { font-size: 22px; margin: 14px 0 10px; }
+  p { color: var(--dim); margin: 0 0 12px; }
+  .addr { font-family: var(--mono); color: var(--text); background: var(--panel); border: 1px solid var(--line); padding: 6px 10px; overflow-wrap: anywhere; display: inline-block; max-width: 100%; }
+  .go { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+  .go a { border: 1px solid var(--line); background: var(--panel); color: var(--text); text-decoration: none; padding: 9px 14px; border-radius: 8px; }
+  .go a:first-child { background: var(--accent); color: #04170c; border-color: var(--accent); }
+  footer { color: var(--dim); font-size: 12.5px; border-top: 1px solid var(--line); padding-top: 14px; padding-bottom: 20px; }
+  footer a { color: var(--dim); }
+</style>
+</head>
+<body>
+<header><a href="/">CHAMBER</a></header>
+<main>
+  <p class="code">404</p>
+  <h1>Page not found</h1>
+  <p>There is no page at this address. It may have moved, or the link may have a typo.</p>
+  <p><span class="addr" id="addr"></span></p>
+  <div class="go">
+    <a href="/">Chamber home</a>
+    <a href="/app">Open Chamber</a>
+    <a href="/help">Help</a>
+    <a href="https://ghostporttechnologies.com/">GhostPort home</a>
+  </div>
+</main>
+<footer>GhostPort Technologies · <a href="/help">Help</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="https://blog.ghostporttechnologies.com/">Blog</a> · <a href="https://blog.ghostporttechnologies.com/contact.html">Support</a></footer>
+<script>document.getElementById('addr').textContent = location.host + location.pathname;</script>
+</body>
+</html>

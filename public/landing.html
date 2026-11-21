@@ -110,7 +110,13 @@
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 18px 0 48px; }
   .card { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 18px; background: var(--surface); }
   .card h3 { margin: 0 0 8px; font-size: 14px; color: var(--accent); } .card p { margin: 0; color: var(--dim); font-size: 13.5px; }
-  .price { border: 1px solid var(--accent-line); border-radius: var(--r-lg); padding: 28px; max-width: 460px; margin: 0 auto 64px; text-align: center; background: var(--surface); }
+  .price { border: 1px solid var(--accent-line); border-radius: var(--r-lg); padding: 28px; max-width: 760px; margin: 0 auto 64px; text-align: center; background: var(--surface); }
+  .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin: 0 0 16px; }   /* T-0295: one card per size */
+  .plan { border: 1px solid var(--line); border-radius: var(--r-lg); padding: 16px 14px; text-align: left; background: var(--bg); }
+  .plan .pn { font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  .price .plan .amt { font-size: 32px; } .plan p { margin: 6px 0 0; color: var(--dim); font-size: 13.5px; }
+  .price .plan .yr { color: var(--dim); font-size: 13px; margin-top: 2px; }   /* T-0310: the yearly price under the monthly one */
+  #bi-iv { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 0 10px; } #bi-iv label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 14px; color: var(--text); letter-spacing: 0; text-transform: none; cursor: pointer; } #bi-iv input { flex: none; width: 15px; height: 15px; margin: 0; box-shadow: none; }
   .price .amt { font-size: 44px; font-weight: 700; color: var(--accent); } .price .amt small { font-size: 16px; color: var(--dim); font-weight: 400; }
   .price ul { list-style: none; padding: 0; margin: 18px 0 24px; color: var(--dim); text-align: left; display: inline-block; } .price li::before { content: "> "; color: var(--accent); }
   .dim { color: var(--dim); }
@@ -137,13 +143,78 @@
   .status { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; font-size: 13.5px; margin: 14px 0 18px; } .status dt { color: var(--dim); } .status dd { margin: 0; min-width: 0; }
   .wrap-any { overflow-wrap: anywhere; word-break: break-all; }
   .pill { display: inline-block; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line-strong); font-size: 11px; line-height: 18px; color: var(--dim); vertical-align: middle; }
+  .rule-need { color: var(--warn); font-weight: 600; }   /* T-0241 part 3 */
   .pill.on { border-color: var(--accent-line); color: var(--accent); } .pill.off { border-color: rgba(255, 171, 64, .4); color: var(--warn); }
-  .row-item { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); flex-wrap: wrap; font-size: 13.5px; } .row-item:first-child { border-top: 0; }
-  .row-actions { display: flex; gap: 12px; align-items: center; font-size: 13px; } .row-actions a, a.danger { white-space: nowrap; } a.danger { color: var(--danger); }
+  .row-item { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); flex-wrap: wrap; font-size: 13.5px; overflow-wrap: anywhere; } .row-item:first-child { border-top: 0; }
+  .row-actions { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 13px; min-width: 0; }   /* 2026-11-17: with a member, make admin/viewer/requester + transfer + remove ran off a phone screen */ .row-actions a, a.danger { white-space: nowrap; } a.danger { color: var(--danger); }
   .meta { color: var(--dim); font-size: 11.5px; } small.meta { display: inline; }
   .meta-block { margin-top: 10px; font-size: 12px; }
   .box { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg); }
   .sec-block { margin-top: 18px; }
+  /* T-0313: the Account page as Settings with a menu (layout A). setupSettings() puts each section in a card (.set-card, with
+     its group) and the cards in #set-main; #set-nav lists the six groups and only the chosen group's cards show. */
+  #billing-box.set-on { max-width: 1040px; display: flex; align-items: flex-start; gap: 28px; }
+  #set-nav { flex: 0 0 210px; position: sticky; top: 72px; display: flex; flex-direction: column; gap: 4px; }
+  #set-nav .set-h { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px 12px; }
+  #set-nav button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; padding: 9px 12px; border: 1px solid transparent; border-radius: var(--r); background: transparent; color: var(--text); font: inherit; font-size: 14px; cursor: pointer; }
+  #set-nav button span { font-size: 12px; color: var(--dim); }
+  #set-nav button:hover { background: var(--surface-2); }
+  #set-nav button[aria-current="true"] { border-color: var(--accent-line); background: var(--accent-soft); }
+  #set-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  #set-main > #set-back { display: none; align-self: flex-start; }
+  #set-main > .set-card:has(#pw-form), #set-main > #tok-box { order: -1; }          /* Security before Notifications, AI agents before usage and rules */
+  #set-main > #danger-box { order: 50; } #set-main > .alt { order: 60; }            /* export and delete last in Data, then Log out */
+  .set-card { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg); padding: 18px 20px; margin: 0 0 16px; min-width: 0; }
+  .form .set-card > h2:first-child, .form .set-card > h2.sec { margin-top: 0; padding-top: 0; border-top: 0; }
+  .set-card .box { background: transparent; border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 16px 0 4px; }
+  #billing-box[data-show] .set-card { display: none; }
+  #billing-box[data-show="you"] .set-card[data-group="you"], #billing-box[data-show="team"] .set-card[data-group="team"], #billing-box[data-show="ai"] .set-card[data-group="ai"],
+  #billing-box[data-show="rules"] .set-card[data-group="rules"], #billing-box[data-show="data"] .set-card[data-group="data"], #billing-box[data-show="billing"] .set-card[data-group="billing"] { display: block; }
+  .set-card:has(> #lock-box[style*="none"]) { display: none !important; }          /* the owner lock card shows only when its box does */
+  label:has(> input[type=checkbox]), label:has(> input[type=radio]) { text-transform: none; letter-spacing: 0; font-size: 13.5px; color: var(--text); line-height: 1.5; }
+  .set-card p.sub.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 2px; }
+  .set-more { display: block; background: none; border: 0; padding: 0; margin: 0 0 12px; color: var(--accent); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .set-card .guest-inv code, .set-card #ws-invite { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #del-form.danger-zone { border: 1px solid rgba(255, 107, 107, .45); border-radius: var(--r-lg); padding: 4px 16px 16px; }
+  #del-form .dz-h { color: var(--danger); }
+  @media (max-width: 820px) {
+    #billing-box.set-on { display: block; }
+    #set-nav { position: static; }
+    #set-nav button { border-color: var(--line); padding: 12px 14px; margin-bottom: 4px; }
+    #billing-box.set-on[data-show] > #set-nav { display: none; }
+    #billing-box.set-on[data-show] #set-main > #set-back { display: inline-flex; margin: 0 0 14px; }
+    #billing-box.set-on:not([data-show]) #set-main > :not(.alt) { display: none; }
+    .set-card { padding: 16px 14px; }
+  }
+  /* T-0329: Settings, the only place to change how Chamber behaves. Groups beyond T-0313's six, the search box, and rows of
+     choice buttons (the same look as the app's gear menu used to have). #set-extra holds the new sections; display: contents
+     makes its cards siblings of the others, so a group's cards keep their order. */
+  #billing-box[data-show="display"] .set-card[data-group="display"], #billing-box[data-show="notify"] .set-card[data-group="notify"],
+  #billing-box[data-show="routers"] .set-card[data-group="routers"], #billing-box[data-show="advanced"] .set-card[data-group="advanced"],
+  #billing-box[data-show="search"] .set-card.set-hit { display: block; }
+  #set-extra { display: contents; } #set-extra > #set-ai-walk { order: -1; }
+  #set-nav button[data-go][hidden] { display: none; }
+  #set-search { width: 100%; margin: 0 0 8px; padding: 9px 12px; font-size: 14px; }
+  #set-none { margin: 4px 0 16px; }
+  .set-row { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--line); }
+  .set-row .set-l { display: flex; flex-direction: column; gap: 2px; font-size: 14px; min-width: 0; flex: 1 1 200px; color: var(--text); }
+  .set-row .set-l small { font-size: 12px; color: var(--dim); }
+  .set-row select { width: auto; max-width: 100%; min-width: 150px; flex: none; margin: 0; }
+  .set-card .seg { display: inline-flex; flex-wrap: wrap; flex: none; }
+  .set-card .seg button { all: unset; cursor: pointer; font: inherit; font-size: 13px; padding: 7px 14px; border: 1px solid var(--line-strong); margin-left: -1px; color: var(--text-dim); background: var(--bg); }
+  .set-card .seg button:first-child { border-radius: var(--r) 0 0 var(--r); margin-left: 0; } .set-card .seg button:last-child { border-radius: 0 var(--r) var(--r) 0; }
+  .set-card .seg button.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); position: relative; z-index: 1; }
+  .set-card .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #set-look #theme-picker, #set-look #accent-foot, #set-look #accent-name { padding-left: 0; padding-right: 0; }
+  #set-look { display: flex; flex-direction: column; align-items: flex-start; flex: 1 1 260px; }
+  .nt-q label { display: inline-flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); margin: 0 12px 6px 0; }
+  .nt-q input { width: auto; margin: 0; } .nt-q #nt-quiet-tz { width: 190px; }
+  @media (max-width: 820px) {
+    #billing-box.set-on[data-show="search"] > #set-nav { display: flex; }
+    #billing-box.set-on[data-show="search"] #set-nav [data-go], #billing-box.set-on[data-show="search"] #set-nav .set-h { display: none; }
+    .set-card .seg button { padding: 9px 14px; }
+  }
+  .key-idle { color: var(--warn, #b7791f); }   /* T-0320: a key never used, or not used for 30 days */
   .empty { color: var(--dim); font-size: 13px; padding: 14px; text-align: center; border: 1px dashed var(--line); border-radius: var(--r); margin: 6px 0; }
   pre.code { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); padding: 10px 12px; border-radius: var(--r); white-space: pre-wrap; word-break: break-all; font-size: 12.5px; margin: 10px 0 0; } pre.select-all { user-select: all; }
   footer { border-top: 1px solid var(--line); color: var(--dim); font-size: 12.5px; }
@@ -202,6 +273,14 @@
       </div>
     </div>
 
+    <!-- T-0287: what we lead with. Three things that hold whoever the agent is: a second person, a check, and nothing readable by default. -->
+    <h2 id="two-keys" class="h-sec">Two keys and a check</h2>
+    <div class="grid">
+      <div class="card"><h3>Nobody approves their own work</h3><p>An agent proposes a job and cannot start it until a person approves. Set it once and the person who asked cannot be the one who approves, two different people must agree, or just the people you name may. The server holds that line, and an AI agent's account can never approve.</p></div>
+      <div class="card"><h3>The AI says what it checked</h3><p>An agent cannot close a ticket with "done, looks fine". Its closing note has to say what it checked, what that showed, and what result would have meant no. Then the work waits in To check until a person says Looks good or sends it back. <a href="/demo">See a close refused in the demo</a>.</p></div>
+      <div class="card"><h3>Agents start with nothing</h3><p>A newly connected agent can read no file on its machine until you attach a folder there. Mark folders for your eyes only, or attach everything. You decide how wide the door opens.</p></div>
+    </div>
+
     <div class="shots" aria-label="How one ticket moves through Chamber (sample data)">
       <div class="shot"><div class="shot-h">1. You approve</div>
         <div class="shot-b"><div class="s-id">T-0231 · for an agent · proposed</div><div class="s-t">Warn 14 days before the certificate expires</div><div class="s-btn">Approve</div><div class="s-id">Nothing runs until a person says yes.</div></div></div>
@@ -220,6 +299,19 @@
     </div>
 
 
+    <!-- T-0292: what the Terminal tab and its agent can do. Each line below was opened in a real browser by tools/browser-check.js
+         (step "what the site says the Terminal tab and its agent can do") before it was written here. -->
+    <h2 id="phone-loop" class="h-sec">From your phone: ask, read, approve</h2>
+    <p class="shots-note" style="margin:6px 0 0">Ask from your phone, read the fix in plain words, and approve it with one tap. Changed your mind? One more tap asks for the undo, and you approve that too.</p>
+    <div class="grid">
+      <div class="card"><h3>A terminal on your own machines</h3><p>The Terminal tab sends a command to a machine you connected and shows what came back from that machine. Connect several and pick the one you mean. It is for the workspace owner.</p></div>
+      <div class="card"><h3>The fix in plain words</h3><p>A proposed change says what it changes, how to try it, what could go wrong and how to undo it, with a risk label. Approve it and the agent applies that change on its own branch and reports back.</p></div>
+      <div class="card"><h3>Revert</h3><p>A change that was applied gets a Revert button. One tap proposes the undo as a new ticket; approve it and the agent applies the reverse.</p></div>
+      <div class="card"><h3>Watch it work, or stop it</h3><p>While an agent works you see its steps and a Stop button. Afterwards the line shows which AI model it used, what the job cost when the AI reports that, and every command it ran.</p></div>
+      <div class="card"><h3>It asks before it runs</h3><p>Switch asking on and an agent can stop and ask "may I run this?" with the exact command. You tap Allow or Deny in the app, and no answer counts as no.</p></div>
+      <div class="card"><h3>Follow-ups and screenshots</h3><p>Reply in the thread and a Claude Code agent carries on from where it left off. Attach a screenshot and the agent can read it.</p></div>
+    </div>
+
     <h2 id="screens" class="h-sec">The real thing</h2>
     <div class="real">
       <figure><a href="/shot-activity.png" target="_blank" rel="noopener"><img src="/shot-activity.png" width="1280" height="527" loading="lazy" alt="Chamber activity feed listing who proposed, approved, claimed and closed each ticket, with times"></a><figcaption><b>Nothing happens off the record.</b> Who proposed it, who approved it, who did it, and when.</figcaption></figure>
@@ -232,11 +324,10 @@
     <h2 id="features" class="h-sec">Features</h2>
     <p class="shots-note" style="margin:-6px 0 0">New this week, in plain words: <a href="https://blog.ghostporttechnologies.com/chamber-agents-start-with-nothing.html">agents start with nothing, and the owner holds the key</a>.</p>
     <div class="grid">
-      <div class="card"><h3>Tickets with a paper trail</h3><p>Propose, approve, claim, close. A person approves a job before an agent starts it, and closing needs a note, so the record stays honest.</p></div>
+      <div class="card"><h3>A record you keep</h3><p>One feed of who did what and when, across chat, tickets and code reviews. Pick any period and export it as a spreadsheet (CSV) or JSON. Keep the record for good, or set a limit and save a sealed copy first.</p></div>
+      <div class="card"><h3>Tickets with a paper trail</h3><p>Propose, approve, claim, close. A person approves a job before an agent starts it, and closing needs a note. An agent's note has to say what it checked, so the record stays honest.</p></div>
       <div class="card"><h3>Check the finished work</h3><p>Finished tickets land in To check by themselves. Open the next one, see what was asked and what was done, and tap Looks good or Send back. Sending back makes the follow-up ticket in the same step.</p></div>
       <div class="card"><h3>Code review in plain words</h3><p>A proposed change comes with a plain-words summary: what it changes, how to try it, what could go wrong and how to undo it. The line-by-line view is one tap away, and a person approves or rejects it.</p></div>
-      <div class="card"><h3>A record you keep</h3><p>One feed of who did what and when, across chat, tickets and code reviews. Pick any period and export it as a spreadsheet (CSV) or JSON. Keep the record for good, or set a limit and save a sealed copy first.</p></div>
-      <div class="card"><h3>Agents start with nothing</h3><p>A newly connected agent can read no file on its machine until you attach a folder there. Mark folders for your eyes only, or attach everything. You decide how wide the door opens.</p></div>
       <div class="card"><h3>Owner lock</h3><p>Switch it on and what your team writes and uploads is stored sealed with a key only your passphrase opens. Lock it any time and nobody can read it, us included. It is not end-to-end encryption: <a href="/help#owner-lock">what it covers and what it costs</a>.</p></div>
       <div class="card"><h3>Chat, rooms and files</h3><p>Fast, plain, searchable chat where the team and its agents stay in step. Paste a screenshot or drop a file; people and agents can both read it. Presence shows who is online, human or agent.</p></div>
       <div class="card"><h3>Built for agents too</h3><p>A small, documented HTTP API with bearer tokens. Your AI tools can read and post like anyone else.</p></div>
@@ -248,18 +339,25 @@
 
     <h2 id="pricing" class="h-sec center">Pricing</h2>
     <div class="price">
-      <div class="amt">$49 <small>/ year</small></div>
-      <div class="dim" id="pr-trial" hidden>Free for the first <span id="pr-days">14</span> days. No card needed to start.</div>
-      <div class="dim" id="pr-free" hidden><b>Or free for one person</b>, with no time limit: you and up to 2 AI agents, with chat, tickets, reviews and tasks, but no inviting others and no file storage.</div>
+      <div class="plans">
+        <div class="plan" id="pr-free" hidden><div class="pn">Free</div><div class="amt">$0</div><p>Up to 3 people and 2 AI agents each, with no time limit. Chat, tickets, reviews, tasks and the record. No file storage.</p></div>
+        <div class="plan" id="pr-team"><div class="pn">Team</div><div class="amt">$50 <small>/ month</small></div><div class="yr">or $500 a year (2 months free)</div><p>Up to 5 builders. Approvers, viewers and requesters: no limit. 10 GB of files.</p></div>
+        <div class="plan" id="pr-company" hidden><div class="pn">Company</div><div class="amt">$150 <small>/ month</small></div><div class="yr">or $1,500 a year (2 months free)</div><p>Up to 25 builders. Approvers, viewers and requesters: no limit. 50 GB of files.</p></div>
+      </div>
+      <div class="dim" id="pr-trial" hidden>A new workspace gets everything free for the first <span id="pr-days">14</span> days. No card needed to start.</div>
       <div class="dim" id="pr-self">Or run it on your own computer, free, with no plans or payments: <a href="/download">Windows or Linux</a>.</div>
-      <div class="dim">One plan, one price for the whole workspace: up to 25 people and their agents. Cancel any time from your account.</div>
+      <div class="dim">Every plan has every feature; plans differ only in size. A builder is someone who runs agents or writes code. The people who approve, ask or watch never use a seat. Cancel any time from your account.</div>
       <ul>
         <li><b>What you pay for:</b> we host it, back it up every day, test that the backups restore, and keep it updated</li>
-        <li>Chamber is open source (AGPL). You can run it on your own server for free; the $49 is for us running it for you</li>
+        <li>Chamber is open source (AGPL). You can run it on your own server for free; the price is for us running it for you</li>
+        <li id="pr-promises"><b>What we promise:</b> never a price per person. Your record, its check and the export are on every plan, the free one included. We never mark up your AI bill: your agents use your own AI account. No surprise charges: extra storage is added only when you add it</li>
+        <li><b>If you stop paying,</b> the workspace moves to the free plan. Nothing is deleted, and everyone in it can still read and export the record</li>
+        <li id="pr-renew"><b>Pay monthly or yearly:</b> a year costs 10 months. On a yearly plan we email you 14 days before each renewal, and every payment gets a receipt by email, so a monthly plan gets one each month</li>
+        <li id="pr-founding" hidden><b>Founding price:</b> the first 100 paying workspaces keep the price they signed up at for as long as they stay subscribed</li>
         <li>Everything above, with no limits on messages, tickets or code reviews. A code review shows a proposed change line by line, so a person can check it before it goes in</li>
         <li id="pr-storage" hidden></li>
         <li>Secure card payment through Stripe</li>
-        <li>Access until the end of the paid year if you cancel</li>
+        <li>Access until the end of the paid month or year if you cancel</li>
       </ul>
       <a href="/signup" class="btn primary">Create account</a>
     </div>
@@ -314,6 +412,7 @@
       <label for="li-pass">Password</label>
       <input id="li-pass" type="password" required autocomplete="current-password">
       <div id="li-mfa" hidden><label for="li-code">Two-factor code</label><input id="li-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 or a recovery code">
+        <button class="btn ghost wide" type="button" id="li-pk" hidden>Use a passkey</button><!-- T-0241 (a) -->
         <label class="check"><input type="checkbox" id="li-remember"> Remember this device for 30 days</label></div>
       <button class="btn primary wide" type="submit">Log in</button>
       <div class="msg" id="li-msg"></div>
@@ -337,35 +436,81 @@
   <!-- ── Billing / account ────────────────────────────────────────── -->
   <section class="view" data-view="/billing">
     <div class="form" id="billing-box">
-      <h2>Your account</h2>
+      <h2 data-group="billing">Plan and billing</h2>
       <p class="sub" id="bi-sub">Loading…</p>
       <dl class="status" id="bi-status"></dl>
       <div id="bi-actions" class="stack"></div>
       <div class="msg" id="bi-msg"></div>
-      <h2 class="sec" id="workspace">Workspace</h2>
+      <h2 class="sec" id="workspace" data-group="team">Workspace</h2>
       <p class="sub" id="ws-sub"></p>
       <dl class="status" id="ws-status"></dl>
       <div id="ws-members"></div>
       <div id="ws-actions"></div>
       <div class="msg" id="ws-msg"></div>
-      <h2 class="sec">Notifications</h2>
+      <h2 class="sec" id="notifications" data-group="notify">Notifications on this device</h2>
       <p class="sub" id="pn-sub">Get a notification on this device when someone mentions you or sends you a direct message. When an agent's question is waiting for your answer, the notification shows the exact command with <b>Allow once</b> and <b>Deny</b> (Chrome and Edge, on Android and on a computer), so one tap answers it. On iPhone, first add Chamber to your home screen (Share → Add to Home Screen), then open it from there.</p>
       <button class="btn ghost" id="pn-enable" type="button">Enable on this device</button> <button class="btn ghost" id="pn-clear" type="button" hidden>Turn off everywhere</button>
       <div class="msg" id="pn-msg"></div>
-      <h2 class="sec">Security</h2>
+      <h2 class="sec" data-group="you">Security</h2>
       <form id="pw-form"><label for="pw-cur">Current password</label><input id="pw-cur" type="password" autocomplete="current-password" required>
         <label for="pw-new">New password (10+ characters)</label><input id="pw-new" type="password" autocomplete="new-password" minlength="10" required>
         <button class="btn ghost" type="submit">Change password</button><div class="msg" id="pw-msg"></div></form>
       <div id="tf-box" class="box"><b>Two-factor authentication</b> <span class="pill" id="tf-state">…</span>
         <p class="sub" id="tf-sub">A code from an authenticator app (Aegis, Google Authenticator, 1Password, iOS Passwords) is required at sign-in and for password resets.</p>
+        <p class="sub rule-need" id="tf-need" hidden></p>
         <div id="tf-actions"></div><div class="msg" id="tf-msg"></div></div>
+      <div id="sl-box" class="box"><b>Screen lock</b> <span class="pill" id="sl-state">…</span>
+        <p class="sub">Stops someone at an unattended computer or phone from opening your workspace. When Chamber locks, nothing in it shows until you enter your password. It applies on every device where you are signed in in a browser or the phone app; agents and the command-line tool are not affected.</p>
+        <p class="meta" id="sl-rule" hidden></p>
+        <form id="sl-form"><label for="sl-idle">Lock after no activity for</label>
+          <select id="sl-idle"><option value="0">Never</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option></select>
+          <label class="check"><input type="checkbox" id="sl-reopen"> <span>Lock when I come back after closing Chamber, or after it was in the background for <span id="sl-gap">3</span> minutes</span></label>
+          <label for="sl-pw">Password <span class="meta">(needed only to make the lock less strict)</span></label><input id="sl-pw" type="password" autocomplete="current-password">
+          <button class="btn ghost" type="submit">Save screen lock</button><div class="msg" id="sl-msg"></div></form>
+        <p class="meta">In the app: gear menu &gt; <b>Lock now</b>.</p></div>
+      <div id="pk-box" class="box" hidden><b>Passkeys</b> <span class="pill" id="pk-state">…</span>
+        <p class="sub">Use your fingerprint, face or device PIN instead of typing your password to unlock Chamber and to confirm it is you. The passkey stays on your device or in your password manager; Chamber keeps only its public half. Your password still works too.</p>
+        <div id="pk-list"></div>
+        <div class="inline-form"><input id="pk-name" type="text" maxlength="40" placeholder="Name, for example: my phone" aria-label="Passkey name"><button class="btn ghost" type="button" id="pk-add">Add a passkey</button></div>
+        <div id="pk-login-row" hidden style="margin-top:10px"><label class="check"><input type="checkbox" id="pk-login"> Ask for my passkey when I sign in (two-step sign-in)</label>
+          <p class="meta">After your password, Chamber asks for the passkey. It counts as two-step sign-in. Add a second passkey on another device so losing one does not lock you out.</p>
+          <div class="inline-form" id="pk-login-off" hidden><input id="pk-login-pw" type="password" autocomplete="current-password" placeholder="Your password" aria-label="Password"><button class="btn ghost" type="button" id="pk-login-save">Stop asking</button></div></div>
+        <div class="msg" id="pk-msg"></div></div>
+      <div id="rc-box" class="box"><b>Ask again before sensitive actions</b> <span class="pill" id="rc-state">…</span>
+        <p class="sub">Before approving or rejecting tickets, answering an agent's question, the Terminal, deleting files, changing security or workspace settings, adding or removing agents, and exporting, Chamber asks for your password again when you last entered it longer ago than this. It applies in browsers and the phone app; agents and the command-line tool are not asked.</p>
+        <p class="meta" id="rc-rule" hidden></p>
+        <form id="rc-form"><label for="rc-min">Ask again when I last entered my password more than</label>
+          <select id="rc-min"><option value="0">Never ask again</option><option value="5">5 minutes ago</option><option value="15">15 minutes ago</option><option value="60">1 hour ago</option></select>
+          <label for="rc-pw">Password <span class="meta">(needed only to be asked less often)</span></label><input id="rc-pw" type="password" autocomplete="current-password">
+          <button class="btn ghost" type="submit">Save</button><div class="msg" id="rc-msg"></div></form></div>
       <div class="sec-block"><button class="btn ghost" type="button" id="so-all">Sign out everywhere else</button> <span class="meta" id="so-sub">Ends every other session of this account; this device stays signed in.</span><div class="msg" id="so-msg"></div></div>
+      <div id="ss-box" class="box"><b>Signed-in devices</b>
+        <p class="sub">Every browser, phone and tool where this account is signed in. Sign out any you do not recognise, then change your password.</p>
+        <div id="ss-list" class="ss-list"></div><div class="msg" id="ss-msg"></div>
+        <p class="meta" id="sp-rule" hidden></p>
+        <form id="sp-form"><label for="sp-days">Stay signed in for</label>
+          <select id="sp-days"><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option></select>
+          <label class="check"><input type="checkbox" id="sp-remember"> <span>Keep me signed in after I close the browser</span></label>
+          <label for="sp-pw">Password <span class="meta">(needed only to keep sign-ins longer)</span></label><input id="sp-pw" type="password" autocomplete="current-password">
+          <button class="btn ghost" type="submit">Save sign-in length</button><div class="msg" id="sp-msg"></div></form></div>
+      <div id="sr-box" class="box" hidden><b>Rules for everyone in this workspace</b> <span class="pill" id="sr-state">…</span>
+        <p class="sub">The least each person must use, you included. Anyone can choose something stricter for themselves; nobody can choose weaker. The rules apply at once on every device. Agents and the command-line tool are never screen-locked.</p>
+        <form id="sr-form"><label for="sr-idle">Screen lock after no activity, at most</label>
+          <select id="sr-idle"><option value="0">No rule</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">1 hour</option></select>
+          <label class="check"><input type="checkbox" id="sr-reopen"> <span>Lock when coming back to Chamber, for everyone</span></label>
+          <label for="sr-days">Sign-ins last at most</label>
+          <select id="sr-days"><option value="0">No rule</option><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option></select>
+          <label class="check"><input type="checkbox" id="sr-2fa"> <span>Everyone must use two-factor authentication</span></label><p class="meta" id="sr-2fa-note"></p>
+          <label for="sr-recheck">Ask for the password again before sensitive actions, at least every</label>
+          <select id="sr-recheck"><option value="0">No rule</option><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="60">1 hour</option></select>
+          <label for="sr-pw">Password <span class="meta">(needed only to make the rules less strict)</span></label><input id="sr-pw" type="password" autocomplete="current-password">
+          <button class="btn ghost" type="submit">Save rules</button><div class="msg" id="sr-msg"></div></form></div>
       <div id="login-hist" class="meta meta-block"></div>
       <form id="em-form" class="sec-block"><label for="em-new">New email</label><input id="em-new" type="email" autocomplete="email" required>
         <label for="em-pw">Your password</label><input id="em-pw" type="password" autocomplete="current-password" required>
         <button class="btn ghost" type="submit">Change email</button><div class="msg" id="em-msg"></div></form>
       <div id="danger-box">
-        <h2 class="sec">Your data</h2>
+        <h2 class="sec" data-group="data">Your data</h2>
         <p class="sub" id="exp-sub">Download everything in your workspace as one JSON file, or delete your account.</p>
         <a class="btn ghost" id="exp-btn" href="/account/export" hidden>Export workspace</a>
         <div id="imp-wrap" hidden style="margin-top:10px">
@@ -373,13 +518,13 @@
           <button class="btn ghost" type="button" id="imp-btn">Import workspace…</button>
           <div id="imp-out" class="sub" style="margin-top:6px"></div>
         </div>
-        <form id="del-form" class="sec-block"><label for="del-pw">Password</label><input id="del-pw" type="password" autocomplete="current-password" required>
+        <form id="del-form" class="sec-block danger-zone"><h3 class="sub-h dz-h">Danger zone</h3><label for="del-pw">Password</label><input id="del-pw" type="password" autocomplete="current-password" required>
           <label for="del-confirm">Type your username to confirm</label><input id="del-confirm" type="text" autocomplete="off" required>
           <button class="btn danger" type="submit">Delete my account</button>
           <div class="msg" id="del-msg"></div></form>
       </div>
       <div id="pol-box" hidden>
-        <div id="lock-box" style="display:none;margin-top:18px">
+        <div id="lock-box" data-group="data" style="display:none">
           <h3 class="sub-h" id="owner-lock">Owner lock</h3>
           <p class="sub" id="lock-state"></p>
           <div class="inline-form" id="lock-on-row" style="display:none"><button class="btn" type="button" id="lock-on">Switch the owner lock on</button></div>
@@ -387,12 +532,12 @@
           <div class="inline-form" id="lock-act-row" style="display:none"><button class="btn ghost" type="button" id="lock-close">Lock it now</button><input id="lock-off-pw" type="password" autocomplete="current-password" placeholder="account password, to switch it off"><button class="btn ghost" type="button" id="lock-off">Switch the lock off</button></div>
           <p class="msg" id="lock-msg" role="status"></p>
         </div>
-        <h2 class="sec">Agent rules</h2>
+        <h2 class="sec" data-group="ai">Agent rules</h2>
         <p class="sub">Who may give instructions to the AI agents in this workspace? Agents refuse everyone else. Changes they cannot make themselves are proposed as tickets for a human to approve.</p>
         <label class="check"><input type="radio" name="pol" value="owner" id="pol-owner"> Only the owner</label>
         <label class="check"><input type="radio" name="pol" value="members" id="pol-members"> Every human member of the workspace</label>
         <div class="msg" id="pol-msg"></div>
-        <h2 class="sec" id="approval">Approval rules</h2>
+        <h2 class="sec" id="approval" data-group="rules">Approval rules</h2>
         <p class="sub">Who may say yes to a ticket before a person or an agent starts it. The server enforces these rules for everyone.</p>
         <label class="check"><input type="checkbox" id="ap-noself"> Nobody approves a ticket they proposed themselves</label>
         <label for="ap-two">Two different people must approve</label>
@@ -409,7 +554,7 @@
         <button class="btn" id="ap-save" type="button">Save approval rules</button>
         <div class="msg" id="ap-msg"></div>
         <div id="gh-box" hidden>   <!-- T-0197 -->
-        <h2 class="sec" id="github">GitHub issues</h2>
+        <h2 class="sec" id="github" data-group="rules">GitHub issues</h2>
         <p class="sub">Link one GitHub repository. Each open issue with your label becomes a proposed ticket here (a person still approves it). When the ticket is approved, started, done or turned down, Chamber writes a short comment on the issue, and it closes the issue when the ticket is done. The comments say only the status and the ticket number; notes, reasons and names stay in Chamber.</p>
         <div id="gh-state" class="sub"></div>
         <div class="inline-form" id="gh-form"><input id="gh-repo" placeholder="owner/repository" maxlength="201" style="flex:1 1 160px"><input id="gh-label" placeholder="label" value="chamber" maxlength="50" style="flex:0 1 120px"><input id="gh-token" type="password" placeholder="GitHub key (github_pat_…)" autocomplete="off" style="flex:1 1 180px"><button class="btn" id="gh-link" type="button">Link</button></div>
@@ -417,7 +562,7 @@
         <button class="btn ghost" id="gh-remove" type="button" hidden>Unlink</button>
         <div class="msg" id="gh-msg"></div>
         </div>
-        <h2 class="sec" id="audit">Activity &amp; audit</h2>
+        <h2 class="sec" id="audit" data-group="data">Activity &amp; audit</h2>
         <p class="sub">Who did what in this workspace: agent writes and administrative actions by people, newest first. Each entry carries a request id you can quote to support. The day-to-day timeline of tickets and agent answers, with its own export, is the Activity tab in the app.</p>
         <div class="inline-form"><input id="au-q" placeholder="search (action, ticket, room…)" style="flex:1 1 160px"><select id="au-actor" style="flex:0 1 160px"><option value="">everyone</option></select><button class="btn ghost" type="button" id="au-go">Filter</button><span id="au-export" style="display:none"><a class="btn ghost sm" id="au-csv" href="/account/workspace/audit?format=csv">Export CSV</a> <a class="btn ghost sm" id="au-json" href="/account/workspace/audit?format=json">JSON</a></span></div>
         <div id="audit-list"></div><p class="sub" id="au-count"></p>
@@ -440,18 +585,18 @@
         </div>
         <p class="sub" style="margin-top:12px">Evidence pack for the tickets closed in a period: the request, approvals, change, commands the agents ran, result and record entries of each, sealed so a change shows.</p>
         <div class="inline-form"><input id="ev-from" type="date" style="flex:0 1 170px"><input id="ev-to" type="date" style="flex:0 1 170px"><button class="btn ghost" type="button" id="ev-open">Open</button><button class="btn ghost" type="button" id="ev-json">Data (JSON)</button></div>
-        <h2 class="sec" id="usage">AI usage</h2>
+        <h2 class="sec" id="usage" data-group="ai">AI usage</h2>
         <p class="sub">What the agents' work cost and how long it took, from what each agent reports with its answers. <span id="us-note"></span></p>
         <div class="inline-form"><select id="us-days" style="max-width:200px"><option value="7">Last 7 days</option><option value="28" selected>Last 4 weeks</option><option value="90">Last 3 months</option></select></div>
         <div id="usage-box"><p class="sub">Loading…</p></div>
-        <h2 class="sec" id="budget">AI budget</h2>
+        <h2 class="sec" id="budget" data-group="ai">AI budget</h2>
         <p class="sub">A monthly limit on what the agents may spend. At 80% the owner and admins are told; at 100% agents finish what they are doing and take no new work until you raise it or the month turns. Agents that report no cost (local models) are never stopped by it.</p>
         <p class="sub" id="bu-now"></p>
         <label for="bu-month">Monthly budget for the workspace, in dollars</label><input id="bu-month" inputmode="decimal" maxlength="9" placeholder="empty = no budget" style="max-width:220px">
         <label for="bu-agents">Limits for single agents (optional)</label><textarea id="bu-agents" rows="3" maxlength="800" placeholder="one per line, for example:  server-agent 20"></textarea>
         <button class="btn" type="button" id="bu-save">Save budget</button><div class="msg" id="bu-msg"></div>
         <div id="rep-box" hidden>
-        <h2 class="sec" id="report">Weekly report</h2>
+        <h2 class="sec" id="report" data-group="data">Weekly report</h2>
         <p class="sub">A plain-words page of what got done each week (how long each thing took, how long approvals waited, who approved it, what the AI cost, and what is waiting), to hand to a manager or a client. Measured facts only: no estimates of time saved. No chat and no code.</p>
         <div class="inline-form"><button class="btn ghost" type="button" id="rep-link">Make a private link</button><button class="btn ghost" type="button" id="rep-off" hidden>Turn the link off</button></div>
         <p class="sub wrap-any" id="rep-url"></p>
@@ -462,7 +607,7 @@
         </div>
       </div>
       <div id="tok-box" hidden>
-        <h2 class="sec" id="agents">AI agents</h2>
+        <h2 class="sec" id="agents" data-group="ai">AI agents</h2>
         <p class="sub">Each AI agent (Claude Code on a Pi, a server, your laptop) gets its own token. It posts in this workspace as the username you choose. The token is shown once.</p>
         <div id="tok-list"></div>
         <div class="inline-form"><input id="tok-name" placeholder="Token name, e.g. Pi Claude" maxlength="48" style="flex:1 1 140px"><input id="tok-user" placeholder="agent username" maxlength="24" style="flex:1 1 120px"><button class="btn ghost" id="tok-create">Create token</button></div>
@@ -471,6 +616,7 @@
         <div class="inline-form"><input id="pair-code" inputmode="numeric" placeholder="6-digit code" maxlength="7" style="flex:0 1 120px"><input id="pair-name" placeholder="Name, e.g. Pi Claude" maxlength="48" style="flex:1 1 140px"><input id="pair-user" placeholder="agent username" maxlength="24" style="flex:1 1 140px"><button class="btn ghost" type="button" id="pair-go">Pair</button></div>
         <div class="msg" id="pair-msg"></div>
         <pre id="tok-show" class="code" hidden></pre>
+        <div class="inline-form" id="tok-copy-row" hidden><button class="btn ghost" type="button" id="tok-copy">Copy token</button><button class="btn ghost" type="button" id="tok-reveal">Show</button><span class="meta" id="tok-copied"></span></div>   <!-- T-0320 -->
         <div id="ai-setup" class="sec-block" hidden>
           <h3 class="sub-h">Connect your AI</h3>
           <p class="sub">Pick your model and copy the setup. Your provider API key stays on your machine &mdash; <b>Chamber never sees it</b>.</p>
@@ -507,7 +653,7 @@
         </div>
       </div>
       <div id="auto-box" hidden>
-        <h2 class="sec" id="automation">Automation</h2>
+        <h2 class="sec" id="automation" data-group="rules">Automation</h2>
         <p class="sub">Schedules post a message as you at the set time; mention an agent and it answers like any request ("@server-claude post the patch posture"). Webhooks let another tool post into a room by itself: your build system, GitHub, an alert system or a script sends a short note to a private web address we give you, and it shows up as a message in the room, with an optional instruction for an agent.</p>
         <h3 class="sub-h">Schedules</h3><div id="sch-list"></div>
         <div class="inline-form"><select id="sch-preset" style="flex:0 1 150px"><option value="daily">daily at</option><option value="weekdays">weekdays at</option><option value="hourly">hourly</option><option value="every15">every 15 min</option><option value="cron">custom cron</option></select><input id="sch-time" type="time" value="07:00" style="flex:0 1 110px"><input id="sch-cron" placeholder="30 7 * * 1-5" style="flex:0 1 140px;display:none"><input id="sch-tz" placeholder="time zone" style="flex:0 1 180px"><select id="sch-room" style="flex:0 1 140px"></select></div>
@@ -521,6 +667,58 @@
         <div class="inline-form"><select id="mr-room" style="flex:0 1 140px"></select><select id="mr-kind" style="flex:0 1 120px"><option value="slack">Slack</option><option value="discord">Discord</option><option value="generic">JSON endpoint</option></select><input id="mr-url" type="url" placeholder="https://hooks.slack.com/services/…" style="flex:1 1 260px"><button class="btn ghost" type="button" id="mr-add">Add mirror</button></div>
         <div class="msg" id="mr-msg"></div><pre id="hk-show" class="code" hidden></pre>
       </div>
+      <!-- T-0329: the rest of Settings. Display, rooms and quiet hours, and Advanced were in the app's gear menu; the buttons here open
+           the app's own walkthroughs and windows (/app?open=...). -->
+      <div id="set-extra">
+        <h2 class="sec" id="look" data-group="display">Display</h2>
+        <p class="sub">Saved in this browser, so each phone or computer keeps its own.</p>
+        <div class="set-row"><span class="set-l">Accent colour</span><div id="set-look"></div></div>
+        <div class="set-row"><span class="set-l">Theme</span><div id="set-theme"></div></div>
+        <div class="set-row"><span class="set-l">Text size</span><div class="seg" id="size-mode" role="radiogroup" aria-label="Text size"><button type="button" data-size="small" role="radio" aria-label="Small text">A−</button><button type="button" data-size="normal" role="radio" aria-label="Normal text">A</button><button type="button" data-size="large" role="radio" aria-label="Large text">A+</button></div></div>
+        <div class="set-row"><span class="set-l">Density <small>how much space around each message</small></span><div class="seg" id="density-mode" role="radiogroup" aria-label="Density"><button type="button" data-density="cozy" role="radio">Cozy</button><button type="button" data-density="compact" role="radio">Compact</button></div></div>
+        <div class="set-row"><span class="set-l">Replies <small>in the chat, or folded into a thread</small></span><div class="seg" id="threads-mode" role="radiogroup" aria-label="Threads"><button type="button" data-threads="inline" role="radio">Inline</button><button type="button" data-threads="collapse" role="radio">Collapse threads</button></div></div>
+        <div class="set-row"><span class="set-l">Enter key <small>Auto: a new line on a touch screen, send on a keyboard</small></span><div class="seg" id="enter-mode" role="radiogroup" aria-label="What the Enter key does"><button type="button" data-enter="auto" role="radio">Auto</button><button type="button" data-enter="send" role="radio">Sends</button><button type="button" data-enter="newline" role="radio">New line</button></div></div>
+        <div class="set-row"><span class="set-l">Suggestion buttons <small>the row of ideas above the message box</small></span><div class="seg" id="chips-mode" role="radiogroup" aria-label="Suggestion buttons"><button type="button" data-chips="on" role="radio">On</button><button type="button" data-chips="off" role="radio">Off</button></div></div>
+        <div class="set-row" id="plain-row" hidden><span class="set-l">Plain-language replies <small>for you on every device: agents answering you skip the jargon and say what to do next</small></span><div class="seg" id="plain-mode" role="radiogroup" aria-label="Plain-language replies"><button type="button" data-plain="on" role="radio">On</button><button type="button" data-plain="off" role="radio">Off</button></div></div>
+        <div class="msg" id="disp-msg"></div>
+
+        <h2 class="sec" id="rooms-notify" data-group="notify">Rooms and quiet hours</h2>
+        <p class="sub">What rings your phone, for you on all your devices. Direct messages always reach you, even in a muted room.</p>
+        <div id="nt-rooms"><p class="sub">Loading…</p></div>
+        <h3 class="sub-h" id="quiet">Quiet hours</h3>
+        <div class="nt-q"><label><input type="checkbox" id="nt-quiet-on"> Hold notifications in quiet hours, then send one summary when they end</label>
+          <div id="nt-quiet-fields" hidden><label>From <input type="time" id="nt-quiet-start" value="22:00"></label><label>to <input type="time" id="nt-quiet-end" value="07:00"></label><label>Time zone <input type="text" id="nt-quiet-tz" placeholder="America/New_York"></label></div>
+          <button class="btn ghost" type="button" id="nt-quiet-save">Save quiet hours</button></div>
+        <div class="msg" id="nt-msg"></div>
+        <p class="sub" id="nt-summary"></p>
+        <h3 class="sub-h" id="install-app">Install Chamber</h3>
+        <p class="sub">Put Chamber on your home screen or desktop like an app. On an iPhone, notifications work only after Share, then Add to Home Screen.</p>
+        <button class="btn ghost" type="button" id="set-install">Install Chamber</button>
+
+        <div id="set-ai-walk">
+          <h2 class="sec" data-group="ai">Set up an agent</h2>
+          <p class="sub">Step by step, in the app: install an agent on a server, your laptop or an AI tool you already use, and check that it answers.</p>
+          <div class="stack"><a class="btn ghost" id="set-add-agent" href="/app?open=add-agent">Add an agent</a> <a class="btn ghost" id="set-start" href="/app?open=start" hidden>Getting started</a></div>
+        </div>
+
+        <h2 class="sec" id="chat-history" data-group="data">Chat history</h2>
+        <p class="sub">Archive a room's older messages to free it up. Archived messages can still be read.</p>
+        <div class="set-row"><span class="set-l">Room</span><select id="arc-room" aria-label="Room to archive"><option value="">Loading…</option></select></div>
+        <a class="btn ghost" id="arc-open" href="/app?open=archives">Open its archive</a>
+
+        <div id="routers-box" hidden>
+          <h2 class="sec" data-group="routers">GhostPort routers</h2>
+          <p class="sub">Link your GhostPort fleet so tickets show whether the routers they name are online. Read-only: Chamber cannot send a router commands.</p>
+          <a class="btn ghost" id="set-fleet" href="/app?open=fleet">Link or check routers</a>
+        </div>
+
+        <h2 class="sec" id="advanced" data-group="advanced">Advanced</h2>
+        <div class="set-row" id="adv-terminal" hidden><span class="set-l">Terminal <small>the owner's console: Ask AI and commands on your own machines</small></span><a class="btn ghost sm" href="/app?open=terminal">Open</a></div>
+        <div class="set-row"><span class="set-l">Keyboard shortcuts <small>or press ? in the app</small></span><a class="btn ghost sm" id="set-shortcuts" href="/app?open=shortcuts">Show</a></div>
+        <div class="set-row"><span class="set-l">API reference <small>for scripts and agents</small></span><a class="btn ghost sm" href="/help/api" target="_blank" rel="noopener">Open</a></div>
+        <div class="set-row"><span class="set-l">Help <small>the guide to everything here</small></span><a class="btn ghost sm" href="/help" target="_blank" rel="noopener">Open</a></div>
+        <div class="set-row"><span class="set-l">Source of this version <small>AGPL-3.0: the code this site runs, to download</small></span><a class="btn ghost sm" href="/source">Open</a></div>
+      </div>
       <div class="alt"><a href="#" id="bi-logout">Log out</a></div>
     </div>
   </section>
@@ -529,13 +727,16 @@
 
 <footer role="contentinfo"><div class="wrap">
   <span>© 2026 GhostPort Technologies</span>
-  <span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refunds">Refunds</a> · <a href="/help">Help</a> · <a href="/compare">Compare</a> · <a href="/?topic=question#contact">Contact</a> · <a href="/download">Download</a> · <a href="/changelog">Changelog</a> · <a href="/source">Source code of this version (AGPL-3.0)</a> · <a href="https://github.com/GhostPortTechnologies/Chamber" target="_blank" rel="noopener">GitHub</a> · <a href="https://blog.ghostporttechnologies.com" target="_blank" rel="noopener">Blog</a> · <a href="https://www.ghostporttechnologies.com" target="_blank" rel="noopener">ghostporttechnologies.com</a></span>
+  <span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refunds">Refunds</a> · <a href="/help">Help</a> · <a href="/compare">Compare</a> · <a href="/?topic=question#contact">Contact</a> · <a href="/download">Download</a> · <a href="/changelog">Changelog</a> · <a href="/source">Source code of this version (AGPL-3.0)</a> · <a href="https://github.com/GhostPortTechnologies/Chamber" target="_blank" rel="noopener">GitHub</a> · <a href="https://blog.ghostporttechnologies.com" target="_blank" rel="noopener">Blog</a> · <a href="https://ghostporttechnologies.com/" target="_blank" rel="noopener">ghostporttechnologies.com</a></span>
+  <span>More from GhostPort: <a href="https://ghostporttechnologies.com/" target="_blank" rel="noopener">The router</a> · <a href="https://demo.ghostporttechnologies.com/" target="_blank" rel="noopener">Live demo</a> · <a href="https://shop.ghostporttechnologies.com/" target="_blank" rel="noopener">Shop</a> · <a href="https://tools.ghostporttechnologies.com/" target="_blank" rel="noopener">Privacy test</a> · <a href="https://blog.ghostporttechnologies.com/contact.html" target="_blank" rel="noopener">Support</a></span><!-- T-0256: the same places as the footer on every GhostPort site -->
 </div></footer>
 
 <script src="/theme.js"></script>
+<script src="/screenlock.js"></script>
 <script>
 (() => {
   const $ = id => document.getElementById(id);
+  const sizeText = mb => mb >= 1024 ? `${+(mb / 1024).toFixed(1)} GB` : `${mb} MB`;   // T-0314: 10240 MB shows as 10 GB
   if (window.ChamberTheme) {                                              // 2026-11-13: the same colour (RGB included) and theme as in the app, with a settings wheel to change them here
     ChamberTheme.init({ server: false }); ChamberTheme.wirePref('theme', 'chamber-theme', 'dark', 'theme-mode');
     const menu = $('menu'), gear = $('gear-btn'), openMenu = on => { menu.classList.toggle('open', on); gear.setAttribute('aria-expanded', String(on)); if (on) ChamberTheme.mark(); };
@@ -546,9 +747,99 @@
   const path = location.pathname.replace(/\/$/, '') || '/';
   const joinCode = (path.match(/^\/join\/([A-Za-z0-9_-]{8,})$/) || [])[1] || null;
   const resetToken = (path.match(/^\/reset\/([A-Za-z0-9_-]{8,})$/) || [])[1] || null;
-  const view = joinCode ? '/signup' : resetToken ? '/reset' : ['/signup', '/login', '/billing', '/account', '/forgot'].includes(path) ? (path === '/account' ? '/billing' : path) : '/';
+  const view = joinCode ? '/signup' : resetToken ? '/reset' : ['/signup', '/login', '/billing', '/account', '/settings', '/forgot'].includes(path) ? (['/account', '/settings'].includes(path) ? '/billing' : path) : '/';
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.dataset.view === view));
   if (location.hash && view === '/') setTimeout(() => document.querySelector(location.hash)?.scrollIntoView(), 0);
+  if (view === '/billing') setupSettings();                                 // T-0313
+
+  // T-0313: the Account page as Settings with a menu. Every section heading (and the owner lock box) carries data-group; each
+  // section becomes a card of that group. One group shows at a time: /billing#<group> opens it, /billing#<any id on the page>
+  // opens the group that holds it (links from the app and from emails keep working). Desktop starts on You; a phone starts on
+  // the menu. Nothing moves to another page and no element changes its id.
+  function setupSettings() {
+    const box = $('billing-box'); if (!box || box.classList.contains('set-on')) return;
+    const GROUPS = [['you', 'You', 'sign-in, security, screen lock'], ['display', 'Display', 'colours, text size, Enter key'], ['notify', 'Notifications', 'this device, rooms, quiet hours'],   // T-0329
+      ['team', 'Team', 'workspace, people, invite links'], ['ai', 'AI agents', 'add an agent, usage, budget, rules'], ['rules', 'Rules', 'approvals, GitHub, schedules, webhooks'],
+      ['data', 'Data', 'record, owner lock, chat history, export'], ['billing', 'Billing', 'plan, storage, invoices'], ['routers', 'GhostPort routers', 'router status on tickets'],
+      ['advanced', 'Advanced', 'terminal, shortcuts, API, source']];
+    const ids = GROUPS.map(g => g[0]);
+    const wrap = parent => { let card = null;
+      for (const el of [...parent.children]) {
+        if (el.dataset && el.dataset.group) { card = document.createElement('div'); card.className = 'set-card'; card.dataset.group = el.dataset.group; parent.insertBefore(card, el); card.appendChild(el); continue; }
+        if (el.querySelector && el.querySelector('[data-group]')) { card = null; wrap(el); continue; }
+        if (el.classList && el.classList.contains('alt')) { card = null; continue; }
+        if (card) card.appendChild(el);
+      } };
+    wrap(box);
+    const main = document.createElement('div'); main.id = 'set-main';
+    while (box.firstChild) main.appendChild(box.firstChild);
+    const nav = document.createElement('nav'); nav.id = 'set-nav'; nav.setAttribute('aria-label', 'Settings');
+    nav.innerHTML = '<p class="set-h">Settings</p><input id="set-search" type="search" placeholder="Search settings" aria-label="Search settings" autocomplete="off">'   // T-0329: search
+      + GROUPS.map(([id, name, hint]) => `<button type="button" data-go="${id}"><b>${name}</b><span>${hint}</span></button>`).join('');
+    const none = document.createElement('p'); none.id = 'set-none'; none.className = 'sub'; none.hidden = true;
+    const back = document.createElement('button'); back.type = 'button'; back.id = 'set-back'; back.className = 'btn ghost sm'; back.textContent = '‹ All settings';
+    main.prepend(back, none); box.append(nav, main); box.classList.add('set-on');
+    // T-0329: the page's own colour wheel moves into Display (the same controls, so the same code runs them) and the wheel goes
+    { const look = $('set-look'), mw = document.querySelector('header .menu-wrap');
+      if (look && mw) { ['theme-picker', 'accent-foot', 'accent-name'].forEach(id => { const el = $(id); if (el) look.appendChild(el); }); const tm = $('theme-mode'); if (tm) $('set-theme').appendChild(tm); mw.hidden = true; } }
+    if (window.ChamberTheme) [['size', 'chamber-size', 'normal'], ['density', 'chamber-density', 'cozy'], ['threads', 'chamber-threads', 'inline'], ['enter', 'chamber-enter', 'auto']]
+      .forEach(([k, key, def]) => ChamberTheme.wirePref(k, key, def, k + '-mode'));    // the same browser storage the app reads
+    { const chips = () => { let off = false; try { off = localStorage.getItem('chamber-chips') === 'off'; } catch {}
+        document.querySelectorAll('#chips-mode button').forEach(b => { const on = (b.dataset.chips === 'off') === off; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); }); };
+      document.querySelectorAll('#chips-mode button').forEach(b => b.addEventListener('click', () => { try { if (b.dataset.chips === 'off') localStorage.setItem('chamber-chips', 'off'); else localStorage.removeItem('chamber-chips'); } catch {} chips(); }));
+      chips(); }
+    // groups this person cannot use (their sections are hidden for their role, or switched off) are left out of the menu
+    const offFor = c => { if (c.hidden || c.style.display === 'none' || c.querySelector(':scope > #lock-box[style*="none"]')) return true;
+      for (let e = c.parentElement; e && e !== main; e = e.parentElement) if (e.hidden || e.style.display === 'none') return true; return false; };
+    const sync = () => nav.querySelectorAll('[data-go]').forEach(b => { b.hidden = ![...main.querySelectorAll(`.set-card[data-group="${b.dataset.go}"]`)].some(c => !offFor(c)); });
+    setupSettings.sync = sync; [0, 600, 1800, 4000].forEach(t => setTimeout(sync, t));
+    const search = nav.querySelector('#set-search'); let before = null;
+    const find = () => {
+      const q = search.value.trim().toLowerCase();
+      if (q.length < 2) { none.hidden = true; if (box.dataset.show === 'search') { box.dataset.show = before || ''; if (!before) delete box.dataset.show; route(); } return; }
+      if (box.dataset.show !== 'search') before = box.dataset.show || null;
+      const named = GROUPS.filter(g => (g[1] + ' ' + g[2]).toLowerCase().includes(q)).map(g => g[0]);
+      main.querySelectorAll('.set-card').forEach(c => c.classList.toggle('set-hit', !offFor(c) && (named.includes(c.dataset.group) || c.textContent.toLowerCase().includes(q))));
+      box.dataset.show = 'search'; nav.querySelectorAll('[data-go]').forEach(b => b.setAttribute('aria-current', 'false'));
+      const n = main.querySelectorAll('.set-card.set-hit').length; none.hidden = n > 0; none.textContent = n ? '' : `No setting matches “${search.value.trim()}”.`;
+    };
+    search.addEventListener('input', find);
+    search.addEventListener('keydown', e => { if (e.key === 'Escape') { search.value = ''; find(); } });
+    const phone = () => matchMedia('(max-width: 820px)').matches;
+    const groupOf = id => { let el = null; try { el = id ? document.getElementById(id) : null; } catch {} const c = el && el.closest('.set-card'); return c ? c.dataset.group : null; };
+    const clampLong = () => requestAnimationFrame(() => main.querySelectorAll('.set-card p.sub:not([id]):not(.clamp-seen)').forEach(p => {
+      if (!p.offsetParent || p.textContent.length < 200) return;              // long help only, and only once it shows (it is measured)
+      p.classList.add('clamp-seen', 'clamp');
+      if (p.scrollHeight <= p.clientHeight + 2) { p.classList.remove('clamp'); return; }
+      const m = document.createElement('button'); m.type = 'button'; m.className = 'set-more'; m.textContent = 'More';
+      m.onclick = () => { p.classList.remove('clamp'); m.remove(); }; p.after(m); }));
+    const show = g => {
+      if (search.value) { search.value = ''; none.hidden = true; }                  // T-0329: choosing a group ends a search
+      if (g) box.dataset.show = g; else delete box.dataset.show;
+      if (g === 'display') window.ChamberTheme?.mark();
+      sync();                                                                     // T-0329: a section revealed late (its data came in) puts its group back
+      nav.querySelectorAll('[data-go]').forEach(b => b.setAttribute('aria-current', String(b.dataset.go === g)));
+      clampLong();
+    };
+    setupSettings.show = show;                                               // the page's own code may open a group (an unconfirmed email: Billing)
+    const route = moved => {
+      if (moved && location.href.endsWith('#')) return;                      // a link with href="#" that did not stop itself: stay where we are
+      const h = decodeURIComponent(location.hash.slice(1));
+      if (ids.includes(h)) { show(h); if (moved) window.scrollTo(0, 0); return; }
+      const g = groupOf(h) || (/^(sched|hook)-/.test(h) ? 'rules' : null);
+      if (g) { show(g); setTimeout(() => document.getElementById(h)?.scrollIntoView({ block: 'start' }), 0); return; }
+      const q = location.search;
+      show(/[?&](done|checkout|verified)\b/.test(q) ? 'billing' : /[?&]need2fa\b/.test(q) ? 'you' : phone() ? null : 'you');
+      if (h) [400, 1200, 3000].forEach(t => setTimeout(() => {                   // an element drawn after the page loads (a member, a schedule): look again
+        if (decodeURIComponent(location.hash.slice(1)) !== h) return; const gg = groupOf(h);
+        if (gg && box.dataset.show !== gg) { show(gg); document.getElementById(h)?.scrollIntoView({ block: 'start' }); } }, t));
+    };
+    nav.addEventListener('click', e => { const b = e.target.closest('[data-go]'); if (b) location.hash = b.dataset.go; });
+    back.addEventListener('click', () => { history.pushState(null, '', location.pathname + location.search); route(); window.scrollTo(0, 0); });
+    addEventListener('hashchange', () => route(true));
+    addEventListener('popstate', () => route());
+    route();
+  }
 
   const api = async (url, body) => {
     const r = await fetch(url, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
@@ -565,7 +856,7 @@
 
   const renderNav = () => {
     if (!me) return;
-    $('nav-login').textContent = 'Account'; $('nav-login').href = '/billing';
+    $('nav-login').textContent = 'Settings'; $('nav-login').href = '/settings';   // T-0329
     $('nav-features').hidden = true; $('nav-pricing').hidden = true; if ($('nav-contact')) $('nav-contact').hidden = true;   // T-0092: / redirects signed-in users to /app, so #features/#pricing are dead here
     $('nav-signup').textContent = me.entitled ? 'Open Chamber' : 'Subscribe';
     $('nav-signup').href = me.entitled ? '/app' : '/billing';
@@ -587,28 +878,37 @@
       : me.subStatus ? 'Expired' : 'No subscription yet';
     const tb = me.billing || {}, trialish = (tb.trial || tb.trialOver || tb.free) && !done;      // T-0159; T-0225 the free plan
     $('bi-sub').textContent = tb.trialPending ? 'Open the link we emailed you to start your free trial.'
-      : tb.free ? (tb.isPayer ? 'Free for you alone, with up to 2 AI agents. Subscribe to invite your team and to store files. Nothing was deleted.' : `This workspace is on the free plan, which is for its owner alone. You can read and export; ask ${tb.payer || 'the owner'} to subscribe so you can post again.`)
-      : tb.trial ? 'You are on the free trial. Subscribe any time to keep your team and your files after it ends; on its own it moves to the free plan, for you alone.'
+      : tb.free ? (tb.isPayer ? `Free for up to ${tb.freePeople || 3} people, with 2 AI agents each. Subscribe for a bigger team and to store files. Nothing was deleted.` : tb.access === 'readonly' ? `This workspace is on the free plan, which covers ${tb.freePeople || 3} people: its owner and those who joined first. You can read and export; ask ${tb.payer || 'the owner'} to subscribe so you can post again.` : `This workspace is on the free plan (up to ${tb.freePeople || 3} people). ${tb.payer || 'Its owner'} can subscribe for a bigger team and to store files.`)   // T-0288
+      : tb.trial ? 'You are on the free trial. Subscribe any time to keep your team and your files after it ends; on its own it moves to the free plan, for up to 3 people.'
       : tb.trialOver ? 'Your free trial has ended. Your workspace is read-only until you subscribe. Nothing was deleted.'
       : me.entitled ? 'You have access to Chamber.' : (done ? 'Thanks! Confirming your payment…' : 'Subscribe to enter Chamber.');
     st.innerHTML = `<dt>Username</dt><dd>${esc(me.username)}</dd><dt>Email</dt><dd>${esc(me.email)}</dd>
-      <dt>Plan</dt><dd>${esc(tb.free ? 'Free, for one person' : me.price)}</dd><dt>Status</dt><dd><span class="pill ${me.entitled ? 'on' : 'off'}">${esc(status)}</span></dd>`;
+      <dt>Plan</dt><dd>${esc(tb.free ? `Free, for ${(tb.freePeople || 3) === 1 ? 'one person' : 'up to ' + (tb.freePeople || 3) + ' people'}` : tb.plan === 'company' ? `Company, ${me.price}` : tb.plan === 'team' ? `Team, ${me.price}` : (tb.trial || tb.trialPending) ? 'Free trial, everything included' : me.price)}${tb.founding ? ` <span class="meta">Founding price (number ${tb.founding} of the first 100): you keep ${esc(tb.foundingLabel || 'this price')} for as long as you stay subscribed.</span>` : ''}</dd><dt>Status</dt><dd><span class="pill ${me.entitled ? 'on' : 'off'}">${esc(status)}</span></dd>`;
     act.innerHTML = '';
     const vq = new URLSearchParams(location.search).get('verified');                      // T-0032
     if (vq === '1') act.insertAdjacentHTML('beforeend', '<p class="msg ok">Email confirmed. Thanks!</p>');
     if (vq === '0') act.insertAdjacentHTML('beforeend', '<p class="msg err">That confirmation link is invalid or expired. Use "Resend" below.</p>');
     if (me.needsTotp) act.insertAdjacentHTML('beforeend', '<p class="msg err">You own agent tokens that can read your servers. Turn on <a href="#tf-box">two-factor authentication</a> below.</p>');   // T-0040
     if (me.emailVerified === false) act.insertAdjacentHTML('beforeend', `<p class="msg err" id="vf-box">Confirm your email: we sent a link to <b>${esc(me.email)}</b>. If it is not in your inbox, look in spam. ${me.billing?.trialPending ? 'Your free trial starts when you open that link.' : 'Until then you can use the app but cannot subscribe, invite or create agent tokens.'} <a href="#" id="vf-resend">Resend the link</a></p>`);
+    if (me.emailVerified === false && !location.hash) setupSettings.show?.('billing');   // T-0313: right after sign-up the page must show "Confirm your email" (it is in Billing), also on a phone
     if (me.entitled) act.insertAdjacentHTML('beforeend', me.workspace?.role === 'requester' ? '<a class="btn primary" href="/requests">Your requests</a>' : '<a class="btn primary" href="/app">Open Chamber</a>');   // T-0199
-    if (me.entitled && trialish && tb.isPayer) act.insertAdjacentHTML('beforeend', ' <button class="btn" id="bi-sub-btn">Subscribe: $49 / year</button>');
+    if (me.entitled && !me.selfHosted && ['owner', 'admin'].includes(me.workspace?.role)) act.insertAdjacentHTML('beforeend', '<p class="sub" id="bi-tab-note">Everything about money is in one place: the <a href="/app#billing">Billing tab</a> in the app (plan, monthly or yearly, storage, invoices, cancel).</p>');   // T-0311
+    const pp = me.plans || {}, bothIv = !!(pp.team?.month && pp.team?.year);                       // T-0310: monthly or yearly, then the size
+    const ivNow = () => (document.querySelector('input[name="bi-iv"]:checked') || {}).value || (pp.team?.month ? 'month' : 'year');
+    const ivPick = bothIv ? `<div id="bi-iv" role="radiogroup" aria-label="Pay monthly or yearly"><label><input type="radio" name="bi-iv" value="month" checked> Monthly</label><label><input type="radio" name="bi-iv" value="year"> Yearly (${esc(pp.yearNote || '2 months free')})</label></div>` : '';
+    const subBtns = cls => ivPick + `<button class="btn ${cls}" id="bi-sub-btn" data-plan="team"><span>Team: <span data-iv-for="team">${esc(pp.team?.month || pp.team?.label || '$50 / month')}</span>, up to ${pp.team?.builders || 5} builders</span></button>` + (pp.company ? ` <button class="btn" id="bi-sub-company" data-plan="company"><span>Company: <span data-iv-for="company">${esc(pp.company.month || pp.company.label)}</span>, up to ${pp.company.builders} builders</span></button>` : '');   // T-0295: the owner picks the size
+    if (me.entitled && trialish && tb.isPayer) act.insertAdjacentHTML('beforeend', ' ' + subBtns(''));
     if (me.entitled || tb.trialPending) {}                                            // nothing more to offer: already in, or waiting on the email link
     else if (me.workspace && me.workspace.role !== 'owner') act.insertAdjacentHTML('beforeend', `<p class="msg err">Your workspace's owner (${esc(me.workspace.owner)}) needs an active subscription for you to get in.</p>`);
-    else act.insertAdjacentHTML('beforeend', '<button class="btn primary" id="bi-sub-btn">Subscribe: $49 / year</button>');
+    else act.insertAdjacentHTML('beforeend', subBtns('primary'));
+    if (tb.isPayer && tb.plan && me.plans?.company && me.subStatus === 'active' && !me.cancelAtPeriodEnd) act.insertAdjacentHTML('beforeend', tb.plan === 'team'   // T-0295: change size; the difference is prorated
+      ? ` <span class="inline-form" id="pl-box"><button class="btn ghost" id="pl-up">Move to Company (${esc(me.plans.company[tb.interval || 'year'] || me.plans.company.label)})</button><span id="pl-confirm" hidden><input id="pl-pw" type="password" autocomplete="current-password" placeholder="Your password, to confirm the charge"><button class="btn primary" id="pl-yes">Charge the difference and move</button><button class="btn ghost" id="pl-no">Cancel</button></span></span>`
+      : ` <button class="btn ghost" id="pl-down">Move to Team (${esc(me.plans.team[tb.interval || 'year'] || me.plans.team.label)})</button>`);
     if (me.hasCustomer && !me.selfHosted) act.insertAdjacentHTML('beforeend', '<button class="btn ghost" id="bi-portal">Manage billing / cancel</button>');
     const sg = me.storage;                                                               // storage add-on (only when the server offers it)
     if (sg && (sg.canChange || sg.packs)) {
       const opts = Array.from({ length: sg.maxPacks + 1 }, (_, n) => `<option value="${n}"${n === sg.packs ? ' selected' : ''}>${n === 0 ? 'No extra storage' : '+' + n * sg.packGb + ' GB'}</option>`).join('');
-      act.insertAdjacentHTML('beforeend', `<div id="sg-box"><p class="sub"><b>File storage.</b> Your workspace has ${sg.baseMb} MB for files${sg.packs ? `, plus ${sg.packs * sg.packGb} GB extra` : ''}. Extra storage comes in packs of ${sg.packGb} GB, ${esc(sg.label)} each, shared by everyone in the workspace.</p>`
+      act.insertAdjacentHTML('beforeend', `<div id="sg-box"><p class="sub"><b>File storage.</b> Your workspace has ${sizeText(sg.baseMb)} for files${sg.packs ? `, plus ${sg.packs * sg.packGb} GB extra` : ''}. Extra storage comes in packs of ${sg.packGb} GB, ${esc(sg.label)} each, shared by everyone in the workspace.</p>`
         + (sg.canChange ? `<label for="sg-packs">Extra storage</label><select id="sg-packs">${opts}</select><button class="btn" id="sg-save">Change storage</button>
           <div id="sg-confirm" hidden><p class="sub" id="sg-what"></p><div id="sg-pw-wrap"><label for="sg-pw">Your password, to confirm the charge</label><input id="sg-pw" type="password" autocomplete="current-password"></div>
           <button class="btn primary" id="sg-yes"></button> <button class="btn ghost" id="sg-no">Cancel</button></div>`
@@ -618,7 +918,7 @@
     $('sg-save')?.addEventListener('click', () => {                                        // nothing is sent yet: first say exactly what will happen
       const n = parseInt($('sg-packs').value, 10), up = n > sg.packs;
       if (n === sg.packs) { $('sg-confirm').hidden = true; show($('bi-msg'), 'Pick a different amount first.', 'err'); return; }
-      $('sg-what').textContent = up ? `Add ${(n - sg.packs) * sg.packGb} GB of storage? Your card on file is charged now for the rest of your current year: a part of ${sg.label} for each ${sg.packGb} GB pack. After that it renews with your subscription at ${sg.label} per pack.`
+      $('sg-what').textContent = up ? `Add ${(n - sg.packs) * sg.packGb} GB of storage? Your card on file is charged now for the rest of your current ${sg.period === 'month' ? 'month' : 'year'}: a part of ${sg.label} for each ${sg.packGb} GB pack. After that it renews with your subscription at ${sg.label} per pack.`
         : `Reduce extra storage to ${n * sg.packGb} GB? The unused part of what you paid comes off your next bill. No files are deleted, but nobody can add new files while the workspace is over its limit.`;
       $('sg-pw-wrap').hidden = !up; $('sg-yes').textContent = up ? 'Yes, add it and charge my card' : 'Yes, reduce it'; $('sg-confirm').hidden = false; show($('bi-msg'), ''); if (up) $('sg-pw').focus();
     });
@@ -630,11 +930,19 @@
       try { me = await api('/billing/storage', up ? { packs: n, password: $('sg-pw').value } : { packs: n }); renderBilling(); show($('bi-msg'), 'Storage updated. We sent a confirmation to your email.', 'ok'); }
       catch (err) { show($('bi-msg'), err.message, 'err'); e.target.disabled = false; }
     });
-    $('bi-sub-btn')?.addEventListener('click', async e => {
-      e.target.disabled = true; show($('bi-msg'), 'Opening secure checkout…');
-      try { const d = await api('/billing/checkout', {}); location.href = d.url; }
-      catch (err) { show($('bi-msg'), err.message, 'err'); e.target.disabled = false; }
+    document.querySelectorAll('input[name="bi-iv"]').forEach(r => r.addEventListener('change', () => {   // T-0310: the buttons show the chosen period's price
+      const iv = ivNow(); document.querySelectorAll('[data-iv-for]').forEach(s => { const pl = pp[s.dataset.ivFor]; s.textContent = (pl && (pl[iv] || pl.label)) || ''; }); }));
+    for (const id of ['bi-sub-btn', 'bi-sub-company']) $(id)?.addEventListener('click', async e => {   // T-0295: Team or Company; T-0310: monthly or yearly
+      const b = e.currentTarget; b.disabled = true; show($('bi-msg'), 'Opening secure checkout…');
+      try { const d = await api('/billing/checkout', { plan: b.dataset.plan || 'team', interval: ivNow() }); location.href = d.url; }
+      catch (err) { show($('bi-msg'), err.message, 'err'); b.disabled = false; }
     });
+    $('pl-up')?.addEventListener('click', () => { $('pl-confirm').hidden = false; $('pl-up').hidden = true; $('pl-pw').focus(); });
+    $('pl-no')?.addEventListener('click', () => { $('pl-confirm').hidden = true; $('pl-up').hidden = false; });
+    const movePlan = async (plan, body, btn) => { btn.disabled = true; show($('bi-msg'), 'Changing your plan…');
+      try { me = await api('/billing/plan', { plan, ...body }); renderBilling(); show($('bi-msg'), 'Plan changed. We sent a confirmation to your email.', 'ok'); } catch (err) { show($('bi-msg'), err.message, 'err'); btn.disabled = false; } };
+    $('pl-yes')?.addEventListener('click', e => { if (!$('pl-pw').value) { show($('bi-msg'), 'Type your password to confirm the charge.', 'err'); $('pl-pw').focus(); return; } movePlan('company', { password: $('pl-pw').value }, e.target); });
+    $('pl-down')?.addEventListener('click', e => { if (e.target.dataset.sure !== '1') { e.target.dataset.sure = '1'; e.target.textContent = 'Confirm: move to Team'; show($('bi-msg'), 'Team covers 5 builders and 10 GB of files. The unused part of what you paid comes off your next bill. Click again to confirm.'); return; } movePlan('team', {}, e.target); });
     $('vf-resend')?.addEventListener('click', async e => {                                  // T-0032
       e.preventDefault(); e.target.textContent = 'Sending…';
       try { await api('/account/verify-resend', {}); e.target.textContent = 'Sent again just now. Check your inbox and your spam folder.'; }   // 2026-11-12: say so right where the person tapped
@@ -679,14 +987,14 @@
     const owner = w.role === 'owner'; const canManage = !!w.canManage;                         // T-0034
     if (owner) { $('exp-btn').hidden = false; $('exp-sub').textContent = 'Download everything in your workspace as one JSON file. Deleting your account deletes the workspace, cancels the subscription, and gives each member an empty workspace of their own.'; $('imp-wrap').hidden = false; wireImport(); }
     else $('exp-sub').textContent = 'Deleting your account removes you from this workspace. The workspace and its content belong to its owner.';
-    $('ws-sub').textContent = owner && w.plan === 'free' ? 'You own this workspace. It is on the free plan, which is for you alone.' : owner ? 'You own this workspace. Invite teammates with the link below; they share your subscription.' : `Owned by ${w.owner}. Everything here is private to this workspace.`;
-    $('ws-status').innerHTML = `<dt>Name</dt><dd>${esc(w.name)}${canManage ? ' <a href="#" id="ws-rename">rename</a>' : ''}</dd><dt>Members</dt><dd>${w.seats ? `${w.seats.full} of ${w.seats.maxFull} seats` + (w.seats.guests ? `, plus ${w.seats.guests} viewer${w.seats.guests === 1 ? '' : 's'} or requester${w.seats.guests === 1 ? '' : 's'}` : '') : w.members.length}</dd>`
-      + (canManage && w.plan === 'free' ? `<dt>Invite link</dt><dd>Inviting people is part of the paid plan: on the free plan this workspace is for you alone. <a href="/billing">Subscribe</a> to invite your team.</dd>`   // T-0225
+    $('ws-sub').textContent = owner && w.plan === 'free' ? `You own this workspace. It is on the free plan: up to ${w.freePeople || 3} people, with 2 AI agents each. Invite teammates with the link below.` : owner ? 'You own this workspace. Invite teammates with the link below; they share your subscription.' : `Owned by ${w.owner}. Everything here is private to this workspace.`;
+    $('ws-status').innerHTML = `<dt>Name</dt><dd>${esc(w.name)}${canManage ? ' <a href="#" id="ws-rename">rename</a>' : ''}</dd><dt>Members</dt><dd>${w.seats ? `${w.seats.full} of ${w.seats.maxFull} builder seats` + (w.seats.guests ? `, plus ${w.seats.guests} approver${w.seats.guests === 1 ? '' : 's'}, viewer${w.seats.guests === 1 ? '' : 's'} or requester${w.seats.guests === 1 ? '' : 's'} (no seat used)` : '') : w.members.length}</dd>`
+      + (canManage && w.plan === 'free' ? `<dt>Invite link</dt><dd class="wrap-any"><code id="ws-invite">${esc(w.inviteUrl)}</code><div class="inline-form"><button class="btn ghost sm" id="ws-copy">Copy</button><button class="btn ghost sm" id="ws-reset">New link</button></div><p class="sub meta-block">The free plan covers ${w.freePeople || 3} people in all (${w.members.length} so far). <a href="/billing">Subscribe</a> for up to ${w.seats?.maxFull || 25} people, viewers and clients, and file storage.</p></dd>`   // T-0225; T-0288: the free plan has room for a small team
         : canManage ? `<dt>Invite link</dt><dd class="wrap-any"><code id="ws-invite">${esc(w.inviteUrl)}</code><div class="inline-form"><button class="btn ghost sm" id="ws-copy">Copy</button><button class="btn ghost sm" id="ws-reset">New link</button></div></dd>`
-        + `<dt>Managers and clients</dt><dd>${['viewer', 'requester'].map(r => `<div class="guest-inv"><b>${r === 'viewer' ? 'Viewer link' : 'Requester link'}</b> <span class="meta">${r === 'viewer' ? 'reads everything; approves only if you name them in the approval rules' : 'sends requests and follows only their own'}</span>`
-          + (w.inviteUrls?.[r] ? `<div class="wrap-any"><code>${esc(w.inviteUrls[r])}</code></div><div class="inline-form"><button class="btn ghost sm" data-gcopy="${r}">Copy</button><button class="btn ghost sm" data-gnew="${r}">New link</button><button class="btn ghost sm" data-goff="${r}">Turn off</button></div>` : `<div class="inline-form"><button class="btn ghost sm" data-gnew="${r}">Create link</button></div>`) + '</div>').join('')}<p class="sub meta-block">Viewers and requesters do not use one of your ${w.seats?.maxFull || 25} seats.</p><label class="meta ask-toggle"><input type="checkbox" id="rd-on"${w.requestDrafts !== false ? ' checked' : ''}> When a request arrives, a connected chat agent drafts a plan for it (connector 3.23 or newer). The agent only reads. The draft is a suggestion on the ticket: a person still decides, and the requester never sees it.</label></dd>` : '');   // T-0199
+        + `<dt>Managers and clients</dt><dd>${['approver', 'viewer', 'requester'].map(r => `<div class="guest-inv"><b>${r === 'approver' ? 'Approver link' : r === 'viewer' ? 'Viewer link' : 'Requester link'}</b> <span class="meta">${r === 'approver' ? 'reads everything, approves or rejects tickets, answers an agent that asks, and checks finished work; cannot post or start work' : r === 'viewer' ? 'reads everything; approves only if you make them an approver' : 'sends requests and follows only their own'}</span>`
+          + (w.inviteUrls?.[r] ? `<div class="wrap-any"><code>${esc(w.inviteUrls[r])}</code></div><div class="inline-form"><button class="btn ghost sm" data-gcopy="${r}">Copy</button><button class="btn ghost sm" data-gnew="${r}">New link</button><button class="btn ghost sm" data-goff="${r}">Turn off</button></div>` : `<div class="inline-form"><button class="btn ghost sm" data-gnew="${r}">Create link</button></div>`) + '</div>').join('')}<p class="sub meta-block">Approvers, viewers and requesters do not use one of your ${w.seats?.maxFull || 5} builder seats${w.seats && w.seats.maxGuests === null ? ', and there is no limit on them' : ''}.</p><label class="meta ask-toggle"><input type="checkbox" id="rd-on"${w.requestDrafts !== false ? ' checked' : ''}> When a request arrives, a connected chat agent drafts a plan for it (connector 3.23 or newer). The agent only reads. The draft is a suggestion on the ticket: a person still decides, and the requester never sees it.</label><label class="meta ask-toggle"><input type="checkbox" id="at-on"${w.agentTasks ? ' checked' : ''}> Agents can see the Tasks list, and tick off the tasks you mark "an agent may tick this off". They must say what they checked, and they never add, change or remove tasks. Off: tasks are for people only.</label></dd>` : '');   // T-0199
     const ago = (t) => !t ? 'never active' : (Date.now() - t < 120e3 ? 'active now' : Date.now() - t < 36e5 ? `active ${Math.round((Date.now() - t) / 6e4)} min ago` : Date.now() - t < 864e5 ? `active ${Math.round((Date.now() - t) / 36e5)} h ago` : `active ${Math.round((Date.now() - t) / 864e5)} d ago`);   // T-0034
-    $('ws-members').innerHTML = w.members.map(mm => `<div class="row-item"><span>${esc(mm.username)} <span class="pill ${mm.role === 'owner' ? 'on' : ''}">${mm.role}</span>${mm.chatRole === 'ai' ? ' <span class="pill">ai</span>' : ''} <span class="meta">${ago(mm.lastSeen)}</span></span><span class="row-actions">${owner && mm.role !== 'owner' && mm.chatRole !== 'ai' ? ['admin', 'member', 'viewer', 'requester'].filter(r => r !== mm.role).map(r => `<a href="#" data-role="${esc(mm.username)}" data-to="${r}">make ${r}</a>`).join('') : ''}${owner && ['admin', 'member'].includes(mm.role) && mm.chatRole !== 'ai' ? `<a href="#" data-transfer="${esc(mm.username)}">transfer ownership</a>` : ''}${canManage && mm.role !== 'owner' && (owner || ['member', 'viewer', 'requester'].includes(mm.role)) ? `<a href="#" data-remove="${esc(mm.username)}" class="danger">remove</a>` : ''}</span></div>`).join('');
+    $('ws-members').innerHTML = w.members.map(mm => `<div class="row-item"><span>${esc(mm.username)} <span class="pill ${mm.role === 'owner' ? 'on' : ''}">${mm.role}</span>${mm.chatRole === 'ai' ? ' <span class="pill">ai</span>' : ''} <span class="meta">${ago(mm.lastSeen)}</span></span><span class="row-actions">${owner && mm.role !== 'owner' && mm.chatRole !== 'ai' ? ['admin', 'member', 'approver', 'viewer', 'requester'].filter(r => r !== mm.role).map(r => `<a href="#" data-role="${esc(mm.username)}" data-to="${r}">make ${r}</a>`).join('') : ''}${owner && ['admin', 'member'].includes(mm.role) && mm.chatRole !== 'ai' ? `<a href="#" data-transfer="${esc(mm.username)}">transfer ownership</a>` : ''}${canManage && mm.role !== 'owner' && (owner || ['member', 'approver', 'viewer', 'requester'].includes(mm.role)) ? `<a href="#" data-remove="${esc(mm.username)}" class="danger">remove</a>` : ''}</span></div>`).join('');
     $('ws-actions').innerHTML = owner ? `<label for="ws-ret">Keep messages</label><select id="ws-ret" style="max-width:260px">${[[0, 'forever (default)'], [30, '30 days'], [90, '90 days'], [365, '1 year']].map(([v, l]) => `<option value="${v}" ${(w.retentionDays || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}</select><p class="sub meta-block">Older messages and their files are deleted for good once an hour. Export first if you need them.</p>` : '';   // T-0037
     $('ws-ret')?.addEventListener('change', async e => { try { await api('/account/workspace', { retentionDays: Number(e.target.value) }); show($('ws-msg'), Number(e.target.value) ? `Messages older than ${e.target.value} days will be deleted hourly.` : 'Messages are kept forever.', 'ok'); } catch (err) { show($('ws-msg'), err.message, 'err'); } });
     document.querySelectorAll('[data-role]').forEach(a => a.addEventListener('click', async e => { e.preventDefault();                    // T-0034
@@ -699,6 +1007,7 @@
         try { const d = await api('/account/workspace/transfer', { username: u, password: $('tr-pw').value }); show($('ws-msg'), `${d.owner} now owns this workspace${d.subscriptionMoved ? ' and its subscription' : ''}.`, 'ok'); me = await api('/account/me'); renderBilling(); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }; }));
     $('ws-rename')?.addEventListener('click', async e => { e.preventDefault(); const name = window.prompt ? null : null; const input = document.createElement('input'); input.value = w.name; input.maxLength = 48; e.target.replaceWith(input); input.focus();
       input.addEventListener('keydown', async ev => { if (ev.key === 'Enter') { try { await api('/account/workspace', { name: input.value }); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } } if (ev.key === 'Escape') renderWorkspace(); }); });
+    { const at = $('at-on'); if (at) at.addEventListener('change', async () => { try { await api('/account/workspace', { agentTasks: at.checked }); show($('ws-msg'), at.checked ? 'On: agents can see the Tasks list and tick off the tasks you mark.' : 'Off: tasks are for people only.', 'ok'); } catch (err) { at.checked = !at.checked; show($('ws-msg'), err.message, 'err'); } }); }   // T-0245
     { const rd = $('rd-on'); if (rd) rd.addEventListener('change', async () => { try { await api('/account/workspace', { requestDrafts: rd.checked }); show($('ws-msg'), rd.checked ? 'On: a connected chat agent drafts a plan for each new request.' : 'Off: new requests get no draft.', 'ok'); } catch (err) { rd.checked = !rd.checked; show($('ws-msg'), err.message, 'err'); } }); }   // T-0207
     document.querySelectorAll('[data-gnew]').forEach(b => b.addEventListener('click', async () => { try { await api('/account/workspace/invite-reset', { role: b.dataset.gnew }); show($('ws-msg'), `New ${b.dataset.gnew} link made. An older one no longer works.`, 'ok'); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }));   // T-0199
     document.querySelectorAll('[data-goff]').forEach(b => b.addEventListener('click', async () => { try { await api('/account/workspace/invite-reset', { role: b.dataset.goff, off: true }); show($('ws-msg'), `The ${b.dataset.goff} link is turned off.`, 'ok'); renderWorkspace(); } catch (err) { show($('ws-msg'), err.message, 'err'); } }));
@@ -1038,9 +1347,12 @@
     if (!me || !me.workspace || me.workspace.role !== 'owner') return;
     let d; try { d = await api('/account/workspace/tokens'); } catch { return; }
     $('tok-box').hidden = false;
-    $('tok-list').innerHTML = d.tokens.length ? d.tokens.map(t => `<div class="row-item"><span>${esc(t.name)} <span class="pill">${esc(t.username)}</span><br><small class="meta">${t.lastUsed ? 'last used ' + new Date(t.lastUsed).toLocaleString() : 'never used'}</small><br><label class="meta ask-toggle"><input type="checkbox" data-mayask="${esc(t.id)}"${t.mayAsk ? ' checked' : ''}> may ask to run things (you tap Allow or Deny)</label></span><a href="#" data-revoke="${esc(t.id)}" class="danger">revoke</a></div>`).join('') : '<p class="empty">No agent tokens yet. Create one below, or pair a device with a 6-digit code.</p>';
+    $('tok-list').innerHTML = d.tokens.length ? d.tokens.map(t => `<div class="row-item"><span>${esc(t.name)} <span class="pill">${esc(t.username)}</span><br><small class="meta${!t.lastUsed || Date.now() - t.lastUsed > 30 * 864e5 ? ' key-idle' : ''}">${t.lastUsed ? 'last used ' + new Date(t.lastUsed).toLocaleString() + (Date.now() - t.lastUsed > 30 * 864e5 ? ` (not used for ${Math.floor((Date.now() - t.lastUsed) / 864e5)} days: revoke it if nothing needs it)` : '') : 'never used: revoke it if nothing needs it'}</small><br><label class="meta ask-toggle"><input type="checkbox" data-mayask="${esc(t.id)}"${t.mayAsk ? ' checked' : ''}> may ask to run things (you tap Allow or Deny)</label><br><label class="meta ask-toggle"><input type="checkbox" data-peers="${esc(t.id)}"${t.answersAgents ? ' checked' : ''}> answers questions from other agents (it only reads, and never runs or changes anything because an agent asked)</label></span><a href="#" data-revoke="${esc(t.id)}" class="danger">revoke</a></div>`).join('') : '<p class="empty">No agent tokens yet. Create one below, or pair a device with a 6-digit code.</p>';
     document.querySelectorAll('[data-mayask]').forEach(c => c.addEventListener('change', async () => {   // T-0188
       try { const r = await api('/account/workspace/tokens/ask', { id: c.dataset.mayask, on: c.checked }); show($('tok-msg'), r.mayAsk ? 'This agent may now ask. Each question appears in the room with Allow once and Deny for the people who may approve; no answer means no. It needs connector 3.22 or newer, or ticket worker 1.9 or newer in pull-request mode.' : 'Asking is off for this agent.', 'ok'); }
+      catch (err) { c.checked = !c.checked; show($('tok-msg'), err.message, 'err'); } }));
+    document.querySelectorAll('[data-peers]').forEach(c => c.addEventListener('change', async () => {   // T-0317
+      try { const r = await api('/account/workspace/tokens/peers', { id: c.dataset.peers, on: c.checked }); show($('tok-msg'), r.answersAgents ? 'This agent now answers questions from other agents (at most 6 an hour unless its connector is set otherwise). It only reads; anything that needs doing still needs you or a ticket you approve. It needs connector 3.36 or newer.' : 'This agent no longer answers other agents (it still answers the people who may instruct it).', 'ok'); }
       catch (err) { c.checked = !c.checked; show($('tok-msg'), err.message, 'err'); } }));
     document.querySelectorAll('[data-revoke]').forEach(a => a.addEventListener('click', async e => { e.preventDefault();
       if (a.textContent !== 'confirm revoke') { a.textContent = 'confirm revoke'; return; }
@@ -1061,7 +1373,8 @@
     gemini:   { backend: 'gemini', url: '',                            model: 'gemini-2.0-flash',                       key: 'YOUR_GEMINI_API_KEY' },
     ollama:   { backend: 'ollama', url: 'http://127.0.0.1:11434',      model: 'llama3.1:8b',                            key: '' },
   };
-  let aiTok = '', aiUser = '';
+  let aiTok = '', aiUser = '', aiReveal = false, tokShown = '';
+  const maskKey = k => { k = String(k || ''); return k.length > 12 ? k.slice(0, 8) + '••••••••' : k; };   // T-0320: chk_ab12…•••• on screen
   const renderAiConfig = () => {
     const key = $('ai-provider').value, p = AI_PROVIDERS[key] || AI_PROVIDERS.openai, base = location.origin;
     const rooms = ($('ai-rooms').value || 'general').trim(), cmdr = ($('ai-commander').value || (me && me.username) || 'you').trim();
@@ -1072,7 +1385,7 @@
     L.push('');
     L.push('# 2) Set these, then run it. Your provider key stays HERE; Chamber never sees it.');
     L.push('export CHAMBER_URL=' + base);
-    L.push('export CHAMBER_TOKEN=' + (aiTok || 'chk_your_token'));
+    L.push('export CHAMBER_TOKEN=' + (aiTok ? (aiReveal ? aiTok : maskKey(aiTok)) : 'chk_your_token'));   // T-0320: masked on screen; Copy setup copies the real token
     L.push('export CHAMBER_ROOMS=' + rooms);
     L.push('export CHAMBER_COMMANDERS=' + cmdr);
     if (p.backend === 'claude') {
@@ -1124,13 +1437,20 @@
   ['ai-model', 'ai-url', 'ai-rooms', 'ai-commander', 'ai-folder'].forEach(id => $(id)?.addEventListener('input', renderAiConfig));
   ['ai-phone', 'ai-can'].forEach(id => $(id)?.addEventListener('change', renderAiConfig));
   $('ai-copy')?.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText($('ai-config').textContent); show($('tok-msg'), 'Setup copied to clipboard.', 'ok'); }
-    catch (e) { show($('tok-msg'), 'Select the text below and copy it.', ''); }
+    const real = aiTok ? $('ai-config').textContent.split(maskKey(aiTok)).join(aiTok) : $('ai-config').textContent;   // T-0320: the real token goes to the clipboard
+    try { await navigator.clipboard.writeText(real); show($('tok-msg'), 'Setup copied to clipboard.', 'ok'); }
+    catch (e) { aiReveal = true; renderAiConfig(); show($('tok-msg'), "This browser blocks copying, so the setup is shown in full: select it and copy it, and don't share a screenshot of it.", ''); }
   });
+  $('tok-copy')?.addEventListener('click', async () => {                     // T-0320
+    try { await navigator.clipboard.writeText(tokShown); $('tok-copied').textContent = 'copied ✓'; }
+    catch { $('tok-copied').textContent = 'this browser blocks copying: tap Show and select it'; } });
+  $('tok-reveal')?.addEventListener('click', () => { const t = $('tok-show'), full = t.textContent.includes(tokShown);
+    t.textContent = full ? t.textContent.split(tokShown).join(maskKey(tokShown)) : t.textContent.split(maskKey(tokShown)).join(tokShown); $('tok-reveal').textContent = full ? 'Show' : 'Hide'; });
   $('tok-create')?.addEventListener('click', async () => {
     try {
       const d = await api('/account/workspace/tokens', { name: $('tok-name').value, username: $('tok-user').value });
-      $('tok-show').hidden = false; $('tok-show').textContent = `Token for ${d.username} (copy it now, it will not be shown again):\n\n${d.token}\n\nUse it as:  Authorization: Bearer ${d.token}`;
+      tokShown = d.token; $('tok-show').hidden = false; $('tok-show').textContent = `Token for ${d.username} (copy it now, it will not be shown again):\n\n${maskKey(d.token)}\n\nUse it as:  Authorization: Bearer <the token>\nDon't share screenshots of this page: the token lets anyone post as this agent.`;   // T-0320: never in full on screen
+      $('tok-copy-row').hidden = false;
       $('tok-name').value = ''; $('tok-user').value = ''; show($('tok-msg'), '', ''); renderTokens(); aiSetupShow(d.token, d.username);
     } catch (err) { show($('tok-msg'), err.message, 'err'); }
   });
@@ -1138,12 +1458,14 @@
 
   if (new URLSearchParams(location.search).get('topic') === 'question' && $('ct-topic')) $('ct-topic').value = 'question';   // T-0162
   api('/account/config').then(c => {
-    if (c.storage && $('pr-storage')) { $('pr-storage').textContent = `${c.storage.baseMb} MB of file storage included. Need more? Add ${c.storage.packGb} GB for ${c.storage.label}, whenever you want`; $('pr-storage').hidden = false; }   // storage add-on                                                       // T-0159: say so when the free trial is on
+    if (c.storage && $('pr-storage')) { $('pr-storage').textContent = `${sizeText(c.storage.baseMb)} of file storage included on Team, ${sizeText(c.storage.companyMb || 51200)} on Company.`; $('pr-storage').textContent += ` Need more? Add ${c.storage.packGb} GB for ${c.storage.month || c.storage.label}${c.storage.month && c.storage.year ? ` (${c.storage.year} on a yearly plan)` : ''}, whenever you want`; $('pr-storage').hidden = false; }   // storage add-on                                                       // T-0159: say so when the free trial is on
     if (c.freePlan && $('pr-free')) $('pr-free').hidden = false;                   // T-0225
+    if (c.plans?.company && $('pr-company')) $('pr-company').hidden = false;       // T-0295: Company only where its price is set up
+    if (c.plans && c.plans.foundingLeft > 0 && $('pr-founding')) $('pr-founding').hidden = false;
     if (!c.trialDays) { if (c.inviteRequired && $('ct-sub')) $('ct-sub').textContent = 'A question, or you want to try Chamber and have no invite code? Write to us here. A person reads every message and replies by email.'; return; }
     $('pr-days').textContent = c.trialDays; $('pr-trial').hidden = false;
     if ($('ct-topic')) { $('ct-topic').value = 'question'; $('ct-topic').querySelector('option[value=invite]')?.remove(); $('ct-sub').textContent = 'A question before you start, or something not working? Write to us here. A person reads every message and replies by email.'; }
-    $('su-sub').textContent = c.freePlan ? `The first ${c.trialDays} days include everything. After that it stays free for you alone, or $49 a year for your team. No card needed. Confirm your email and you are in (check spam if the email does not show up).`
+    $('su-sub').textContent = c.freePlan ? `The first ${c.trialDays} days include everything. After that it stays free for up to ${c.freePlan.people || 3} people, or ${c.plans?.team?.label || '$50 / month'} for a team of up to ${c.plans?.team?.builders || 5} builders. No card needed. Confirm your email and you are in (check spam if the email does not show up).`
       : `Free for ${c.trialDays} days. No card needed. Confirm your email and you are in (check spam if the email does not show up).`;
     document.querySelectorAll('a.btn.primary[href="/signup"]').forEach(a => { if (a.id !== 'nav-signup') a.textContent = 'Start free trial'; });
   }).catch(() => {});
@@ -1170,19 +1492,179 @@
       if (mfaToken) d = await api('/account/login/totp', { mfaToken, code: $('li-code').value, remember: $('li-remember').checked });   // T-0040: second step
       else {
         d = await api('/account/login', { email: $('li-email').value, password: $('li-pass').value });
-        if (d.mfa) { mfaToken = d.mfaToken; $('li-mfa').hidden = false; $('li-code').focus(); show($('li-msg'), d.message, ''); busy(e.target, false); return; }
+        if (d.mfa) { mfaToken = d.mfaToken; $('li-mfa').hidden = false; show($('li-msg'), d.message, ''); busy(e.target, false);
+          const canPk = !!(d.passkey && window.ChamberPasskey && window.ChamberPasskey.canPasskey());   // T-0241 (a)
+          $('li-pk').hidden = !canPk; const codeShown = d.totp !== false;
+          $('li-code').hidden = !codeShown; document.querySelector('label[for="li-code"]').style.display = codeShown ? '' : 'none'; e.target.querySelector('button[type=submit]').style.display = codeShown ? '' : 'none';   /* the page styles outrank the hidden attribute on these */
+          if (!codeShown && !canPk) show($('li-msg'), 'This account signs in with a passkey, and this browser cannot use one. Try another browser or device.', 'err');
+          if (codeShown) $('li-code').focus(); else if (canPk) $('li-pk').focus();
+          return; }
       }
       location.href = d.account.entitled ? '/app' : '/billing';
     } catch (err) { show($('li-msg'), err.message, 'err'); busy(e.target, false); if (/expired/i.test(err.message)) { mfaToken = null; $('li-mfa').hidden = true; } }
+  });
+  $('li-pk')?.addEventListener('click', async () => {                                       // T-0241 (a): the second step with a passkey
+    const P = window.ChamberPasskey; $('li-pk').disabled = true; show($('li-msg'), '');
+    try {
+      const o = await api('/account/login/passkey/options', { mfaToken }), pk = o.publicKey;
+      pk.challenge = P.ub(pk.challenge); pk.allowCredentials = (pk.allowCredentials || []).map(c => ({ ...c, id: P.ub(c.id) }));
+      let cred; try { cred = await navigator.credentials.get({ publicKey: pk }); } catch (err) { throw new Error(err && err.name === 'NotAllowedError' ? 'Cancelled, or the device did not allow it.' : 'The device could not use a passkey here.'); }
+      const d = await api('/account/login/passkey', { mfaToken, remember: $('li-remember').checked, id: cred.id, clientDataJSON: P.bu(cred.response.clientDataJSON), authenticatorData: P.bu(cred.response.authenticatorData), signature: P.bu(cred.response.signature) });
+      location.href = d.account.entitled ? '/app' : '/billing';
+    } catch (err) { show($('li-msg'), err.message, 'err'); $('li-pk').disabled = false; if (/expired/i.test(err.message)) { mfaToken = null; $('li-mfa').hidden = true; $('li-code').hidden = false; document.querySelector('label[for="li-code"]').style.display = ''; document.querySelector('#login-form button[type=submit]').style.display = ''; } }
   });
   $('forgot-form')?.addEventListener('submit', async e => { e.preventDefault(); busy(e.target, true); show($('fg-msg'), '');
     try { const d = await api('/account/reset-request', { email: $('fg-email').value }); show($('fg-msg'), d.message, 'ok'); }
     catch (err) { show($('fg-msg'), err.message, 'err'); busy(e.target, false); } });
   $('reset-form')?.addEventListener('submit', async e => { e.preventDefault(); busy(e.target, true); show($('rs-msg'), '');
-    try { const d = await api('/account/reset', { token: resetToken, password: $('rs-pass').value, code: $('rs-code').value || undefined }); location.href = d.account.entitled ? '/app' : '/billing'; }
+    try { const d = await api('/account/reset', { token: resetToken, password: $('rs-pass').value, code: $('rs-code').value || undefined }); if (!d.account) { show($('rs-msg'), d.message, 'ok'); setTimeout(() => { location.href = '/login'; }, 2500); return; } location.href = d.account.entitled ? '/app' : '/billing'; }   // T-0241 (a): passkey sign-in: sign in again with both
     catch (err) { show($('rs-msg'), err.message, 'err'); busy(e.target, false); } });
   $('bi-logout')?.addEventListener('click', async e => { e.preventDefault(); try { await api('/account/logout', {}); } catch {} location.href = '/'; });
 
+  // T-0241: screen lock choices (Security). Stricter saves straight away; weaker asks for the password (the server checks).
+  const renderScreenLock = async () => {
+    const state = d => { $('sl-state').textContent = d.idle || d.reopen ? 'On' : 'Off'; };
+    try { const d = await api('/account/screen-lock'); $('sl-idle').value = String(d.idle); $('sl-reopen').checked = !!d.reopen; $('sl-gap').textContent = d.reopenMinutes || 3; state(d);
+      const r = d.rule || {};                                                                    // T-0241 part 3: weaker than the workspace rule cannot be picked
+      [...$('sl-idle').options].forEach(o => { const v = Number(o.value); o.disabled = !!r.idleMax && (v === 0 || v > r.idleMax); }); $('sl-reopen').disabled = !!r.reopen;
+      const w = [r.idleMax ? `a lock after at most ${r.idleMax} minutes` : '', r.reopen ? 'the lock when coming back' : ''].filter(Boolean).join(' and ');
+      $('sl-rule').hidden = !w; $('sl-rule').textContent = w ? `Your workspace requires ${w}. You can choose something stricter.` : ''; }
+    catch (e) { show($('sl-msg'), e.message, 'err'); }
+    $('sl-form').onsubmit = async ev => {
+      ev.preventDefault(); busy($('sl-form'), true);
+      try { const d = await api('/account/screen-lock', { idle: Number($('sl-idle').value), reopen: $('sl-reopen').checked, password: $('sl-pw').value || undefined });
+        $('sl-pw').value = ''; state(d); show($('sl-msg'), d.idle || d.reopen ? 'Saved. It applies on every device where you are signed in.' : 'Saved. Screen lock is off.'); }
+      catch (err) { show($('sl-msg'), err.message, 'err'); }
+      busy($('sl-form'), false);
+    };
+  };
+  // T-0241 part 3: the owner's rules for everyone (owner only); everyone else sees them where their own choices are.
+  const renderRules = () => {
+    const box = $('sr-box'); if (!box || me?.workspace?.role !== 'owner') return; box.hidden = false;
+    const r = me.security || {};
+    $('sr-idle').value = String(r.idleMax || 0); $('sr-reopen').checked = !!r.reopen; $('sr-days').value = String(r.daysMax || 0); $('sr-2fa').checked = !!r.require2fa; $('sr-recheck').value = String(r.recheckMax || 0);
+    $('sr-2fa').disabled = !me.totp && !r.require2fa; $('sr-2fa-note').textContent = me.totp ? 'People without it are asked to turn it on before they can open the workspace.' : 'Turn on two-factor authentication for yourself first (above).';
+    $('sr-state').textContent = r.idleMax || r.reopen || r.daysMax || r.require2fa || r.recheckMax ? 'On' : 'Off';
+    $('sr-form').onsubmit = async ev => {
+      ev.preventDefault(); busy($('sr-form'), true);
+      try { const d = await api('/account/workspace', { security: { idleMax: Number($('sr-idle').value), reopen: $('sr-reopen').checked, daysMax: Number($('sr-days').value), require2fa: $('sr-2fa').checked, recheckMax: Number($('sr-recheck').value) }, password: $('sr-pw').value || undefined });
+        $('sr-pw').value = ''; me.security = d.security; renderRules(); renderScreenLock(); renderSessions(); renderRecheck(); show($('sr-msg'), 'Saved. The rules apply now, on every device of everyone in the workspace.'); }
+      catch (err) { show($('sr-msg'), err.message, 'err'); }
+      busy($('sr-form'), false);
+    };
+  };
+  // T-0241 part 5: passkeys (shown only where the browser can use them).
+  const renderPasskeys = async () => {
+    const box = $('pk-box'), P = window.ChamberPasskey; if (!box || !P || !P.canPasskey()) return;
+    let d; try { d = await api('/account/passkeys'); } catch { return; } if (!d.available) return; box.hidden = false;
+    $('pk-state').textContent = d.passkeys.length ? String(d.passkeys.length) + (d.login ? ' · asked at sign-in' : '') : 'None';
+    $('pk-login-row').hidden = !d.passkeys.length; $('pk-login').checked = !!d.login; $('pk-login-off').hidden = true;   // T-0241 (a)
+    $('pk-login').onchange = async () => {
+      if ($('pk-login').checked) { try { await api('/account/passkey-login', { on: true }); show($('pk-msg'), 'From now on Chamber asks for your passkey after your password. Other devices were signed out.'); renderPasskeys(); } catch (err) { $('pk-login').checked = false; show($('pk-msg'), err.message, 'err'); } }
+      else { $('pk-login').checked = true; $('pk-login-off').hidden = false; $('pk-login-pw').focus(); }
+    };
+    $('pk-login-save').onclick = async () => { try { await api('/account/passkey-login', { on: false, password: $('pk-login-pw').value }); $('pk-login-pw').value = ''; show($('pk-msg'), 'Chamber no longer asks for the passkey at sign-in.'); renderPasskeys(); } catch (err) { show($('pk-msg'), err.message, 'err'); } };
+    $('pk-list').innerHTML = d.passkeys.map(k => `<div class="row-item"><span>${esc(k.name)} <span class="meta">added ${esc(new Date(k.at).toLocaleDateString())}${k.lastUsed ? ' · last used ' + esc(new Date(k.lastUsed).toLocaleDateString()) : ''}</span></span><span class="row-actions"><a href="#" data-pk="${esc(k.id)}" class="danger">remove</a></span></div>`).join('');
+    $('pk-list').querySelectorAll('[data-pk]').forEach(a => { a.onclick = async e => { e.preventDefault(); if (!confirm('Remove this passkey? It will no longer unlock Chamber.')) return;
+      try { await api('/account/passkeys/remove', { id: a.dataset.pk }); show($('pk-msg'), 'Passkey removed.'); renderPasskeys(); } catch (err) { show($('pk-msg'), err.message, 'err'); } }; });
+    $('pk-add').onclick = async () => {
+      $('pk-add').disabled = true;
+      try { const o = await api('/account/passkeys/options', { kind: 'create' }), pk = o.publicKey;
+        pk.challenge = P.ub(pk.challenge); pk.user.id = P.ub(pk.user.id); pk.excludeCredentials = (pk.excludeCredentials || []).map(c => ({ ...c, id: P.ub(c.id) }));
+        let cred; try { cred = await navigator.credentials.create({ publicKey: pk }); } catch (e) { throw new Error(e && e.name === 'NotAllowedError' ? 'Cancelled, or the device did not allow it.' : e && e.name === 'InvalidStateError' ? 'This device already has a passkey for you here.' : 'This device could not make a passkey.'); }
+        await api('/account/passkeys/add', { name: $('pk-name').value, clientDataJSON: P.bu(cred.response.clientDataJSON), attestationObject: P.bu(cred.response.attestationObject) });
+        $('pk-name').value = ''; show($('pk-msg'), 'Passkey added. You can now unlock Chamber and confirm it is you with it.'); renderPasskeys(); }
+      catch (err) { show($('pk-msg'), err.message, 'err'); }
+      $('pk-add').disabled = false;
+    };
+  };
+  // T-0241 part 4: ask for the password again before sensitive actions.
+  const renderRecheck = async () => {
+    let d; try { d = await api('/account/recheck-settings'); } catch (e) { show($('rc-msg'), e.message, 'err'); return; }
+    $('rc-min').value = String(d.min); $('rc-state').textContent = d.min ? 'On' : 'Off';
+    const mx = d.rule?.recheckMax || 0; [...$('rc-min').options].forEach(o => { const v = Number(o.value); o.disabled = !!mx && (v === 0 || v > mx); });
+    $('rc-rule').hidden = !mx; $('rc-rule').textContent = mx ? `Your workspace requires the password again after at most ${mx} minutes. You can choose more often.` : '';
+    $('rc-form').onsubmit = async ev => {
+      ev.preventDefault(); busy($('rc-form'), true);
+      try { const r = await api('/account/recheck-settings', { min: Number($('rc-min').value), password: $('rc-pw').value || undefined }); $('rc-pw').value = ''; $('rc-state').textContent = r.min ? 'On' : 'Off';
+        show($('rc-msg'), r.min ? `Saved. Chamber asks for your password before sensitive actions when you last entered it more than ${r.min} minutes ago.` : 'Saved. Chamber does not ask again.'); }
+      catch (err) { show($('rc-msg'), err.message, 'err'); }
+      busy($('rc-form'), false);
+    };
+  };
+  const renderNeed2fa = () => {
+    const n = $('tf-need'); if (!n || !me?.security?.require2fa) return; n.hidden = false;
+    n.textContent = me.totp ? 'Your workspace requires two-factor authentication for everyone.' : 'Your workspace requires two-factor authentication. Turn it on below to open the workspace.';
+    if (!me.totp) $('tf-box').scrollIntoView({ block: 'start' });
+  };
+  // T-0241 part 2: signed-in devices (sign out one) and how long a sign-in lasts.
+  const agoText = t => { if (!t) return 'not yet'; const mi = Math.round((Date.now() - t) / 60000); return mi < 1 ? 'just now' : mi < 60 ? `${mi} min ago` : mi < 1440 ? `${Math.round(mi / 60)} h ago` : `${Math.round(mi / 1440)} days ago`; };
+  const renderSessions = async () => {
+    let d; try { d = await api('/account/sessions'); } catch (e) { show($('ss-msg'), e.message, 'err'); return; }
+    const row = 'display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)';
+    $('ss-list').innerHTML = d.sessions.map(s => `<div class="ss-row" style="${row}"><div style="min-width:0"><b>${esc(s.device)}</b>${s.current ? ' <span class="pill">this device</span>' : ''}${s.locked ? ' <span class="pill">locked</span>' : ''}`
+      + `<div class="meta" style="overflow-wrap:anywhere">Last seen ${esc(agoText(s.seen))}${s.ip ? ' · ' + esc(s.ip) : ''} · signed in ${esc(s.created ? new Date(s.created).toLocaleDateString() : 'before 17 Nov')} · ends ${esc(new Date(s.expires).toLocaleDateString())}</div></div>`
+      + `${s.current ? '' : `<button class="btn ghost" type="button" data-sid="${esc(s.id)}">Sign out</button>`}</div>`).join('');
+    $('ss-list').querySelectorAll('button[data-sid]').forEach(b => { b.onclick = async () => {
+      b.disabled = true;
+      try { await api('/account/sessions/revoke', { id: b.dataset.sid }); show($('ss-msg'), 'Signed out that device.'); renderSessions(); }
+      catch (err) { show($('ss-msg'), err.message, 'err'); b.disabled = false; } }; });
+    $('sp-days').value = String(d.policy.days); $('sp-remember').checked = !!d.policy.remember;
+    { const mx = d.rule?.daysMax || 0; [...$('sp-days').options].forEach(o => { o.disabled = !!mx && Number(o.value) > mx; });   // T-0241 part 3
+      $('sp-rule').hidden = !mx; $('sp-rule').textContent = mx ? `Your workspace allows sign-ins of at most ${mx} day${mx === 1 ? '' : 's'}.` : ''; }
+    $('sp-form').onsubmit = async ev => {
+      ev.preventDefault(); busy($('sp-form'), true);
+      try { const r = await api('/account/session-policy', { days: Number($('sp-days').value), remember: $('sp-remember').checked, password: $('sp-pw').value || undefined });
+        $('sp-pw').value = '';
+        show($('sp-msg'), `Saved. New sign-ins last ${r.days} day${r.days === 1 ? '' : 's'}${r.remember ? '' : ' and end when the browser closes'}.` + (r.shortened ? ` ${r.shortened} sign-in${r.shortened === 1 ? '' : 's'} already open now end${r.shortened === 1 ? 's' : ''} sooner.` : ''));
+        renderSessions(); }
+      catch (err) { show($('sp-msg'), err.message, 'err'); }
+      busy($('sp-form'), false);
+    };
+  };
+  // T-0329: what Settings needs beyond the account record. /api/me has the plain-language choice, the routers link and the role;
+  // the rooms come from /api/rooms. Someone who cannot open the app yet (no plan, trial over) gets those rows left out.
+  const NT_LABEL = { all: 'All messages', mentions: 'Mentions & DMs', muted: 'Muted' };
+  const renderSettingsExtra = async () => {
+    const role = me?.workspace?.role || 'member';
+    if (['owner', 'admin'].includes(role)) $('set-start').hidden = false;
+    let am = null; try { const r = await fetch('/api/me'); if (r.ok) am = await r.json(); } catch {}
+    if (am && !am.locked) {
+      const row = $('plain-row'), paint = () => row.querySelectorAll('button').forEach(b => { const on = (b.dataset.plain === 'on') === !!(am.prefs || {}).plain; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); });
+      row.hidden = false; paint();
+      row.querySelectorAll('button').forEach(b => b.addEventListener('click', async () => {
+        try { const d = await api('/api/me/prefs', { plain: b.dataset.plain === 'on' }); am.prefs = d.prefs || {}; paint(); show($('disp-msg'), am.prefs.plain ? 'Saved: agents will answer you in plain language.' : 'Saved: plain-language replies are off.', 'ok'); }
+        catch (e) { show($('disp-msg'), 'Not saved: ' + e.message, 'err'); } }));
+      if (am.fleetLink) $('routers-box').hidden = false;
+      if ((am.wsRole || role) === 'owner') $('adv-terminal').hidden = false;
+    }
+    let rooms = {}; if (am && !am.locked) try { const r = await fetch('/api/rooms'); if (r.ok) rooms = (await r.json()).rooms || {}; } catch {}
+    const list = Object.entries(rooms), nameOf = (k, r) => r.dm ? '@' + (r.dm.find(n => n !== me?.username) || r.dm[0]) : '#' + (r.name || k);
+    let nt = { rooms: {}, quiet: { enabled: false } }; try { const d = await api('/account/notify'); nt = { rooms: d.rooms || {}, quiet: d.quiet || { enabled: false } }; } catch {}
+    const summary = () => { const v = Object.values(nt.rooms), muted = v.filter(l => l === 'muted').length, all = v.filter(l => l === 'all').length, q = nt.quiet || {}, bits = [];
+      bits.push(all ? `${all} room${all > 1 ? 's' : ''} on every message` : 'mentions and direct messages'); if (muted) bits.push(`${muted} muted (direct messages still reach you)`); if (q.enabled) bits.push(`quiet ${q.start}–${q.end} ${q.tz}`);
+      $('nt-summary').textContent = 'You are notified for: ' + bits.join(' · ') + '.'; };
+    $('nt-rooms').innerHTML = list.length ? list.map(([k, r]) => `<div class="set-row nt-room"><span class="set-l">${esc(nameOf(k, r))}</span><select data-room="${esc(k)}" aria-label="Notifications for ${esc(nameOf(k, r))}">`
+      + Object.keys(NT_LABEL).map(l => `<option value="${l}"${l === (nt.rooms[k] || 'mentions') ? ' selected' : ''}>${NT_LABEL[l]}</option>`).join('') + '</select></div>').join('')
+      : `<p class="sub">${am ? 'No rooms yet.' : 'Your rooms show here once you can open the app.'}</p>`;
+    $('nt-rooms').querySelectorAll('select[data-room]').forEach(sel => sel.addEventListener('change', async () => {
+      try { await api('/account/notify', { room: sel.dataset.room, level: sel.value }); if (sel.value === 'mentions') delete nt.rooms[sel.dataset.room]; else nt.rooms[sel.dataset.room] = sel.value; summary(); show($('nt-msg'), `Saved: ${sel.getAttribute('aria-label').replace('Notifications for ', '')} is on ${NT_LABEL[sel.value]}.`, 'ok'); }
+      catch (e) { show($('nt-msg'), 'Not saved: ' + e.message, 'err'); } }));
+    const q = nt.quiet || {}, qOn = $('nt-quiet-on'), qShow = () => { $('nt-quiet-fields').hidden = !qOn.checked; };
+    qOn.checked = !!q.enabled; $('nt-quiet-start').value = q.start || '22:00'; $('nt-quiet-end').value = q.end || '07:00'; $('nt-quiet-tz').value = q.tz || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    qShow(); qOn.addEventListener('change', qShow); summary();
+    $('nt-quiet-save').addEventListener('click', async () => {
+      const body = qOn.checked ? { enabled: true, start: $('nt-quiet-start').value, end: $('nt-quiet-end').value, tz: $('nt-quiet-tz').value.trim() || 'UTC' } : { enabled: false };
+      try { const d = await api('/account/quiet', body); nt.quiet = d.quiet; summary(); show($('nt-msg'), 'Saved: quiet hours ' + (d.quiet?.enabled ? 'on.' : 'off.'), 'ok'); } catch (e) { show($('nt-msg'), 'Not saved: ' + e.message, 'err'); } });
+    const arc = $('arc-room'), arcLink = () => { $('arc-open').href = '/app?open=archives' + (arc.value ? '&room=' + encodeURIComponent(arc.value) : ''); };
+    arc.innerHTML = list.length ? list.map(([k, r]) => `<option value="${esc(k)}">${esc(nameOf(k, r))}</option>`).join('') : '<option value="">the room open in the app</option>';
+    arc.addEventListener('change', arcLink); arcLink();
+    setupSettings.sync?.();
+  };
+  if (view === '/billing') {                                                      // T-0329: Install Chamber from Settings
+    let installEvt = null; addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
+    $('set-install').addEventListener('click', () => { if (installEvt) { installEvt.prompt(); installEvt = null; } else window.open('/help#install', '_blank', 'noopener'); });
+  }
   (async () => {
     await whoami(); renderNav();
     if (view === '/signup' && joinCode) {
@@ -1191,8 +1673,12 @@
     } else if (view === '/signup') { try { const c = await api('/account/config'); if (c.inviteRequired) { $('su-invite-wrap').hidden = false; $('su-invite').required = true; } } catch {} }
     if (view === '/billing') {
       renderBilling(); renderWorkspace(); renderTokens(); renderGithub(); renderPolicy(); renderPush(); renderAutomation();
+      renderScreenLock();                                                                         // T-0241
+      renderSessions();                                                                           // T-0241 part 2
+      renderRules(); renderNeed2fa(); renderRecheck(); renderPasskeys();                          // T-0241 parts 3, 4 and 5
+      renderSettingsExtra();                                                                      // T-0329
       renderTotp();                                                                               // T-0092: was wrongly nested in the password-submit handler, so the 2FA pill stuck on …
-      $('so-all').onclick = async () => { try { const d = await api('/account/logout-all', {}); show($('so-msg'), d.message); } catch (err) { show($('so-msg'), err.message, 'err'); } };   // T-0032
+      $('so-all').onclick = async () => { try { const d = await api('/account/logout-all', {}); show($('so-msg'), d.message); renderSessions(); } catch (err) { show($('so-msg'), err.message, 'err'); } };   // T-0032
       if (me?.logins?.length) $('login-hist').innerHTML = 'Recent sign-ins: ' + me.logins.slice().reverse().map(l => `${esc(new Date(l.at).toLocaleString())} from ${esc(l.ip)}`).join(' · ');
       // Just back from Stripe: the webhook can lag a few seconds, so ask the server to re-check.
       if (me && !me.entitled && new URLSearchParams(location.search).get('done') === '1') {

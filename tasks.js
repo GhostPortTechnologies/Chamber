@@ -42,8 +42,9 @@ function status(task, now) {
 }
 function view(task, now) {                                                       // what the app is sent for one task
   const s = status(task, now);
-  return { id: task.id, title: task.title, every: task.every, day: task.day, tz: task.tz, by: task.by, at: task.at, editedBy: task.editedBy, ...s,
-           streak: streak(task, now) };
+  return { id: task.id, title: task.title, every: task.every, day: task.day, tz: task.tz, by: task.by, at: task.at, editedBy: task.editedBy, agentTick: !!task.agentTick, ...s,
+           ...(task.proposed ? { due: 'proposed' } : {}), proposed: !!task.proposed, confirmedBy: task.confirmedBy || undefined,   // T-0264
+           remindAt: task.remindAt || null, remindAgent: task.remindAgent || null, streak: streak(task, now) };
 }
 function streak(task, now) {                                                     // how many periods in a row, up to the last one, were done
   const have = new Set((task.done || []).map(x => x.p));
@@ -60,7 +61,7 @@ function prevPeriod(every, key) {                                               
   }
   const [y, m] = key.split('-').map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${pad(m - 1)}`;
 }
-function countDue(items, now) { return items.filter(t => ['today', 'late'].includes(status(t, now).due)).length; }
+function countDue(items, now) { return items.filter(t => !t.proposed && ['today', 'late'].includes(status(t, now).due)).length; }   // T-0264: a proposal is not due yet
 // The fields a person may set, checked. Returns { error } or { title, every, day, tz }.
 function clean(b, prev) {
   const title = String(b && b.title != null ? b.title : prev ? prev.title : '').replace(/\s+/g, ' ').trim();
@@ -73,12 +74,18 @@ function clean(b, prev) {
   else if (every === 'month' && !(day >= 1 && day <= 31)) return { error: 'For a monthly task pick a day of the month (1 to 31).' };
   const tz = String((b && b.tz) || (prev && prev.tz) || 'UTC');
   if (!validTz(tz)) return { error: 'Unknown time zone. Use a name like America/Los_Angeles or UTC.' };
-  return { title, every, day, tz };
+  const agentTick = b && b.agentTick != null ? b.agentTick === true : !!(prev && prev.agentTick);   // T-0245: a person allows agents to tick this one off
+  let remindAt = b && b.remindAt !== undefined ? (b.remindAt ? String(b.remindAt) : null) : (prev && prev.remindAt) || null;   // T-0264: remind an agent at HH:MM (the task's time zone)
+  if (remindAt && !/^([01]\d|2[0-3]):[0-5]\d$/.test(remindAt)) return { error: 'The reminder time must look like 09:00 (24-hour clock).' };
+  let remindAgent = b && b.remindAgent !== undefined ? (b.remindAgent ? String(b.remindAgent).replace(/^@/, '').trim().slice(0, 40) : null) : (prev && prev.remindAgent) || null;
+  if (remindAt && !remindAgent) return { error: 'Pick the agent to remind, or leave the reminder time empty.' };
+  if (!remindAt) remindAgent = null;
+  return { title, every, day, tz, agentTick, remindAt, remindAgent };
 }
-function tick(task, by, now) {                                                   // ticked off for this period; false if it already was
+function tick(task, by, now, extra) {                                            // ticked off for this period; false if it already was
   const p = periodOf(task.every, now, task.tz);
   if ((task.done || []).some(x => x.p === p)) return false;
-  (task.done ||= []).push({ p, by, at: now });
+  (task.done ||= []).push({ p, by, at: now, ...(extra && extra.agent ? { agent: true, note: String(extra.note || '').slice(0, 300) } : {}) });   // T-0245: an agent says what it checked
   if (task.done.length > KEEP_DONE) task.done = task.done.slice(-KEEP_DONE);
   return true;
 }
@@ -94,9 +101,19 @@ function sanitize(d) {
     if (!t || !/^[a-f0-9]{8}$/.test(String(t.id))) continue;
     const c = clean(t); if (c.error) continue;
     const done = (Array.isArray(t.done) ? t.done : []).filter(x => x && typeof x.p === 'string' && /^\d{4}-(W\d{2}|\d{2}(-\d{2})?)$/.test(x.p) && Number.isFinite(x.at)).slice(-KEEP_DONE)
-      .map(x => ({ p: x.p, by: String(x.by || '').slice(0, 40), at: x.at }));
-    out.push({ id: t.id, ...c, by: String(t.by || '').slice(0, 40), at: Number.isFinite(t.at) ? t.at : Date.now(), done });
+      .map(x => ({ p: x.p, by: String(x.by || '').slice(0, 40), at: x.at, ...(x.agent ? { agent: true, note: String(x.note || '').slice(0, 300) } : {}) }));
+    out.push({ id: t.id, ...c, by: String(t.by || '').slice(0, 40), at: Number.isFinite(t.at) ? t.at : Date.now(), done, ...(t.proposed ? { proposed: true } : {}), ...(t.confirmedBy ? { confirmedBy: String(t.confirmedBy).slice(0, 40) } : {}) });
   }
   return { items: out };
 }
-module.exports = { EVERY, MAX_TASKS, MAX_TITLE, KEEP_DONE, WEEKDAYS, localParts, isoWeek, periodOf, prevPeriod, status, view, streak, countDue, clean, tick, untick, sanitize, validTz };
+function localMinutes(ts, tz) {                                                  // T-0264: minutes since midnight at ts in tz
+  const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(ts));
+  return (+f.find(x => x.type === 'hour').value) * 60 + (+f.find(x => x.type === 'minute').value);
+}
+function pingDue(task, now) {                                                    // T-0264: should the reminder go out now? Once per period, at or after its time
+  if (task.proposed || !task.remindAt || !task.remindAgent) return false;
+  const s = status(task, now); if (!['today', 'late'].includes(s.due) || task.pinged === s.period) return false;
+  const [h, m] = task.remindAt.split(':').map(Number);
+  return s.due === 'late' || localMinutes(now, task.tz) >= h * 60 + m;
+}
+module.exports = { localMinutes, pingDue, EVERY, MAX_TASKS, MAX_TITLE, KEEP_DONE, WEEKDAYS, localParts, isoWeek, periodOf, prevPeriod, status, view, streak, countDue, clean, tick, untick, sanitize, validTz };

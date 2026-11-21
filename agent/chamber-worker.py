@@ -44,6 +44,11 @@ live-folder mode never asks.
 """
 import os, re, sys, json, time, shutil, subprocess, urllib.request, urllib.error, urllib.parse, fnmatch, base64, threading, uuid, tempfile
 
+# T-0278 (VERIFY-SOP): the worker only reports success after the tests and the health check passed, so it can say so.
+VERIFY_DEPLOYED = ("\nCHECK: the project's tests, then the service health check after the restart"
+                   "\nRESULT: both passed"
+                   "\nFAIL-IF: a test or the health check fails (then the old version is put back and the ticket is released, not closed)")
+
 def _ask_mcp_main():
     """1.9.0 (T-0212): `chamber-worker.py --ask-mcp DIR WAIT_SEC` is the permission helper Claude Code calls (--permission-prompt-tool
     mcp__chamber_ask__ask) when the AI wants to run a command it was not given outright. The same helper as the chat connector's
@@ -830,7 +835,8 @@ def poll_prs(st):
             by = (pr.get("merged_by") or {}).get("login") or "someone"
             try: api("POST", f"/api/tickets/{tid}/pr", {**info, "state": "merged"})
             except Exception as e: log(f"could not mark #{info['number']} merged on {tid}: {e}")
-            ticket("close", tid, note=f"Merged on GitHub by {by}: pull request #{info['number']} ({info['url']}).")
+            ticket("close", tid, note=f"Merged on GitHub by {by}: pull request #{info['number']} ({info['url']})."   # T-0278: how it was checked
+                   f"\nCHECK: GitHub's state for pull request #{info['number']}\nRESULT: merged by {by}\nFAIL-IF: closed without merging (then the ticket goes back to approved)")
             say(f"Done {tid}: pull request #{info['number']} was merged by {by}.")
             with STATE_LOCK: st["prs"].pop(tid, None); st["done"][tid] = "merged"; save_state(st)
         elif pr.get("state") == "closed":
@@ -906,7 +912,7 @@ def main():
                     continue
                 st["done"][tid if ok else key] = "ok" if ok else "failed"; save_state(st)
                 tag = "DECLINED: " if msg.startswith("out of scope") else ("BLOCKED: " if msg.startswith("blocked") else "FAILED: ")
-                if ok: ticket("close", tid, note=msg)
+                if ok: ticket("close", tid, note=msg + VERIFY_DEPLOYED)             # T-0278: say how it was checked
                 elif not ticket("release", tid, note=tag + msg[:900]):          # 1.3.0: never leave a ticket sitting in progress on me
                     ticket("update", tid, note=tag + msg)                        # (older Chamber refuses an agent release: at least record why)
                 if ok or not tag.startswith("DECLINED"): say(("Done " if ok else tag.title().strip(": ") + " ") + tid + ": " + msg)

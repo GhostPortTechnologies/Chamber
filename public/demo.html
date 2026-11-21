@@ -1,117 +1,355 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>try{var h=document.documentElement,l=localStorage;h.dataset.theme=l.getItem('chamber-theme')||'dark'}catch(e){}</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chamber demo</title>
-<meta name="description" content="A look inside Chamber with sample data: a person approves a ticket, an AI agent does the work, and every step is on the record.">
+<meta name="description" content="A look inside Chamber with sample data: an AI agent plans the work, a person approves it, the agent asks before anything risky, the person checks the result, and every step is on a tamper-evident record.">
 <meta name="robots" content="index,follow">
 <meta name="theme-color" content="#0a0d0b">
 <link rel="icon" href="/favicon.ico" sizes="any"><link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
-<meta property="og:title" content="Chamber demo: watch an AI agent finish an approved ticket">
-<meta property="og:description" content="Sample data, no sign-up. See chat, tickets and the run log working together.">
+<meta property="og:title" content="Chamber demo: approve, watch, check, and see the record">
+<meta property="og:description" content="Sample data, no sign-up. Approve an AI agent's plan, answer its question, check its work, then try to tamper with the record or make the agent break the rules.">
 <meta property="og:type" content="website"><meta property="og:image" content="https://chamber.ghostporttechnologies.com/og.png">
 <meta name="twitter:card" content="summary_large_image">
-<!-- T-0161: public demo. Everything on this page is sample data played back in the browser. It talks to no API, reads no
-     workspace, and stores nothing a visitor types. SPDX-License-Identifier: AGPL-3.0-only. Copyright (C) 2026 GhostPort Technologies -->
+<!-- T-0161: public demo. 18 Nov 2026 (boss: "make the demo a little more detailed and convincing"): eight steps instead of five,
+     with the visitor's choices (approve or decline, allow or deny, looks good or send back), a record whose check values are
+     really computed in the browser (so editing an entry really fails the check), and the rules an agent cannot break.
+     Everything is sample data played back in the browser. It talks to no API, reads no workspace, and stores nothing.
+     The only thing it reads is this browser's theme choice (dark / light), set elsewhere in Chamber.
+     Every feature shown exists in Chamber today; the refusal texts are the server's own words.
+     SPDX-License-Identifier: AGPL-3.0-only. Copyright (C) 2026 GhostPort Technologies -->
 <style>
-  :root { --bg: #0a0c0b; --surface: #101412; --surface-2: #161b18; --line: #232a26; --line-strong: #303934; --text: #d8ded9; --dim: #8d978f;
-    --accent: #00ff88; --accent-ink: #04170c; --warn: #ffab40; --info: #6ab0ff; --r: 6px; --r-lg: 10px;
+  :root { --bg: #0a0c0b; --surface: #101412; --surface-2: #161b18; --surface-3: #1c221e; --line: #232a26; --line-strong: #303934; --text: #d8ded9; --dim: #8d978f; --faint: #5f6964;
+    --accent-pick: #00ff88; --accent: var(--accent-pick); --accent-ink: #04170c; --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent);
+    --warn: #ffab40; --info: #6ab0ff; --danger: #ff6b6b; --r: 6px; --r-lg: 10px;
     --mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  @media (prefers-color-scheme: light) { :root { --bg: #f4f7f5; --surface: #fff; --surface-2: #eef2ef; --line: #dbe2de; --line-strong: #c2ccc6; --text: #182019; --dim: #566159; --accent: #00804a; --accent-ink: #fff; --warn: #a35f00; --info: #1e5fb3; } }
+  :root[data-theme=light] { --bg: #f4f7f5; --surface: #fff; --surface-2: #eef2ef; --surface-3: #e4e9e6; --line: #dbe2de; --line-strong: #c2ccc6; --text: #182019; --dim: #566159; --faint: #7a847e;
+    --accent: color-mix(in srgb, var(--accent-pick) 50%, #000); --accent-ink: #fff; --warn: #a35f00; --info: #1e5fb3; --danger: #c62828; color-scheme: light; }
+  @media (prefers-color-scheme: light) { :root[data-theme=system] { --bg: #f4f7f5; --surface: #fff; --surface-2: #eef2ef; --surface-3: #e4e9e6; --line: #dbe2de; --line-strong: #c2ccc6; --text: #182019; --dim: #566159; --faint: #7a847e;
+    --accent: color-mix(in srgb, var(--accent-pick) 50%, #000); --accent-ink: #fff; --warn: #a35f00; --info: #1e5fb3; --danger: #c62828; color-scheme: light; } }
+  :root[data-theme=contrast] { --bg: #000; --surface: #000; --surface-2: #121212; --surface-3: #1c1c1c; --line: #5a5a5a; --line-strong: #808080; --text: #fff; --dim: #d6d6d6; --faint: #b8b8b8; }
   * { box-sizing: border-box; } html, body { margin: 0; }
   body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
   a { color: var(--accent); }
   .bar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--surface); }
   .brand { font-weight: 700; letter-spacing: .14em; color: var(--accent); text-decoration: none; } .brand small { color: var(--dim); font-weight: 400; letter-spacing: 0; margin-left: 6px; }
-  .btn { display: inline-block; padding: 8px 14px; border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); background: transparent; text-decoration: none; font: inherit; cursor: pointer; min-height: 38px; }
+  .bar nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; padding: 8px 14px; border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); background: transparent; text-decoration: none; font: inherit; cursor: pointer; min-height: 38px; }
+  .btn:hover { border-color: var(--accent); } .btn:disabled { opacity: .5; cursor: default; }
   .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  .btn.no { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
+  .btn.done { border-color: var(--accent); color: var(--accent); }
   .note { margin: 0; padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--line); color: var(--dim); font-size: 13px; }
   .note b { color: var(--warn); font-weight: 600; }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 16px; }
-  .step { margin: 4px 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--r); background: var(--surface); min-height: 62px; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 16px; }
+  .rail { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0 0 10px; padding: 0; counter-reset: s; }
+  .rail li { counter-increment: s; font-size: 12px; color: var(--faint); padding: 3px 9px 3px 7px; border: 1px solid var(--line); border-radius: 999px; }
+  .rail li::before { content: counter(s) " "; font-family: var(--mono); }
+  .rail li.past { color: var(--dim); border-color: var(--line-strong); } .rail li.now { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .step { margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--r); background: var(--surface); }
   .step .n { color: var(--accent); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; } .step p { margin: 2px 0 0; font-size: 15px; }
-  .grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; } @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+  .choice { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; } .choice:empty { display: none; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 14px; } @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
   .pane { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; min-width: 0; }
-  .pane h2 { margin: 0; padding: 9px 12px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 8px; }
-  .chat { padding: 10px 12px; height: 330px; overflow-y: auto; font-family: var(--mono); font-size: 13px; }
-  .m { margin: 0 0 9px; overflow-wrap: anywhere; animation: in .25s ease-out; } .m .t { color: var(--dim); } .m .u { color: var(--info); font-weight: 600; } .m .u.ai { color: var(--accent); }
-  .tag { display: inline-block; font-size: 10px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--dim); margin-left: 4px; vertical-align: 1px; font-family: system-ui, sans-serif; }
+  .pane h2 { margin: 0; padding: 9px 12px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; font-weight: 600; }
+  .chat { padding: 10px 12px; height: 430px; overflow-y: auto; font-family: var(--mono); font-size: 13px; } @media (max-width: 860px) { .chat { height: 300px; } }
+  .m { margin: 0 0 10px; overflow-wrap: anywhere; animation: in .25s ease-out; } .m .t { color: var(--faint); } .m .u { color: var(--info); font-weight: 600; } .m .u.ai { color: var(--accent); }
+  .m.sys { color: var(--dim); font-style: italic; } .m.refused { color: var(--danger); } .m.refused b { font-style: normal; }
+  .tag { display: inline-block; font-size: 10px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--dim); margin-left: 4px; vertical-align: 1px; font-family: system-ui, sans-serif; font-style: normal; }
   @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  @media (prefers-reduced-motion: reduce) { .m, .card, .log div { animation: none !important; } }
-  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 10px; } @media (max-width: 480px) { .cols { grid-template-columns: 1fr; } }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 4px var(--accent-soft); } }
+  .choice .btn.primary, .act .btn.primary { animation: pulse 1.6s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .m, .card, .log div, .rec-row, .choice .btn, .act .btn { animation: none !important; } }
+  .tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--line); }
+  .tabs button { flex: 1 0 auto; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--dim); font: inherit; font-size: 13px; padding: 10px 12px; cursor: pointer; }
+  .tabs button[aria-selected=true] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  .tabs button .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-left: 5px; vertical-align: 1px; }
+  .view { padding: 12px; min-height: 380px; } .view[hidden] { display: none; }
+  .phone { width: 100%; max-width: 300px; margin: 6px auto; border: 2px solid var(--line-strong); border-radius: 28px; padding: 14px 12px 20px; background: var(--bg); min-height: 340px; }
+  .phone .sb { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); padding: 0 8px 12px; font-family: var(--mono); }
+  .phone .idle { color: var(--faint); text-align: center; margin-top: 90px; font-size: 13px; padding: 0 10px; }
+  .notif { border: 1px solid var(--line-strong); border-radius: 14px; padding: 10px 12px; background: var(--surface-2); animation: in .25s ease-out; margin-bottom: 10px; overflow-wrap: anywhere; }
+  .notif .app { font-size: 11px; color: var(--dim); letter-spacing: .06em; text-transform: uppercase; } .notif .ttl { font-weight: 600; margin: 3px 0; } .notif .sub { font-size: 13px; color: var(--dim); }
+  .notif code, .card code { font-family: var(--mono); font-size: 12px; background: var(--surface-3); padding: 0 4px; border-radius: 4px; }
+  .act { display: flex; gap: 8px; margin-top: 10px; } .act .btn { flex: 1; } .act:empty { display: none; }
+  .answered { font-size: 12px; color: var(--accent); margin-top: 8px; } .answered.no { color: var(--danger); }
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; } @media (max-width: 520px) { .cols { grid-template-columns: minmax(0, 1fr); } }
   .col h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
-  .card { border: 1px solid var(--line-strong); border-radius: var(--r); padding: 8px 9px; background: var(--bg); margin-bottom: 8px; font-size: 13px; animation: in .25s ease-out; overflow-wrap: anywhere; }
-  .card .id { font-family: var(--mono); color: var(--dim); font-size: 12px; } .card.hot { border-color: var(--accent); }
-  .card button { margin-top: 7px; width: 100%; }
-  .slot { min-height: 54px; }
-  .log { margin: 0 10px 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); font-family: var(--mono); font-size: 12px; min-height: 120px; }
-  .log div { animation: in .25s ease-out; margin-bottom: 3px; overflow-wrap: anywhere; } .log .ok { color: var(--accent); } .log .h { color: var(--dim); }
-  .foot { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-top: 16px; }
-  .facts { color: var(--dim); font-size: 13px; margin: 18px 0 0; padding-left: 18px; } .facts li { margin-bottom: 4px; }
+  .slot { min-height: 60px; border: 1px dashed var(--line); border-radius: var(--r); padding: 4px; }
+  .card { border: 1px solid var(--line-strong); border-radius: var(--r); padding: 8px 9px; background: var(--bg); font-size: 13px; animation: in .25s ease-out; overflow-wrap: anywhere; }
+  .card .id { font-family: var(--mono); color: var(--dim); font-size: 12px; } .card.hot { border-color: var(--accent); } .card.gone { opacity: .6; }
+  .card ol { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--dim); }
+  .plan { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); font-size: 13px; }
+  .plan h4 { margin: 0 0 4px; font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; } .plan ol { margin: 0; padding-left: 18px; } .plan p { margin: 6px 0 0; color: var(--dim); }
+  .log { padding: 9px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); font-family: var(--mono); font-size: 12px; min-height: 200px; }
+  .log div { animation: in .25s ease-out; margin-bottom: 4px; overflow-wrap: anywhere; } .log .ok::before { content: "✓ "; color: var(--accent); } .log .bad::before { content: "✗ "; color: var(--danger); } .log .wait::before { content: "… "; color: var(--warn); } .log .h { color: var(--faint); }
+  .meta { margin-top: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--faint); overflow-wrap: anywhere; }
+  .rv { border: 1px solid var(--line-strong); border-radius: var(--r); padding: 10px 12px; background: var(--bg); overflow-wrap: anywhere; }
+  .rv .closenote { margin: 6px 0 0; padding: 8px 10px; border-left: 2px solid var(--accent); background: var(--surface-2); font-size: 13px; white-space: pre-line; }
+  .empty { color: var(--faint); font-size: 13px; }
+  .rec { font-family: var(--mono); font-size: 12px; }
+  .rec-row { display: grid; grid-template-columns: 2.2em 3.4em minmax(0, 1fr) auto; gap: 2px 8px; padding: 5px 4px; border-bottom: 1px solid var(--line); animation: in .25s ease-out; align-items: baseline; }
+  .rec-row .what { overflow-wrap: anywhere; } .rec-row .hv { color: var(--faint); grid-column: 3 / 5; font-size: 11px; overflow-wrap: anywhere; } .rec-row .st { min-width: 1.2em; text-align: right; }
+  .rec-row.bad { background: color-mix(in srgb, var(--danger) 12%, transparent); } .rec-row.bad .st { color: var(--danger); } .rec-row.ok .st { color: var(--accent); }
+  .rec-row.changed .what { color: var(--warn); }
+  .rec-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 6px; }
+  .verdict { margin: 6px 0; font-size: 13px; padding: 8px 10px; border-radius: var(--r); background: var(--surface-2); } .verdict.ok { border-left: 3px solid var(--accent); } .verdict.bad { border-left: 3px solid var(--danger); } .verdict:empty { display: none; }
+  .caveat { color: var(--faint); font-size: 12px; margin: 8px 0 0; }
+  .foot { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-top: 16px; } .foot span { display: flex; flex-wrap: wrap; gap: 8px; }
+  .facts { color: var(--dim); font-size: 13px; margin: 18px 0 0; padding-left: 18px; } .facts li { margin-bottom: 5px; }
 </style>
 </head>
 <body>
 <div class="bar"><a class="brand" href="/">CHAMBER <small>demo</small></a>
-  <span><a class="btn" href="/">What is Chamber?</a> <a class="btn primary" href="/signup">Create account</a></span></div>
+  <nav><a class="btn" href="/">What is Chamber?</a> <a class="btn" href="/compare">Compare</a> <a class="btn primary" href="/signup">Create account</a></nav></div>
 <p class="note"><b>Demo with sample data.</b> This is a recording played in your browser. Nothing here is a real workspace, and nothing you do on this page is sent or saved.</p>
 <div class="wrap">
-  <div class="step" aria-live="polite"><div class="n" id="st-n">Step 1 of 5</div><p id="st-t">Press Play to watch one ticket go from an idea to finished work.</p></div>
+  <ol class="rail" id="rail" aria-label="Steps"></ol>
+  <div class="step"><div class="n" id="st-n" aria-live="polite">8 steps · about 2 minutes</div><p id="st-t" aria-live="polite">Press Play. You make the choices a person makes in Chamber: approve the plan, answer the agent's question, check the work. Then try to tamper with the record.</p><div class="choice" id="choice"></div></div>
   <div class="grid">
-    <div class="pane"><h2><span># general</span><span id="who">3 online: 1 person, 2 agents</span></h2><div class="chat" id="chat"></div></div>
-    <div class="pane"><h2><span>Tickets</span><span>T-0231</span></h2>
-      <div class="cols">
-        <div class="col"><h3>Proposed</h3><div class="slot" id="c-proposed"></div></div>
-        <div class="col"><h3>In progress</h3><div class="slot" id="c-progress"></div></div>
-        <div class="col"><h3>Done</h3><div class="slot" id="c-done"></div></div>
+    <section class="pane" aria-label="Chat"><h2><span># ops</span><span>maria (you) · server-agent</span></h2><div class="chat" id="chat"></div></section>
+    <section class="pane" aria-label="What Chamber shows">
+      <div class="tabs" role="tablist" id="tabs">
+        <button role="tab" data-v="phone" aria-selected="true">Phone</button><button role="tab" data-v="tickets" aria-selected="false">Tickets</button><button role="tab" data-v="run" aria-selected="false">Run log</button><button role="tab" data-v="reviews" aria-selected="false">Reviews</button><button role="tab" data-v="record" aria-selected="false">Record</button>
       </div>
-      <h2><span>Run log</span><span>what the agent did</span></h2>
-      <div class="log" id="log"><div class="h">Nothing yet. An agent may only start after a person approves.</div></div>
-    </div>
+      <div class="view" id="v-phone" role="tabpanel"><div class="phone"><div class="sb"><span id="ph-clock">14:02</span><span>maria's phone</span></div><div id="phone-body"><div class="idle">Chamber sends a notification when an agent needs a person.</div></div></div></div>
+      <div class="view" id="v-tickets" role="tabpanel" hidden>
+        <div class="cols"><div class="col"><h3>Proposed</h3><div class="slot" id="c-proposed"></div></div><div class="col"><h3>In progress</h3><div class="slot" id="c-progress"></div></div><div class="col"><h3>Done</h3><div class="slot" id="c-done"></div></div></div>
+        <div class="plan" id="plan" hidden><h4>T-0231 · the agent's plan</h4><ol><li>Change the warning in <code>check-cert.sh</code> from 7 to 14 days.</li><li>Add a test for the 14-day line.</li><li>Restart <code>certcheck</code> so the change takes effect (it will ask first).</li></ol><p>Risk: low. Undo: put 7 back and restart. Rooms it touches: #ops only.</p></div>
+      </div>
+      <div class="view" id="v-run" role="tabpanel" hidden><div class="log" id="log"><div class="h">Nothing yet. An agent may only start after a person approves.</div></div><div class="meta" id="meta"></div></div>
+      <div class="view" id="v-reviews" role="tabpanel" hidden><div id="rv"><p class="empty">To check: nothing yet. Finished agent work lands here for a person to check.</p></div></div>
+      <div class="view" id="v-record" role="tabpanel" hidden>
+        <div class="rec" id="rec"><p class="empty">The activity record fills as things happen. Every entry carries a check value made from the entry and the one before it.</p></div>
+        <div class="verdict" id="verdict" aria-live="polite"></div>
+        <div class="rec-tools" id="rec-tools" hidden>
+          <button class="btn" type="button" id="r-check">Check the record</button>
+          <button class="btn no" type="button" id="r-edit">Edit an entry behind Chamber's back</button>
+          <button class="btn no" type="button" id="r-hide" hidden>Also recompute its check value</button>
+          <button class="btn" type="button" id="r-undo" hidden>Put it back</button>
+        </div>
+        <p class="caveat">The check catches an entry that was changed or removed. It cannot stop someone with full control of the server from rewriting the whole chain, so keep a copy of the check value your account page shows (or of an export) somewhere else.</p>
+      </div>
+    </section>
   </div>
-  <div class="foot"><span><button class="btn primary" id="play" type="button">Play</button> <button class="btn" id="restart" type="button">Start over</button></span>
+  <div class="foot"><span><button class="btn primary" id="play" type="button">Play</button> <button class="btn" id="restart" type="button">Start over</button> <button class="btn" id="skip" type="button">Skip to the record</button></span>
     <a class="btn" href="/signup">Try it with your own team</a></div>
   <ul class="facts">
-    <li>The agent runs on the machine you install it on, with your own AI account. Your AI key stays on that machine.</li>
-    <li>An agent ticket is only worked after a person approves it. Closing needs a note, so the record stays honest.</li>
+    <li>The agent runs on a machine you choose, with your own AI account (Claude Code, Codex, or a model you run yourself). Your AI key stays on that machine.</li>
+    <li>It reads nothing on that machine until you attach a folder.</li>
+    <li>Only a person approves a ticket. An agent that tries is refused, and the attempt goes on the record.</li>
+    <li>An agent closes a ticket only with a note that names each item, the check it ran, what that showed, and what would have meant no. Finished work then waits in Reviews until a person checks it.</li>
+    <li>When the agent wants to do something risky in the middle of the work, it asks first. No answer counts as no.</li>
     <li>No ads, no trackers, no analytics. Open source under the AGPL.</li>
   </ul>
 </div>
+<script src="/theme.js"></script><script>window.ChamberTheme && ChamberTheme.init({ server: false });</script>
 <script>
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-  const say = (t, u, ai, text) => { const m = el('div', 'm'); m.append(el('span', 't', t + ' '), el('span', 'u' + (ai ? ' ai' : ''), u)); if (ai) m.append(el('span', 'tag', 'agent')); m.append(document.createTextNode(' ' + text)); $('chat').append(m); $('chat').scrollTop = 1e6; };
-  const card = (where, status, hot) => { ['c-proposed', 'c-progress', 'c-done'].forEach(i => $(i).replaceChildren()); const c = el('div', 'card' + (hot ? ' hot' : '')); c.append(el('div', 'id', 'T-0231 · for an agent'), el('div', '', 'Renew the TLS certificate check and add a 14-day warning'), el('div', 'id', status)); $(where).append(c); return c; };
-  const log = (text, cls) => { if ($('log').firstChild && $('log').firstChild.className === 'h') $('log').replaceChildren(); $('log').append(el('div', cls || '', text)); };
-  const step = (n, t) => { $('st-n').textContent = 'Step ' + n + ' of 5'; $('st-t').textContent = t; };
-  let timers = [], waiting = null;
-  const later = (ms, fn) => timers.push(setTimeout(fn, ms));
-  const reset = () => { timers.forEach(clearTimeout); timers = []; waiting = null; $('chat').replaceChildren(); ['c-proposed', 'c-progress', 'c-done'].forEach(i => $(i).replaceChildren());
-    $('log').replaceChildren(el('div', 'h', 'Nothing yet. An agent may only start after a person approves.')); step(1, 'Press Play to watch one ticket go from an idea to finished work.'); $('play').disabled = false; $('play').textContent = 'Play'; };
-  const afterApprove = () => {
-    step(3, 'Approved by a person. Only now may the agent start. It claims the ticket and works on its own server.');
-    say('14:05', 'maria', false, 'approved T-0231');
-    card('c-progress', 'approved by maria · claimed by server-agent', true);
-    later(900, () => log('claimed; starting work in a separate copy of the code'));
-    later(2100, () => log('changed check-cert.sh: warn at 14 days (was 7)'));
-    later(3300, () => log('tests: 22 passed, 0 failed'));
-    later(4500, () => { log('backup made, change deployed, service restarted'); step(4, 'Every step the agent takes is written to the run log. If the health check fails, it puts the old version back.'); });
-    later(5900, () => log('health check passed', 'ok'));
-    later(7100, () => { card('c-done', 'closed by server-agent with a note', false); say('14:09', 'server-agent', true, 'Done T-0231: the certificate check now warns 14 days ahead. Tests pass, health check passed.'); step(5, 'Done, with a note and a full record. That is Chamber: you decide, your AI does the work, and nothing happens off the record.'); $('play').textContent = 'Finished'; });
+  const SPEED = Math.min(50, Math.max(1, parseInt(new URLSearchParams(location.search).get('speed'), 10) || 1));   // ?speed=20 for the automatic page check
+  const STEPS = ['Ask', 'Plan', 'Approve', 'Work', 'It asks first', 'Check', 'Record', 'Rules'];
+  const ZERO = '0'.repeat(64), HAS_HASH = !!(window.crypto && crypto.subtle && window.TextEncoder);
+  let timers = [], gen = 0, rec = [], tamper = null, clock = 14 * 60 + 2, sentBack = false, approveN = 0;
+
+  // ---- small helpers ----
+  const later = (ms, fn) => { const g = gen; timers.push(setTimeout(() => { if (g === gen) fn(); }, ms / SPEED)); };
+  const now = (add) => { clock += add || 0; const t = String(Math.floor(clock / 60)).padStart(2, '0') + ':' + String(clock % 60).padStart(2, '0'); $('ph-clock').textContent = t; return t; };
+  const rail = i => { $('rail').replaceChildren(...STEPS.map((s, k) => { const li = el('li', k + 1 < i ? 'past' : k + 1 === i ? 'now' : '', s); if (k + 1 === i) li.setAttribute('aria-current', 'step'); return li; })); };
+  const step = (i, text) => { $('st-n').textContent = `Step ${i} of 8 · ${STEPS[i - 1]}`; $('st-t').textContent = text; rail(i); };
+  const show = v => { document.querySelectorAll('#tabs button').forEach(b => { const on = b.dataset.v === v; b.setAttribute('aria-selected', String(on)); if (on) { const d = b.querySelector('.dot'); if (d) d.remove(); } });
+    document.querySelectorAll('.view').forEach(x => { x.hidden = x.id !== 'v-' + v; }); };
+  const ping = v => { const b = document.querySelector(`#tabs button[data-v="${v}"]`); if (b && b.getAttribute('aria-selected') !== 'true' && !b.querySelector('.dot')) b.append(el('span', 'dot')); };
+  const say = (who, text, opts) => { const o = opts || {}; const m = el('div', 'm' + (o.cls ? ' ' + o.cls : ''));
+    if (o.cls === 'sys' || o.cls === 'refused') { m.append(el('span', 't', now() + ' ')); if (o.bold) m.append(el('b', '', o.bold + ' ')); m.append(document.createTextNode(text)); }
+    else { const ai = who !== 'maria'; m.append(el('span', 't', now(o.add || 0) + ' '), el('span', 'u' + (ai ? ' ai' : ''), who)); if (ai) m.append(el('span', 'tag', 'agent')); m.append(document.createTextNode(' ' + text)); }
+    $('chat').append(m); $('chat').scrollTop = 1e6; };
+  const log = (text, cls) => { if ($('log').firstChild && $('log').firstChild.className === 'h') $('log').replaceChildren(); $('log').append(el('div', cls || '', text)); ping('run'); };
+  // buttons for a choice: shown under the step text and, when given, inside the view where the person would tap them
+  const choose = (opts, viewBox) => {
+    const boxes = [$('choice')].concat(viewBox ? [viewBox] : []);
+    const clear = () => boxes.forEach(b => b.replaceChildren());
+    clear();
+    for (const box of boxes) for (const o of opts) { const b = el('button', 'btn' + (o.primary ? ' primary' : '') + (o.no ? ' no' : ''), o.label); b.type = 'button';
+      b.addEventListener('click', () => { if (!o.keep) clear(); o.go(b); }); box.append(b); }
   };
-  const play = () => {
-    $('play').disabled = true; $('play').textContent = 'Playing';
-    step(1, 'A person asks for something in the room, in plain words.');
-    say('14:02', 'maria', false, 'the certificate warning came too late last time. can we get 14 days notice?');
-    later(1600, () => { say('14:02', 'server-agent', true, 'Yes. I filed T-0231 with what I would change. It needs your approval before I touch anything.'); });
-    later(3000, () => { step(2, 'The agent proposes a ticket. Nothing happens until a person approves it. Press Approve.');
-      const c = card('c-proposed', 'proposed by server-agent · waiting for a person', true); const b = el('button', 'btn primary', 'Approve'); b.type = 'button'; c.append(b);
-      waiting = () => { waiting = null; afterApprove(); }; b.addEventListener('click', () => waiting && waiting()); later(9000, () => waiting && waiting()); });
+
+  // ---- ticket card ----
+  const CARD = { title: 'Warn 14 days before the TLS certificate runs out' };
+  const card = (where, status, opts) => { const o = opts || {}; ['c-proposed', 'c-progress', 'c-done'].forEach(i => $(i).replaceChildren());
+    const c = el('div', 'card' + (o.hot ? ' hot' : '') + (o.gone ? ' gone' : '')); c.append(el('div', 'id', 'T-0231 · for an agent'), el('div', '', CARD.title), el('div', 'id', status)); $(where).append(c); ping('tickets'); return c; };
+
+  // ---- the record: real SHA-256 check values, chained, computed here in the browser ----
+  const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+  const H = async (prev, e) => HAS_HASH ? hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prev + '\n' + JSON.stringify([e.n, e.t, e.who, e.act, e.what])))) : '';
+  let chain = Promise.resolve();
+  const note = (who, act, what) => { const g = gen, t = now(); chain = chain.then(async () => { if (g !== gen) return;
+    const prev = rec.length ? rec[rec.length - 1].h : ZERO, e = { n: rec.length + 1, t, who, act, what, prev }; e.h = await H(prev, e); if (g !== gen) return;
+    rec.push(e); if (act === 'ticket-approve') approveN = e.n; drawRecord(); ping('record'); }); };
+  const drawRecord = marks => { const box = $('rec'); if (!rec.length) return;
+    box.replaceChildren(...rec.map(e => { const r = el('div', 'rec-row' + (marks && marks[e.n] ? ' ' + marks[e.n] : '') + (tamper && tamper.n === e.n ? ' changed' : ''));
+      r.append(el('span', '', '#' + e.n), el('span', '', e.t), el('span', 'what', `${e.who} · ${e.act} · ${e.what}`), el('span', 'st', marks && marks[e.n] === 'ok' ? '✓' : marks && marks[e.n] === 'bad' ? '✗' : ''));
+      r.append(el('span', 'hv', HAS_HASH ? 'check value ' + e.h.slice(0, 16) + '… (made with the one before: ' + (e.prev === ZERO ? 'start' : e.prev.slice(0, 8) + '…') + ')' : 'check values need a secure (https) page'));
+      return r; }));
+    $('rec-tools').hidden = !HAS_HASH; };
+  const verify = async () => { await chain; const marks = {}; let first = null, why = '';
+    for (let i = 0; i < rec.length; i++) { const e = rec[i], want = i ? rec[i - 1].h : ZERO, h = await H(e.prev, e);
+      const ok = h === e.h && e.prev === want; marks[e.n] = ok ? 'ok' : 'bad';
+      if (!ok && !first) { first = e.n; why = h !== e.h ? 'its content no longer matches its check value, so it was changed after it was written' : 'it no longer matches the entry before it, so an earlier entry was changed'; } }
+    drawRecord(marks); const v = $('verdict');
+    v.className = 'verdict ' + (first ? 'bad' : 'ok');
+    v.textContent = first ? `Check failed at entry #${first}: ${why}. Chamber's account page shows the same kind of result for the real record.`
+      : `All ${rec.length} entries match. Newest check value: ${rec[rec.length - 1].h.slice(0, 16)}…`;
+    return !first; };
+
+  // ---- the story ----
+  const ask = () => {
+    step(1, 'A person asks in the room, in plain words. No special syntax.');
+    say('maria', '@server-agent the certificate warning came too late last time. can we get 14 days notice?'); note('maria', 'message', '#ops: asked for 14 days notice');
+    later(1500, () => say('server-agent', 'On it. I\'ll look first and change nothing yet.', { add: 0 }));
+    later(3000, plan);
   };
-  $('play').addEventListener('click', play);
-  $('restart').addEventListener('click', reset);
+  const plan = () => {
+    step(2, 'The agent reads the code, then proposes a ticket with its plan, the risk and how to undo it. Nothing has changed yet.');
+    log('reading check-cert.sh (read only)', 'ok'); log('found: WARN_DAYS=7', 'ok');
+    later(1400, () => { card('c-proposed', 'proposed by server-agent · waiting for a person', { hot: true }); $('plan').hidden = false; show('tickets');
+      say('server-agent', 'Filed T-0231 with the plan: 3 steps, low risk, easy to undo. It needs your approval before I touch anything.', { add: 1 }); note('server-agent', 'ticket-propose', 'T-0231 ' + CARD.title); });
+    later(3400, approve);
+  };
+  const approve = () => {
+    step(3, 'Your phone gets a notification. Open it and decide: Approve, or Decline.'); show('phone');
+    const pb = $('phone-body'); pb.replaceChildren();
+    const n = el('div', 'notif'); n.append(el('div', 'app', 'Chamber · now'), el('div', 'ttl', 'server-agent proposed T-0231'), el('div', 'sub', CARD.title + '. 3 steps, low risk. Waiting for you.'));
+    const act = el('div', 'act'); n.append(act); pb.append(n);
+    choose([{ label: 'Approve', primary: true, go: () => { n.append(el('div', 'answered', 'You approved T-0231')); approved(); } },
+            { label: 'Decline', no: true, go: () => { n.append(el('div', 'answered no', 'You declined T-0231')); declined(); } }], act);
+  };
+  const declined = () => {
+    say('maria', 'declined T-0231', { add: 1 }); note('maria', 'ticket-reject', 'T-0231');
+    card('c-done', 'not going ahead · declined by maria', { gone: true });
+    later(1200, () => { say('server-agent', 'Understood. T-0231 is declined and I changed nothing.'); step(3, 'Declined. Nothing ran, and the decision is on the record. Try the other choice, or look at the record.');
+      choose([{ label: 'Start over and approve', primary: true, go: () => { reset(); play(); } }, { label: 'See the record', go: () => recordStep() }]); });
+  };
+  const approved = () => {
+    say('maria', 'approved T-0231', { add: 1 }); note('maria', 'ticket-approve', 'T-0231');
+    card('c-progress', 'approved by maria · claimed by server-agent', { hot: true });
+    step(4, 'Approved by a person, so now the agent may start. Every step it takes is written to the run log as it happens.');
+    later(700, () => { note('server-agent', 'ticket-claim', 'T-0231'); show('run'); log('claimed T-0231; working in a separate copy of the code', 'ok'); });
+    later(1900, () => log('$ sed -i \'s/WARN_DAYS=7/WARN_DAYS=14/\' check-cert.sh', 'ok'));
+    later(3100, () => log('$ added test: "warns at 14 days, not at 15"', 'ok'));
+    later(4300, () => log('$ bats test/cert.bats   23 passed, 0 failed', 'ok'));
+    later(5500, askFirst);
+  };
+  const askFirst = () => {
+    step(5, 'The next step restarts a service, so the agent stops and asks. You answer from the notification. No answer within 5 minutes counts as no.');
+    log('waiting for a person: restart certcheck?', 'wait'); note('server-agent', 'ask', 'A-12: restart certcheck');
+    say('server-agent', 'Question for maria: may I restart certcheck so the new warning takes effect? I\'ve paused until you answer.', { add: 2 });
+    show('phone'); const pb = $('phone-body'); pb.replaceChildren();
+    const n = el('div', 'notif'); n.append(el('div', 'app', 'Chamber · question · now'), el('div', 'ttl', 'server-agent asks: restart certcheck?'));
+    const sub = el('div', 'sub'); sub.append('Runs '); sub.append(el('code', '', 'sudo systemctl restart certcheck')); sub.append(' for T-0231. Asks again never: one answer.'); n.append(sub);
+    const act = el('div', 'act'); n.append(act); pb.append(n);
+    choose([{ label: 'Allow', primary: true, go: () => { n.append(el('div', 'answered', 'Allowed, from the notification')); answer(true); } },
+            { label: 'Deny', no: true, go: () => { n.append(el('div', 'answered no', 'Denied, from the notification')); answer(false); } }], act);
+  };
+  const answer = yes => {
+    note('maria', yes ? 'ask-allow' : 'ask-deny', 'A-12 (from the notification)'); show('run');
+    if (yes) { log('maria allowed it', 'ok'); later(900, () => log('$ sudo systemctl restart certcheck', 'ok')); later(2000, () => log('health check: certcheck running, warning set to 14 days', 'ok')); }
+    else { log('maria said no: certcheck not restarted', 'bad'); later(900, () => say('server-agent', 'Okay, not restarted. The change is in place and takes effect at the next restart. I\'ll say so in the close note.')); }
+    later(yes ? 3200 : 2400, () => close(yes));
+  };
+  // T-0278: an agent's close note names the check it ran, what it showed, and what would have meant no
+  const closeText = yes => (sentBack
+    ? '1. Warning at 14 days: done.\n2. Second warning at 3 days: done.\n3. Restart: ' + (yes ? 'done again.' : 'not done (maria said no); takes effect at the next restart.')
+      + '\nCHECK: ran test/cert.bats' + (yes ? ' and the health check' : '') + '\nRESULT: 24 of 24 tests pass' + (yes ? '; certcheck running, warns at 14 and 3 days' : '')
+    : '1. Warning at 14 days: done (check-cert.sh).\n2. Test for the 14-day line: added.\n3. Restart: ' + (yes ? 'done.' : 'not done (maria said no); takes effect at the next restart.')
+      + '\nCHECK: ran test/cert.bats' + (yes ? ' and the health check' : '') + '\nRESULT: 23 of 23 tests pass' + (yes ? '; certcheck running, warns at 14 days' : ''))
+    + '\nFAIL-IF: any test fails' + (yes ? ', or certcheck still warns at 7 days' : '');
+  const close = yes => {
+    log('closed T-0231 with a note', 'ok'); note('server-agent', 'ticket-close', 'T-0231 (note names each item and its result)');
+    $('meta').textContent = 'claude-opus-5-5 · 41,200 tokens in · 2,310 out · 1 min 12 s · $0.24  (sample numbers)';
+    card('c-done', 'closed by server-agent · waiting for a person to check', { hot: true });
+    say('server-agent', 'Done T-0231. ' + (yes ? 'The warning now comes 14 days ahead; tests pass and the health check passed.' : 'The warning is set to 14 days and tested; the restart is still yours to do.') + ' It\'s in Reviews for you to check.', { add: 2 });
+    later(1400, () => check(yes));
+  };
+  const check = yes => {
+    step(6, 'Finished work waits in Reviews until a person checks it. Read the close note, then say Looks good, or Send back with what is missing.'); show('reviews');
+    const box = $('rv'); box.replaceChildren(); const r = el('div', 'rv'); r.append(el('div', 'id', 'To check · T-0231 · finished by server-agent'), el('div', '', CARD.title), el('div', 'closenote', closeText(yes)));
+    const act = el('div', 'act'); r.append(act); box.append(r);
+    const opts = [{ label: 'Looks good', primary: true, go: () => { r.append(el('div', 'answered', 'You checked it: looks good')); good(); } }];
+    if (!sentBack) opts.push({ label: 'Send back', no: true, go: () => { r.append(el('div', 'answered no', 'Sent back: "please also warn again at 3 days"')); back(yes); } });
+    choose(opts, act);
+  };
+  const back = yes => {
+    sentBack = true; say('maria', 'sent T-0231 back: please also warn again at 3 days', { add: 1 }); note('maria', 'review-send-back', 'T-0231: also warn at 3 days');
+    card('c-progress', 'sent back by maria · server-agent working', { hot: true });
+    later(1100, () => { say('server-agent', 'Back on it: adding a second warning at 3 days.'); show('run'); log('sent back by maria: "also warn again at 3 days"', 'wait'); });
+    later(2300, () => log('$ added WARN_AGAIN=3 and a test for it', 'ok'));
+    later(3400, () => log('$ bats test/cert.bats   24 passed, 0 failed', 'ok'));
+    later(4600, () => close(yes));
+  };
+  const good = () => {
+    say('maria', 'checked T-0231: looks good', { add: 1 }); note('maria', 'review-ok', 'T-0231');
+    card('c-done', 'done · checked by maria', {});
+    later(1000, recordStep);
+  };
+  const recordStep = () => {
+    step(7, 'Everything above is on the record, in order. Check it, then edit an entry the way someone with database access might, and check again.'); show('record');
+    choose([{ label: 'Check the record', primary: true, keep: true, go: async b => { await verify(); b.classList.add('done'); } },
+            { label: 'Edit an entry behind Chamber\'s back', no: true, keep: true, go: async b => { await edit(); b.classList.add('done'); } },
+            { label: 'Next: try to break the rules', go: rules }]);
+  };
+  const edit = async () => { await chain; if (!rec.length) return;
+    const target = rec.find(e => e.n === approveN) || rec[Math.min(2, rec.length - 1)];
+    if (!tamper) { tamper = { n: target.n, who: target.who, what: target.what }; target.who = target.who === 'maria' ? 'server-agent' : 'maria'; target.what += ' (edited)'; }
+    $('r-hide').hidden = false; $('r-undo').hidden = false; show('record'); await verify(); };
+  const hide = async () => { if (!tamper) return; const e = rec.find(x => x.n === tamper.n); e.h = await H(e.prev, e); await verify(); };
+  const undo = async () => { if (!tamper) return; const e = rec.find(x => x.n === tamper.n); e.who = tamper.who; e.what = tamper.what; e.h = await H(e.prev, e); tamper = null; $('r-hide').hidden = true; $('r-undo').hidden = true; await verify(); };
+  const rules = () => {
+    if (tamper) undo();
+    step(8, 'The rules are enforced by Chamber, not by asking the AI nicely. Make the agent try each one.'); show('phone');
+    const pb = $('phone-body'); pb.replaceChildren(el('div', 'idle', 'Nothing to answer. Refusals happen on the server and go on the record; no question reaches you.'));
+    const tried = new Set(), finish = () => { if (tried.size === 3) { $('st-t').textContent = 'That\'s Chamber: you decide, your AI does the work, and nothing happens off the record. Start over to try the other choices.'; $('play').textContent = 'Finished'; } };
+    choose([
+      { label: 'Agent approves its own ticket', keep: true, go: b => { if (tried.has(1)) return; tried.add(1); b.classList.add('done');
+        say('server-agent', 'filed T-0232 "Rotate the backup key" and tries to approve it itself'); note('server-agent', 'ticket-propose', 'T-0232 Rotate the backup key');
+        later(600, () => { say('', 'only a person can approve a ticket; an agent cannot', { cls: 'refused', bold: 'Refused by Chamber (403):' }); note('server-agent', 'ticket-approve-refused', 'T-0232'); }); later(700, finish); } },
+      { label: 'Agent closes a ticket without saying how it checked', keep: true, go: b => { if (tried.has(2)) return; tried.add(2); b.classList.add('done');
+        say('server-agent', 'tries to close T-0232 with the note "All done, looks fine to me."');
+        later(600, () => say('', 'an agent\'s close note needs CHECK: (what it checked), RESULT: (what that showed) and FAIL-IF: (what result would have meant no). If it could not check, it adds an update and leaves the ticket open', { cls: 'refused', bold: 'Refused by Chamber (400):' })); later(700, finish); } },
+      { label: 'Agent reads ~/.ssh on its machine', keep: true, go: b => { if (tried.has(3)) return; tried.add(3); b.classList.add('done');
+        say('server-agent', 'tries to read ~/.ssh/id_ed25519 on the server it runs on');
+        later(600, () => say('', 'only the folder maria attached (/srv/certcheck) can be read. The agent sees nothing else on that machine.', { cls: 'refused', bold: 'Refused on the agent\'s machine:' })); later(700, finish); } },
+      { label: 'See the refusals on the record', go: () => { show('record'); recordStep(); $('st-t').textContent = 'The refused approval is on the record too, with a check value like every other entry.'; } }]);
+  };
+
+  // ---- controls ----
+  const reset = () => { gen++; timers.forEach(clearTimeout); timers = []; rec = []; tamper = null; approveN = 0; sentBack = false; clock = 14 * 60 + 2; chain = Promise.resolve();
+    $('chat').replaceChildren(); ['c-proposed', 'c-progress', 'c-done'].forEach(i => $(i).replaceChildren()); $('plan').hidden = true;
+    $('log').replaceChildren(el('div', 'h', 'Nothing yet. An agent may only start after a person approves.')); $('meta').textContent = '';
+    $('rv').replaceChildren(el('p', 'empty', 'To check: nothing yet. Finished agent work lands here for a person to check.'));
+    $('rec').replaceChildren(el('p', 'empty', 'The activity record fills as things happen. Every entry carries a check value made from the entry and the one before it.'));
+    $('verdict').textContent = ''; $('verdict').className = 'verdict'; $('rec-tools').hidden = true; $('r-hide').hidden = true; $('r-undo').hidden = true;
+    $('phone-body').replaceChildren(el('div', 'idle', 'Chamber sends a notification when an agent needs a person.')); $('choice').replaceChildren();
+    document.querySelectorAll('#tabs .dot').forEach(d => d.remove()); show('phone'); rail(0); $('ph-clock').textContent = '14:02';
+    $('st-n').textContent = '8 steps · about 2 minutes'; $('st-t').textContent = 'Press Play. You make the choices a person makes in Chamber: approve the plan, answer the agent\'s question, check the work. Then try to tamper with the record.';
+    $('play').disabled = false; $('play').textContent = 'Play'; };
+  const play = () => { $('play').disabled = true; $('play').textContent = 'Playing'; ask(); };
+  const skip = () => { reset(); $('play').disabled = true; $('play').textContent = 'Playing';
+    // the approve path, already played: the same record entries, so the record and the rules can be tried at once
+    say('maria', '@server-agent the certificate warning came too late last time. can we get 14 days notice?'); note('maria', 'message', '#ops: asked for 14 days notice');
+    note('server-agent', 'ticket-propose', 'T-0231 ' + CARD.title); note('maria', 'ticket-approve', 'T-0231'); note('server-agent', 'ticket-claim', 'T-0231');
+    note('server-agent', 'ask', 'A-12: restart certcheck'); note('maria', 'ask-allow', 'A-12 (from the notification)');
+    note('server-agent', 'ticket-close', 'T-0231 (note names each item and its result)'); note('maria', 'review-ok', 'T-0231');
+    say('', 'Skipped ahead: T-0231 was proposed, approved, worked, the restart allowed, closed with a note and checked.', { cls: 'sys' });
+    card('c-done', 'done · checked by maria', {}); recordStep(); };
+  document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => show(b.dataset.v)));
+  $('r-check').addEventListener('click', verify); $('r-edit').addEventListener('click', edit); $('r-hide').addEventListener('click', hide); $('r-undo').addEventListener('click', undo);
+  $('play').addEventListener('click', play); $('restart').addEventListener('click', reset); $('skip').addEventListener('click', skip);
+  rail(0);
 })();
 </script>
 </body>

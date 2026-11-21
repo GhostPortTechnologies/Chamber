@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https'); const http = require('http');
 const records = require('./records');
+const perm = require('./permissions');                            // T-0246: who may do what, in one table
 const wslock = require('./wslock'), wscrypt = require('./wscrypt'), wsfiles = require('./wsfiles');           // T-0222: the owner lock
 const LOCK_FEATURE = process.env.CHAMBER_OWNER_LOCK !== '0';                 // T-0222: offered to every owner; CHAMBER_OWNER_LOCK=0 takes the option away on a server                             // T-0219: sealed copies of the activity record, and its keep-for limits
 const fleet = require('./fleet');                                             // T-0153: GhostPort fleet link (router status, read-only)
@@ -42,16 +43,43 @@ const ENABLED = process.env.CHAMBER_ACCOUNTS === '1';
 const STRIPE_KEY = process.env.CHAMBER_STRIPE_SECRET || '';
 const WEBHOOK_SECRET = process.env.CHAMBER_STRIPE_WEBHOOK_SECRET || '';
 const PRICE = process.env.CHAMBER_STRIPE_PRICE || '';
+// T-0295 (approved 19 Nov 2026): two paid sizes with the same features. PRICE is Team; PRICE_COMPANY is Company. A workspace
+// pays for its BUILDERS (owner, admins, members). Approvers, viewers and requesters use no seat and have no limit on a paid plan.
+const PRICE_COMPANY = process.env.CHAMBER_STRIPE_PRICE_COMPANY || '';
+// T-0314 (approved 20 Nov 2026): included file storage matches the prices: Team 10 GB, Company 50 GB (were 500 MB and 5 GB).
+// CHAMBER_FILES_QUOTA_MB, when set, still sets Team's (the tests use a tiny one); a self-hosted Chamber keeps it as its quota.
+const PLANS = { team: { builders: Math.max(1, parseInt(process.env.CHAMBER_TEAM_BUILDERS, 10) || 5), baseMb: parseInt(process.env.CHAMBER_TEAM_STORAGE_MB, 10) || parseInt(process.env.CHAMBER_FILES_QUOTA_MB, 10) || 10240 },
+                company: { builders: Math.max(1, parseInt(process.env.CHAMBER_COMPANY_BUILDERS, 10) || 25), baseMb: parseInt(process.env.CHAMBER_COMPANY_STORAGE_MB, 10) || 51200 } };
+const companyMb = () => Math.max(PLANS.company.baseMb, PLANS.team.baseMb);   // Company never has less than Team
+// T-0310 (approved 20 Nov 2026): every plan is paid monthly or yearly, and a year costs 10 months (2 months free):
+//   Team $50 a month or $500 a year; Company $150 a month or $1,500 a year; extra storage $5 a month or $50 a year per pack.
+// Each has its own Stripe price: CHAMBER_STRIPE_TEAM_MONTH, _TEAM_YEAR, _COMPANY_MONTH, _COMPANY_YEAR, _STORAGE_MONTH and
+// _STORAGE_YEAR (Stripe keeps every line of one subscription on the same period, so a monthly plan gets monthly storage).
+// The older yearly prices are not sold to anyone new, but a subscription on them is still recognised. CHAMBER_STRIPE_PRICE ($49 a
+// year) is still sold for Team yearly to a workspace created before PRICING2_AT: the 19 Nov notice email promised the earlier
+// workspace "Team ... at $49 a year". CHAMBER_STRIPE_PRICE_COMPANY ($199) and CHAMBER_STRIPE_STORAGE_PRICE ($49.99) are retired.
+const PRICES = { team: { month: process.env.CHAMBER_STRIPE_TEAM_MONTH || '', year: process.env.CHAMBER_STRIPE_TEAM_YEAR || '' },
+                 company: { month: process.env.CHAMBER_STRIPE_COMPANY_MONTH || '', year: process.env.CHAMBER_STRIPE_COMPANY_YEAR || '' } };
+const LABELS = { team: { month: '$50 / month', year: '$500 / year' }, company: { month: '$150 / month', year: '$1,500 / year' } };
+const LEGACY_TEAM = { price: PRICE, label: '$49 / year' };                // the kept deal; PRICE may be empty on a new install
+const RETIRED = PRICE_COMPANY ? { [PRICE_COMPANY]: { plan: 'company', interval: 'year', label: '$199 / year' } } : {};
+const RENEW_NOTE_MS = 14 * 86400e3;                                      // yearly plans: the renewal email goes this long before
+// Workspaces that existed before the new plans keep what they signed up for: Team covers up to 25 builders for them, and their
+// free plan changes only 30 days after we emailed the owner (the Terms promise that notice). CHAMBER_PRICING2_AT = the release day.
+const PRICING2_AT = Date.parse(process.env.CHAMBER_PRICING2_AT || '2026-11-19T00:00:00Z') || 0, NOTICE_MS = 30 * 86400e3, FOUNDING_MAX = 100;
 const PUBLIC_URL = (process.env.CHAMBER_PUBLIC_URL || '').replace(/\/$/, '');
 const SELF_HOSTED = process.env.CHAMBER_SELF_HOSTED === '1';                // T-0061: workspaces without Stripe; everyone entitled
-// Storage add-on (2026-11-13). One "pack" is CHAMBER_STORAGE_PACK_GB (10) more file space for the whole workspace, billed yearly as a
-// second line on the owner's subscription (quantity = packs). Nothing is offered and nothing can be charged until BOTH
-// CHAMBER_STRIPE_STORAGE_PRICE (a Stripe yearly price id) and CHAMBER_STORAGE_PRICE_LABEL (the words the buyer sees, e.g.
-// "$49 / year") are set. CHAMBER_STORAGE_SELLABLE_GB caps the total sold across all workspaces to what the disk really has.
-const STORAGE_PRICE = process.env.CHAMBER_STRIPE_STORAGE_PRICE || '', STORAGE_LABEL = (process.env.CHAMBER_STORAGE_PRICE_LABEL || '').slice(0, 40);
+// Storage add-on (2026-11-13). One "pack" is CHAMBER_STORAGE_PACK_GB (10) more file space for the whole workspace, billed as a
+// second line on the owner's subscription (quantity = packs), on the plan's own period (T-0310: $5 a month or $50 a year).
+// Nothing is offered and nothing can be charged until CHAMBER_STRIPE_STORAGE_MONTH or _YEAR is set; a period without its price
+// offers no storage. CHAMBER_STORAGE_SELLABLE_GB caps the total sold across all workspaces to what the disk really has.
+const STORAGE_PRICES = { month: process.env.CHAMBER_STRIPE_STORAGE_MONTH || '', year: process.env.CHAMBER_STRIPE_STORAGE_YEAR || '' };
+const STORAGE_LABELS = { month: '$5 / month', year: '$50 / year' };
+const STORAGE_OLD = process.env.CHAMBER_STRIPE_STORAGE_PRICE || '';      // $49.99 a year (13 Nov): not sold any more; packs on it still count
+const isStoragePrice = id => !!id && [STORAGE_PRICES.month, STORAGE_PRICES.year, STORAGE_OLD].includes(id);
 const STORAGE_PACK_GB = Math.max(1, parseInt(process.env.CHAMBER_STORAGE_PACK_GB, 10) || 10), STORAGE_MAX_PACKS = Math.max(1, parseInt(process.env.CHAMBER_STORAGE_MAX_PACKS, 10) || 10);
 const STORAGE_SELLABLE_GB = Math.max(0, parseInt(process.env.CHAMBER_STORAGE_SELLABLE_GB, 10) || 20), STORAGE_BASE_MB = parseInt(process.env.CHAMBER_FILES_QUOTA_MB, 10) || 500;
-const STORAGE_ON = () => !SELF_HOSTED && !!STORAGE_PRICE && !!STORAGE_LABEL;
+const STORAGE_ON = () => !SELF_HOSTED && !!(STORAGE_PRICES.month || STORAGE_PRICES.year);
 const STRIPE_TEST_PORT = process.env.CHAMBER_TEST_HOOKS === '1' ? parseInt(process.env.CHAMBER_STRIPE_TEST_PORT, 10) || 0 : 0;   // tests only: a stand-in Stripe on loopback
 const CONTACT_TO = process.env.CHAMBER_CONTACT_TO || 'support@ghostporttechnologies.com';   // T-0162: where the website contact form is mailed
 const CONTACT_PER_HOUR = parseInt(process.env.CHAMBER_CONTACT_PER_HOUR, 10) || 3; const contactHits = new Map(), contactDay = [];
@@ -69,6 +97,19 @@ const TRIAL_ON = () => TRIAL_DAYS > 0 && VERIFY_REQUIRED();
 // A failed payment still goes grace, then read-only, as before. CHAMBER_FREE_PLAN=0 brings back the old behaviour (read-only).
 const FREE_ON = () => !SELF_HOSTED && process.env.CHAMBER_FREE_PLAN !== '0';
 const FREE_TOKENS = TRIAL_TOKENS;
+// T-0288 (approved by the owner 19 Nov 2026): the free plan covers up to FREE_PEOPLE people (3), not the owner alone, with
+// FREE_TOKENS agents for each of them. Who has a seat: the owner, then whoever joined first. Anyone beyond that keeps read
+// access and export, exactly as the others did before. Still no cloud storage. CHAMBER_FREE_PEOPLE=1 is the old one-person plan.
+const FREE_PEOPLE = Math.max(1, Math.min(25, parseInt(process.env.CHAMBER_FREE_PEOPLE, 10) || 3));
+const freePeopleText = () => FREE_PEOPLE === 1 ? 'one person' : `up to ${FREE_PEOPLE} people`;
+const legacyWs = ws => !!ws && (ws.createdAt || 0) < PRICING2_AT;              // T-0295: existed before the new plans
+const freePeopleFor = ws => legacyWs(ws) && !(ws.freeNoticeAt && Date.now() >= ws.freeNoticeAt + NOTICE_MS) ? 1 : FREE_PEOPLE;   // the Terms: 30 days after the email
+function freeSeats(store, wsId) {
+  const ws = store.workspaces[wsId]; if (!ws) return [];
+  return members(store, wsId).sort((a, b) => (b.email === ws.owner) - (a.email === ws.owner) || (a.createdAt || 0) - (b.createdAt || 0) || String(a.email).localeCompare(String(b.email))).slice(0, freePeopleFor(ws));
+}
+const hasFreeSeat = (acct, store) => freeSeats(store, acct.workspace).some(a => a.email === acct.email);
+const freeTokenLimit = (store, ws) => FREE_TOKENS * Math.min(freePeopleFor(ws), Math.max(1, members(store, ws.id).length));
 const onTrialClock = acct => !!acct && !acct.subStatus && !!acct.trialEndsAt;      // started on a trial and has never subscribed
 // T-0175: one email 3 days before a trial ends and one when it ends. T-0176: a trial sign-up whose email was never confirmed is
 // removed after CHAMBER_UNCONFIRMED_DAYS (7). Both run from trialHousekeeping(), called hourly by server.js maintenance.
@@ -86,7 +127,7 @@ const MIN_PASSWORD = 10;
 const MAX_MEMBERS = parseInt(process.env.CHAMBER_MAX_MEMBERS, 10) || 25;
 // T-0199: guest seats for the business side. A viewer reads everything (and approves when the owner names them, T-0190); a requester
 // only sends requests and follows their own. Guests do not use one of the MAX_MEMBERS seats; they have their own limit.
-const MAX_GUESTS = parseInt(process.env.CHAMBER_MAX_GUESTS, 10) || 25, GUEST_ROLES = ['viewer', 'requester'];   // T-0033: seats per workspace (owner included)
+const MAX_GUESTS = parseInt(process.env.CHAMBER_MAX_GUESTS, 10) || 25, GUEST_ROLES = ['viewer', 'requester'], INVITE_KINDS = ['viewer', 'requester', 'approver'];   // T-0295: an approver is a viewer who may approve by default   // T-0033: seats per workspace (owner included)
 const TEST_HOOKS = process.env.CHAMBER_TEST_HOOKS === '1';
 // T-0032: email verification. Enforced when we can actually send mail (or in the test harness, which reads the link from the log).
 // Unverified accounts can log in and use a workspace they were invited to, but cannot start checkout, rotate the invite link
@@ -130,8 +171,8 @@ function createAgentToken(store, ctx, ws, by, name, username) {
   if (!USER_RE.test(username)) return { error: 'Agent username: 2 to 24 letters, numbers, - or _.' };
   if (RESERVED_NAMES.has(username.toLowerCase())) return { error: 'That username is taken.', code: 409 };
   if (store.usernames[username.toLowerCase()]) return { error: 'That username is taken.', code: 409 };
-  { const st = billingState(store.accounts[ws.owner]);                                                                         // T-0159; T-0225 the free plan too
-    if (['trial', 'free'].includes(st) && Object.keys(ws.tokens || {}).length >= TRIAL_TOKENS) return { error: `The free ${st === 'free' ? 'plan' : 'trial'} includes ${TRIAL_TOKENS} agents. Subscribe on the Account page to add more.`, code: 403 }; }
+  { const st = billingState(store.accounts[ws.owner]), lim = st === 'free' ? freeTokenLimit(store, ws) : TRIAL_TOKENS;        // T-0159; T-0225 the free plan too; T-0288: 2 for each person on it
+    if (['trial', 'free'].includes(st) && Object.keys(ws.tokens || {}).length >= lim) return { error: `The free ${st === 'free' ? 'plan' : 'trial'} includes ${lim} agents${st === 'free' && FREE_PEOPLE > 1 ? ` (${FREE_TOKENS} for each person, ${freePeopleText()})` : ''}. Subscribe on the Account page to add more.`, code: 403 }; }
   if (Object.keys(ws.tokens || {}).length >= 20) return { error: 'Limit of 20 agent tokens per workspace.' };
   const id = crypto.randomBytes(4).toString('hex'), secret = crypto.randomBytes(24).toString('base64url');
   (ws.tokens ||= {})[id] = { id, name, username, hash: sha(secret), createdAt: Date.now(), createdBy: by.email };
@@ -171,7 +212,7 @@ function noteLogin(req, acct) {                                   // T-0032: rem
   }
   return !seen;
 }
-const PRICE_LABEL = '$49 / year';
+const PRICE_LABEL = 'Team $50 / month or $500 / year';   // T-0310: the words in the trial emails
 
 // ── Store ──────────────────────────────────────────────────────────────
 function load() {
@@ -206,6 +247,98 @@ function reauth(acct, pw) {                                         // 'ok' | 'w
   pwFails.set(acct.email, { n: (live ? live.n : 0) + 1, at: live ? live.at : Date.now() });
   return 'wrong';
 }
+const LOCK_IDLE_CHOICES = [0, 5, 15, 30, 60];                           // T-0241: idle lock minutes (0 = never)
+const screenLockPrefs = a => ({ lockIdle: LOCK_IDLE_CHOICES.includes(a?.screenLock?.idle) ? a.screenLock.idle : 0, lockReopen: !!a?.screenLock?.reopen });
+const SESSION_DAY_CHOICES = [1, 7, 30];                                // T-0241 part 2: how long a sign-in lasts (days)
+const sessionPolicyOf = a => ({ days: SESSION_DAY_CHOICES.includes(a?.sessionPolicy?.days) ? a.sessionPolicy.days : 7, remember: a?.sessionPolicy?.remember !== false });
+// T-0241 part 3: the owner's rules for everyone in the workspace (myWs.security). What applies to a person is the stricter of their
+// own choice and the rule: the shorter idle lock, lock-on-return if either says so, the shorter sign-in.
+const RECHECK_CHOICES = [0, 5, 15, 60];                                 // T-0241 part 4: ask for the password again after N minutes (0 = never)
+const recheckPrefOf = a => RECHECK_CHOICES.includes(a?.recheck?.min) ? a.recheck.min : 0;
+const wsSecurity = ws => { const s = (ws && ws.security) || {}; return { idleMax: LOCK_IDLE_CHOICES.includes(s.idleMax) && s.idleMax > 0 ? s.idleMax : 0, reopen: s.reopen === true, daysMax: SESSION_DAY_CHOICES.includes(s.daysMax) ? s.daysMax : 0, require2fa: s.require2fa === true, recheckMax: RECHECK_CHOICES.includes(s.recheckMax) && s.recheckMax > 0 ? s.recheckMax : 0 }; };
+// T-0241 part 5: passkeys (WebAuthn). A passkey can unlock the screen lock and answer "confirm it is you" instead of the
+// password. Chamber asks for user verification (fingerprint, face or device PIN) every time and checks the device did it.
+// No library: a small CBOR reader, the public key as a JWK, and node's crypto.verify. Attestation is not asked for or checked:
+// what matters is that the same key signs later, with the person verified. Challenges live 5 minutes and are used once.
+const PK_MAX = 10, PK_TTL = 5 * 60e3, PK_CHALLENGES = new Map();      // challenge -> { email, kind: 'create' | 'get', exp }
+const b64u = b => Buffer.from(b).toString('base64url'), unb64u = s => Buffer.from(String(s || ''), 'base64url');
+function pkRp() {                                                // this Chamber's own host name; a loopback test copy uses 'localhost' (an IP address cannot be one)
+  let u; try { u = new URL(PUBLIC_URL); } catch { return null; }
+  const loop = ['127.0.0.1', '[::1]', 'localhost'].includes(u.hostname);
+  return { id: loop ? 'localhost' : u.hostname, origins: loop ? [u.origin, `${u.protocol}//localhost${u.port ? ':' + u.port : ''}`] : [u.origin] };
+}
+function cborRead(buf, pos = 0) {                                // -> [value, next position]; the CBOR WebAuthn uses: ints, byte and text strings, arrays, maps, true/false/null
+  const ib = buf[pos++], mt = ib >> 5, ai = ib & 31; let n = ai;
+  if (ai === 24) n = buf[pos++]; else if (ai === 25) { n = buf.readUInt16BE(pos); pos += 2; } else if (ai === 26) { n = buf.readUInt32BE(pos); pos += 4; }
+  else if (ai === 27) { n = Number(buf.readBigUInt64BE(pos)); pos += 8; } else if (ai > 27 && mt !== 7) throw new Error('cbor: unsupported length');
+  if (mt === 0) return [n, pos]; if (mt === 1) return [-1 - n, pos];
+  if (mt === 2) { if (pos + n > buf.length) throw new Error('cbor: short'); return [buf.subarray(pos, pos + n), pos + n]; }
+  if (mt === 3) { if (pos + n > buf.length) throw new Error('cbor: short'); return [buf.subarray(pos, pos + n).toString('utf8'), pos + n]; }
+  if (mt === 4) { if (n > 64) throw new Error('cbor: too long'); const a = []; for (let i = 0; i < n; i++) { const [v, p2] = cborRead(buf, pos); a.push(v); pos = p2; } return [a, pos]; }
+  if (mt === 5) { if (n > 64) throw new Error('cbor: too long'); const m = new Map(); for (let i = 0; i < n; i++) { const [k, p2] = cborRead(buf, pos); const [v, p3] = cborRead(buf, p2); m.set(k, v); pos = p3; } return [m, pos]; }
+  if (mt === 7 && ai === 20) return [false, pos]; if (mt === 7 && ai === 21) return [true, pos]; if (mt === 7 && ai === 22) return [null, pos];
+  throw new Error('cbor: unsupported type');
+}
+function coseToJwk(m) {                                          // the new passkey's public key (COSE) -> { alg, jwk }; ES256 and RS256, the two Chamber asks for
+  if (!(m instanceof Map)) throw new Error('no public key');
+  const kty = m.get(1), alg = m.get(3);
+  if (kty === 2 && alg === -7 && m.get(-1) === 1 && Buffer.isBuffer(m.get(-2)) && Buffer.isBuffer(m.get(-3))) return { alg, jwk: { kty: 'EC', crv: 'P-256', x: b64u(m.get(-2)), y: b64u(m.get(-3)) } };
+  if (kty === 3 && alg === -257 && Buffer.isBuffer(m.get(-1)) && Buffer.isBuffer(m.get(-2))) return { alg, jwk: { kty: 'RSA', n: b64u(m.get(-1)), e: b64u(m.get(-2)) } };
+  throw new Error('this kind of key is not supported');
+}
+function pkClientData(b, kind, email) {                          // type, challenge (once, for this person, in time) and origin; -> the clientDataJSON bytes
+  const raw = unb64u(b?.clientDataJSON); let cd; try { cd = JSON.parse(raw.toString('utf8')); } catch { throw new Error('the answer is not readable'); }
+  const key = String(cd?.challenge || ''), ch = PK_CHALLENGES.get(key); PK_CHALLENGES.delete(key);
+  if (cd.type !== (kind === 'create' ? 'webauthn.create' : 'webauthn.get')) throw new Error('wrong kind of answer');
+  if (!ch || ch.kind !== kind || ch.email !== email || ch.exp < Date.now()) throw new Error('this request expired or was already used; try again');
+  const rp = pkRp(); if (!rp || !rp.origins.includes(cd.origin)) throw new Error('the answer came from another site');
+  return raw;
+}
+function pkAuthData(ad, withCred) {                              // the site, "the person was verified", the counter; when adding, the new credential too
+  const rp = pkRp();
+  if (!rp || ad.length < 37 || !ad.subarray(0, 32).equals(crypto.createHash('sha256').update(rp.id).digest())) throw new Error('the passkey belongs to another site');
+  const flags = ad[32]; if (!(flags & 0x01) || !(flags & 0x04)) throw new Error('the device did not check that it is you (fingerprint, face or PIN)');
+  const counter = ad.readUInt32BE(33); if (!withCred) return { counter };
+  if (!(flags & 0x40) || ad.length < 55) throw new Error('no new passkey in the answer');
+  const len = ad.readUInt16BE(53); if (!len || len > 1023 || ad.length < 55 + len + 1) throw new Error('no new passkey in the answer');
+  const credId = ad.subarray(55, 55 + len), [cose] = cborRead(ad, 55 + len);
+  return { counter, credId, ...coseToJwk(cose) };
+}
+function pkChallenge(email, kind) {
+  const now = Date.now(); for (const [k, v] of PK_CHALLENGES) if (v.exp < now) PK_CHALLENGES.delete(k);
+  if (PK_CHALLENGES.size > 5000) PK_CHALLENGES.clear();
+  const c = b64u(crypto.randomBytes(32)); PK_CHALLENGES.set(c, { email, kind, exp: now + PK_TTL }); return c;
+}
+function pkVerifyGet(acct, b) {                                  // "it is me", signed by one of the person's passkeys -> that passkey (counter updated), or it throws
+  const cdj = pkClientData(b, 'get', acct.email), pk = (acct.passkeys || []).find(k => k.id === String(b?.id || ''));
+  if (!pk) throw new Error('that passkey is not one of yours here');
+  const ad = unb64u(b?.authenticatorData), { counter } = pkAuthData(ad, false);
+  const data = Buffer.concat([ad, crypto.createHash('sha256').update(cdj).digest()]), key = crypto.createPublicKey({ key: pk.jwk, format: 'jwk' });
+  if (!crypto.verify('sha256', data, pk.alg === -7 ? { key, dsaEncoding: 'der' } : key, unb64u(b?.signature))) throw new Error('the passkey signature does not match');
+  if (pk.counter && counter && counter <= pk.counter) throw new Error('this passkey looks copied (its counter went back); remove it and add it again');
+  pk.counter = counter; pk.lastUsed = Date.now(); return pk;
+}
+const pkLoginOn = a => !!(a && a.passkeyLogin && Array.isArray(a.passkeys) && a.passkeys.length && pkRp());   // T-0241 (a): the passkey is asked for at sign-in
+const twoStep = a => !!(a && (a.totp || pkLoginOn(a)));                     // the app's code or the passkey: either is a second step
+function passkeyCount(email) { if (!ENABLED || !email) return 0; const a = load().accounts[email]; return a && Array.isArray(a.passkeys) ? a.passkeys.length : 0; }
+const effectiveRecheck = (a, ws) => { const own = recheckPrefOf(a), r = wsSecurity(ws); return r.recheckMax && (!own || own > r.recheckMax) ? r.recheckMax : own; };
+const effectiveLock = (a, ws) => { const own = screenLockPrefs(a), r = wsSecurity(ws); return { lockIdle: r.idleMax && (!own.lockIdle || own.lockIdle > r.idleMax) ? r.idleMax : own.lockIdle, lockReopen: own.lockReopen || r.reopen }; };
+const effectiveSession = (a, ws) => { const own = sessionPolicyOf(a), r = wsSecurity(ws); return { days: r.daysMax ? Math.min(own.days, r.daysMax) : own.days, remember: own.remember }; };
+const ruleWords = r => [r.idleMax ? `the screen lock after at most ${r.idleMax} minutes of no activity` : '', r.reopen ? 'the lock when coming back to Chamber' : ''].filter(Boolean).join(' and ');
+function needs2fa(sess) {                                         // server.js asks on every request: a person in a workspace that requires 2FA, without it
+  if (!ENABLED || !sess || sess.agent || !sess.email) return false;
+  const store = load(), a = store.accounts[sess.email];
+  return !!a && !twoStep(a) && wsSecurity(store.workspaces[a.workspace]).require2fa;   // T-0241 (a): a passkey at sign-in counts
+}
+const sessionId = t => crypto.createHash('sha256').update(String(t)).digest('hex').slice(0, 16);   // the list never shows tokens, only this
+function deviceOf(ua) {                                                 // "Chrome on Windows" from a User-Agent, for the signed-in devices list
+  ua = String(ua || ''); if (!ua) return 'Unknown device';
+  if (/^chamber-cli\//i.test(ua)) return 'Chamber command-line tool';
+  if (/^(curl|python|node|undici|go-http|okhttp|wget|axios)/i.test(ua)) return 'Script or API client';
+  const b = /Edg\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /OPR\//.test(ua) ? 'Opera' : /Firefox\/|FxiOS/.test(ua) ? 'Firefox' : /Chrome\/|CriOS/.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+  const o = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /CrOS/.test(ua) ? 'ChromeOS' : /Mac OS X|Macintosh/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : '';
+  return o ? `${b} on ${o}` : b;
+}
 const reauthFail = (ctx, res, g, msg = 'Password is wrong.') => ctx.json(res, g === 'locked' ? 429 : 403, { error: g === 'locked' ? 'Too many wrong passwords. Wait 15 minutes, then try again.' : msg });
 function checkPw(acct, pw) {
   if (typeof pw !== 'string' || !pw || !acct.salt || !acct.hash) return false;
@@ -226,11 +359,55 @@ function createWorkspace(store, owner, name) {
 function members(store, wsId) { return Object.values(store.accounts).filter(a => a.workspace === wsId); }
 // T-0199: one place that says what role someone has in their workspace. owner | admin | member (full seats) | viewer | requester (guests).
 function wsRoleOf(a, ws) { if (!a || !ws) return null; if (ws.owner === a.email) return 'owner'; return ['admin', 'viewer', 'requester'].includes(a.wsRole) ? a.wsRole : 'member'; }
+// T-0295: which plan a workspace is on, and how many builders it covers. 'company' | 'team' | 'trial' | 'free' | 'none' | 'self'.
+function planOf(store, ws) {
+  if (SELF_HOSTED) return 'self';
+  const owner = ws && store.accounts[ws.owner]; if (!owner) return 'none';
+  if (owner.role === 'admin') return 'company';                       // the site's own workspace
+  const st = billingState(owner);
+  if (st === 'trial') return 'trial'; if (st === 'free') return 'free'; if (st === 'none') return 'none';
+  return owner.plan === 'company' ? 'company' : 'team';               // ok, grace or readonly: a subscription exists
+}
+function builderLimit(store, ws) {
+  const p = planOf(store, ws);
+  if (p === 'self') return MAX_MEMBERS;
+  if (p === 'team') return planCap(ws, 'team');
+  if (p === 'free' || p === 'none') return freePeopleFor(ws);
+  return planCap(ws, 'company');                                      // company, and the trial (full size until the owner picks)
+}
+// How many builders a plan covers for this workspace. An earlier workspace keeps its deal on Team; CHAMBER_MAX_MEMBERS stays the server's own ceiling.
+function planCap(ws, plan) { return Math.min(MAX_MEMBERS, plan === 'company' ? PLANS.company.builders : legacyWs(ws) ? Math.max(PLANS.team.builders, PLANS.company.builders) : PLANS.team.builders); }
+const guestsUnlimited = (store, ws) => ['team', 'company', 'trial'].includes(planOf(store, ws));
+// T-0310: monthly or yearly. A subscription made before T-0310 is yearly (every older price was).
+const periodOf = a => a && a.interval === 'month' ? 'month' : 'year';
+const keptDeal = (plan, interval, ws) => plan === 'team' && interval === 'year' && !!LEGACY_TEAM.price && legacyWs(ws);
+function priceFor(plan, interval, ws) {                              // the Stripe price this workspace buys; '' = not offered
+  return keptDeal(plan, interval, ws) ? LEGACY_TEAM.price : (PRICES[plan]?.[interval] || '');
+}
+function labelFor(plan, interval, ws) {                              // the words for that price; '' = not offered
+  return keptDeal(plan, interval, ws) ? LEGACY_TEAM.label : PRICES[plan]?.[interval] ? LABELS[plan][interval] : '';
+}
+function priceInfo(id) {                                             // which plan and period a Stripe price is; null = not a plan price
+  if (!id) return null;
+  for (const plan of ['team', 'company']) for (const interval of ['month', 'year']) if (PRICES[plan][interval] === id) return { plan, interval, label: LABELS[plan][interval] };
+  if (id === LEGACY_TEAM.price) return { plan: 'team', interval: 'year', label: LEGACY_TEAM.label, kept: true };
+  return RETIRED[id] ? { ...RETIRED[id], retired: true } : null;
+}
+function priceLabelOf(a, ws) {                                       // what this account pays (or would pay first)
+  if (a && a.priceLabel) return a.priceLabel;
+  const plan = a && a.plan === 'company' ? 'company' : 'team';
+  return (a && a.subscription ? labelFor(plan, periodOf(a), ws) : '') || labelFor(plan, 'month', ws) || labelFor(plan, 'year', ws);
+}
+const planBaseMb = (store, ws) => SELF_HOSTED ? STORAGE_BASE_MB : planOf(store, ws) === 'company' ? companyMb() : PLANS.team.baseMb;   // T-0314: the plan's own size; self-hosted keeps CHAMBER_FILES_QUOTA_MB
+function planBaseMbFor(sess) {   // exported below                                        // for server.js: the file space that comes with this session's plan
+  const store = load(), a = sess?.email && store.accounts[sess.email], ws = store.workspaces[sess?.agent ? sess.ws : a?.workspace];
+  return ws ? planBaseMb(store, ws) : STORAGE_BASE_MB;
+}
 function fullMembers(store, wsId) { const ws = store.workspaces[wsId]; return members(store, wsId).filter(a => !GUEST_ROLES.includes(wsRoleOf(a, ws))); }
 function guestMembers(store, wsId) { const ws = store.workspaces[wsId]; return members(store, wsId).filter(a => GUEST_ROLES.includes(wsRoleOf(a, ws))); }
 function inviteRole(ws, code) {                                    // which role an invite code gives in this workspace, or null
   if (ws.invite && same(ws.invite, code)) return 'member';
-  for (const r of GUEST_ROLES) if (ws.invites && ws.invites[r] && same(ws.invites[r], code)) return r;
+  for (const r of INVITE_KINDS) if (ws.invites && ws.invites[r] && same(ws.invites[r], code)) return r;
   return null;
 }
 function findInvite(store, code) { for (const ws of Object.values(store.workspaces)) { const role = inviteRole(ws, code); if (role) return { ws, role }; } return null; }
@@ -248,21 +425,21 @@ function approverNames(store, ws) {                                // usernames 
     const role = wsRoleOf(a, ws);
     if (role === 'requester') return false;
     if (role === 'owner') return true;
-    return named.size ? named.has(a.username.toLowerCase()) : role !== 'viewer';
+    return named.size ? named.has(a.username.toLowerCase()) : (role !== 'viewer' || a.approves === true);   // T-0295: an approver (a viewer with approves) decides by default
   }).map(a => a.username);
 }
-function approvalCheck(wsId, ticket, actor, action) {              // server.js asks before every approve / reject. -> { ok, code, error, needs, note }
+function approvalCheck(wsId, ticket, actor, action, noun = 'ticket') {   // server.js asks before every approve / reject. -> { ok, code, error, needs, note }; noun 'review' for code reviews (T-0247)
   if (!ENABLED || !wsId) return { ok: true, needs: 1 };
   const store = load(), ws = store.workspaces[wsId];
   if (!ws) return { ok: true, needs: 1 };
   const lc = s => String(s || '').toLowerCase(), rules = approvalRules(ws), eligible = approverNames(store, ws);
   if (!eligible.some(u => lc(u) === lc(actor))) return { ok: false, code: 403, error: rules.approvers.length
-    ? `In this workspace only ${eligible.join(', ')} may approve or reject tickets (the owner's approval rules).`
-    : 'Only people in a full seat may approve or reject tickets here. A viewer can approve when the owner names them in the approval rules.' };
+    ? `In this workspace only ${eligible.join(', ')} may approve or reject ${noun}s (the owner's approval rules).`
+    : `Only builders and approvers may approve or reject ${noun}s here. A viewer can approve when the owner makes them an approver.` };
   if (action !== 'approve') return { ok: true };
   const notes = [], others = eligible.filter(u => lc(u) !== lc(ticket.proposed_by));
   if (rules.noSelf && lc(ticket.proposed_by) === lc(actor)) {
-    if (others.length) return { ok: false, code: 403, error: `You proposed ${ticket.id}, and in this workspace nobody approves their own ticket. ${others.slice(0, 3).join(', ')} can approve it.` };
+    if (others.length) return { ok: false, code: 403, error: `You ${noun === 'review' ? 'started' : 'proposed'} ${ticket.id}, and in this workspace nobody approves their own ${noun}. ${others.slice(0, 3).join(', ')} can approve it.` };
     notes.push('the rule that nobody approves their own ticket could not be met: nobody else here may approve');
   }
   let needs = (rules.two === 'all' || (rules.two === 'high' && ['high', 'critical'].includes(lc(ticket.priority)))) ? 2 : 1;
@@ -351,6 +528,7 @@ function budgetWorkspaces() {
     .map(ws => ({ ws: ws.id, admins: members(store, ws.id).filter(a => ['owner', 'admin'].includes(wsRoleOf(a, ws)) && (a.chatRole || 'human') === 'human').map(a => a.username) }));
 }
 // T-0205: who gets the email when a request moves. { email, username, wanted, confirmed } for a person of this workspace, else null.
+function agentTasksOn(wsId) { const ws = ENABLED && wsId ? load().workspaces[wsId] : null; return !!ws && ws.agentTasks === true; }   // T-0245: off unless the owner switched it on
 function draftsOn(wsId) { const ws = ENABLED && wsId ? load().workspaces[wsId] : null; return !!ws && !ws.requestDraftsOff; }   // T-0207: on unless the owner switched it off
 function requestMailFor(wsId, username) {
   if (!ENABLED || !wsId || !username) return null;
@@ -399,7 +577,7 @@ function tokenSession(token) {
     if (!t) continue;
     if (!same(t.hash, sha(m[2]))) return null;
     if (Date.now() - (t.lastUsed || 0) > 300000) { t.lastUsed = Date.now(); save(store); }   // at most one write per 5 min
-    return { token, username: t.username, role: 'ai', agent: true, ws: ws.id, expires: Infinity, mayAsk: !!t.mayAsk };   // T-0188
+    return { token, username: t.username, role: 'ai', agent: true, ws: ws.id, expires: Infinity, mayAsk: !!t.mayAsk, answersAgents: !!t.answersAgents };   // T-0188; T-0317
   }
   return null;
 }
@@ -434,7 +612,7 @@ function accessOf(acct, store) {                                   // 'full' | '
   if (!acct) return 'none';
   if (acct.role === 'admin') return 'full';
   const payer = payerOf(acct, store), st = billingState(payer);
-  if (st === 'free') return payer && payer.email === acct.email ? 'full' : 'readonly';   // T-0225: the free plan is for the owner alone; the rest may read
+  if (st === 'free') return hasFreeSeat(acct, store) ? 'full' : 'readonly';   // T-0225, T-0288: the owner and whoever joined first, up to FREE_PEOPLE; the rest may read
   return st === 'none' ? 'none' : st === 'readonly' ? 'readonly' : 'full';
 }
 function entitled(acct, store) { return accessOf(acct, store) !== 'none'; }
@@ -443,17 +621,49 @@ function billingView(acct, store) {                                // what /api/
   const payer = payerOf(acct, store);
   return { state: acct.role === 'admin' ? 'ok' : billingState(payer), access: accessOf(acct, store), graceEndsAt: billingState(payer) === 'grace' ? graceEndsAt(payer) : null,
            payer: payer ? payer.username : null, isPayer: !!payer && payer.email === acct.email,
-           trial: billingState(payer) === 'trial', trialEndsAt: onTrialClock(payer) ? payer.trialEndsAt : null, trialOver: onTrialClock(payer) && ['readonly', 'free'].includes(billingState(payer)), free: billingState(payer) === 'free',   // T-0159; T-0225
+           trial: billingState(payer) === 'trial', trialEndsAt: onTrialClock(payer) ? payer.trialEndsAt : null, trialOver: onTrialClock(payer) && ['readonly', 'free'].includes(billingState(payer)), free: billingState(payer) === 'free', freePeople: freePeopleFor(store.workspaces[(payer || acct).workspace]), plan: payer && ['ok', 'grace', 'readonly'].includes(billingState(payer)) ? (payer.plan === 'company' ? 'company' : 'team') : null, founding: payer && payer.founding ? payer.founding.n : null,   // T-0159; T-0225; T-0288; T-0295
+           interval: payer && ['ok', 'grace', 'readonly'].includes(billingState(payer)) ? periodOf(payer) : null, foundingLabel: payer && payer.founding ? payer.founding.label || null : null,   // T-0310
            trialPending: onTrialClock(payer) && !verified(payer) && Date.now() < payer.trialEndsAt };
 }
 // Storage add-on: packs count only while the payer's subscription is good (ok or grace). Nothing is deleted when they stop
 // counting; the workspace just cannot take new files while it is over its limit.
-function storagePacksOf(payer) { return STORAGE_ON() && payer && payer.subscription && ['ok', 'grace'].includes(billingState(payer)) ? (payer.storagePacks || 0) : 0; }
+function storagePacksOf(payer) { return STORAGE_ON() && payer && payer.subscription && billingState(payer) === 'ok' ? (payer.storagePacks || 0) : 0; }   // T-0311: a failed payment pauses the packs (not 'grace')
+// T-0311: the Billing tab. What a plan and its packs give (MB); a change asked for (plan, period, packs: whatever is not given stays),
+// checked once for both the preview and the change; and the subscription lines after it.
+const limitMbOf = (plan, packs) => (plan === 'company' ? companyMb() : PLANS.team.baseMb) + packs * STORAGE_PACK_GB * 1024;   // T-0314
+function changeTarget(store, ws, P, b) {
+  const havePlan = P.plan === 'company' ? 'company' : 'team', haveIv = periodOf(P), havePacks = P.storagePacks || 0;
+  const plan = b?.plan === undefined ? havePlan : b.plan, iv = b?.interval === undefined ? haveIv : b.interval, packs = b?.packs === undefined ? havePacks : b.packs;
+  if (!['team', 'company'].includes(plan)) return { error: 'plan must be team or company' };
+  if (!['month', 'year'].includes(iv)) return { error: 'interval must be month or year' };
+  if (!Number.isInteger(packs) || packs < 0 || packs > STORAGE_MAX_PACKS) return { error: `Choose between 0 and ${STORAGE_MAX_PACKS} packs.` };
+  if (P.cancelAtPeriodEnd) return { error: 'The plan is set to cancel. Keep it first (Billing tab), then change it. Nothing was changed.' };
+  if (!priceFor(plan, iv, ws)) return { error: `The ${plan === 'company' ? 'Company' : 'Team'} plan is not offered ${iv === 'year' ? 'yearly' : 'monthly'} on this Chamber. Nothing was changed.` };
+  if (packs > 0 && !STORAGE_PRICES[iv]) return { error: `Extra storage is not offered on ${iv === 'month' ? 'monthly' : 'yearly'} plans on this Chamber. Remove it first. Nothing was changed.` };
+  const n = fullMembers(store, ws.id).length, cap = planCap(ws, plan);
+  if (plan !== havePlan && n > cap) return { status: 409, error: `This workspace has ${n} builders and the ${plan === 'company' ? 'Company' : 'Team'} plan covers ${cap}. Make some of them approvers or viewers first. Nothing was changed.` };
+  const charges = (plan === 'company' && havePlan === 'team') || (iv === 'year' && haveIv === 'month') || packs > havePacks;
+  return { plan, iv, packs, havePlan, haveIv, havePacks, charges, same: plan === havePlan && iv === haveIv && packs === havePacks };
+}
+function changeItems(sub, t, ws) {                                   // Stripe keeps every line of a subscription on one period: they move together
+  const items = sub.items?.data || [], planItem = items.find(i => priceInfo(i.price?.id)), stItem = items.find(i => isStoragePrice(i.price?.id)), out = [];
+  if (planItem) out.push({ id: planItem.id, price: priceFor(t.plan, t.iv, ws) });
+  if (t.packs > 0) out.push(stItem ? { id: stItem.id, price: STORAGE_PRICES[t.iv], quantity: t.packs } : { price: STORAGE_PRICES[t.iv], quantity: t.packs });
+  else if (stItem) out.push({ id: stItem.id, deleted: 'true' });
+  return Object.fromEntries(out.map((x, i) => [i, x]));
+}
+async function previewInvoice(P, extra) {                            // what Stripe would bill (now, for a change; or next, with no change); null if it cannot say
+  try { return await stripe('GET', 'invoices/upcoming', { customer: P.stripeCustomer, subscription: P.subscription, ...extra }); }
+  catch (e) { console.error('[accounts] preview:', e.message); return null; }
+}
+const usedBytesOf = (ctx, ws) => { try { return (ctx.withWorkspace(ws.id, () => ctx.filesUsed()) || { b: 0 }).b || 0; } catch { return 0; } };
+const biggestFiles = (ctx, ws) => { try { return (ctx.withWorkspace(ws.id, () => ctx.listFiles()) || []).sort((a, b) => (b.size || 0) - (a.size || 0)).slice(0, 5).map(f => ({ name: f.name, size: f.size || 0, folder: f.folder || null })); } catch { return []; } };
+const mbText = b => b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.ceil(b / 1048576) + ' MB';
 function storageView(acct, store) {                                // what the account page shows; null = not offered here
   if (!STORAGE_ON() || !acct) return null;
-  const payer = payerOf(acct, store), isPayer = !!payer && payer.email === acct.email;
-  return { packGb: STORAGE_PACK_GB, label: STORAGE_LABEL, maxPacks: STORAGE_MAX_PACKS, baseMb: STORAGE_BASE_MB, packs: storagePacksOf(payer), isPayer,
-           canChange: isPayer && payer.subStatus === 'active' && !!payer.subscription && !payer.cancelAtPeriodEnd };
+  const payer = payerOf(acct, store), isPayer = !!payer && payer.email === acct.email, iv = periodOf(payer), pws = payer && store.workspaces[payer.workspace];
+  return { packGb: STORAGE_PACK_GB, label: STORAGE_PRICES[iv] ? STORAGE_LABELS[iv] : '', period: iv, maxPacks: STORAGE_MAX_PACKS, baseMb: pws ? planBaseMb(store, pws) : PLANS.team.baseMb, packs: storagePacksOf(payer), isPayer,   // T-0310: the plan's period; Company's 5 GB
+           canChange: isPayer && payer.subStatus === 'active' && !!payer.subscription && !payer.cancelAtPeriodEnd && !!STORAGE_PRICES[iv] };
 }
 function storageExtraMbFor(sess) {                                 // for server.js: extra MB this session's workspace has bought
   if (!STORAGE_ON()) return 0;
@@ -461,14 +671,21 @@ function storageExtraMbFor(sess) {                                 // for server
   const payer = sess?.agent ? store.accounts[store.workspaces[sess.ws]?.owner] : sess?.email && store.accounts[sess.email] ? payerOf(store.accounts[sess.email], store) : null;
   return storagePacksOf(payer) * STORAGE_PACK_GB * 1024;
 }
+function planList(ws) {                                              // T-0295, T-0310: what the pages show; a plan or period only where its price is configured
+  if (SELF_HOSTED) return null;
+  const one = (plan, storageMb) => { const month = labelFor(plan, 'month', ws), year = labelFor(plan, 'year', ws);
+    return month || year ? { label: month || year, month: month || null, year: year || null, builders: ws ? planCap(ws, plan) : PLANS[plan].builders, storageMb } : null; };
+  return { team: one('team', PLANS.team.baseMb), company: one('company', companyMb()), yearNote: '2 months free' };   // T-0314
+}
 function publicView(acct, store) {
   const ws = store.workspaces[acct.workspace] || {};
   const owner = store.accounts[ws.owner];
   return { email: acct.email, username: acct.username, role: acct.role, entitled: entitled(acct, store),
            subStatus: acct.subStatus || null, periodEnd: acct.periodEnd || null, cancelAtPeriodEnd: !!acct.cancelAtPeriodEnd,
-           hasCustomer: !!acct.stripeCustomer, price: SELF_HOSTED ? 'self-hosted (no subscription)' : PRICE_LABEL, selfHosted: SELF_HOSTED, billing: billingView(acct, store), storage: storageView(acct, store),   // T-0028/T-0061
+           hasCustomer: !!acct.stripeCustomer, price: SELF_HOSTED ? 'self-hosted (no subscription)' : priceLabelOf(owner || acct, ws), plans: planList(ws), selfHosted: SELF_HOSTED, billing: billingView(acct, store), storage: storageView(acct, store),   // T-0028/T-0061; T-0310
            emailVerified: verified(acct), verifyRequired: VERIFY_REQUIRED(), logins: (acct.logins || []).slice(-5).map(l => ({ ip: l.ip, at: l.at, device: l.ua })),   // T-0032
-           totp: !!acct.totp, needsTotp: !acct.totp && ws.owner === acct.email && Object.keys(ws.tokens || {}).length > 0,   // T-0040: owners who hold agent tokens should have 2FA
+           totp: !!acct.totp, passkeyLogin: pkLoginOn(acct), needsTotp: !twoStep(acct) && ws.owner === acct.email && Object.keys(ws.tokens || {}).length > 0,   // T-0040: owners who hold agent tokens should have 2FA
+           security: wsSecurity(ws),                                                                   // T-0241 part 3: the workspace's rules, shown to everyone
            workspace: { id: ws.id, name: ws.name, role: wsRoleOf(acct, ws) || 'member', owner: owner ? owner.username : null,
                         ownerSubscribed: !!owner && (owner.role === 'admin' || subscribed(owner)) } };
 }
@@ -517,8 +734,12 @@ function applySubscription(acct, sub) {                          // copy what ma
   acct.subStatus = sub.status;
   acct.periodEnd = sub.current_period_end || sub.items?.data?.[0]?.current_period_end || acct.periodEnd || null;
   acct.cancelAtPeriodEnd = !!sub.cancel_at_period_end;
-  if (STORAGE_PRICE && Array.isArray(sub.items?.data)) {            // storage add-on: the quantity on its subscription line is the number of packs
-    const si = sub.items.data.find(i => i.price?.id === STORAGE_PRICE);
+  if (Array.isArray(sub.items?.data)) {                             // T-0295, T-0310: Team or Company, monthly or yearly, by the price on the subscription
+    const pi = sub.items.data.map(i => priceInfo(i.price?.id)).find(Boolean);
+    if (pi) { acct.plan = pi.plan; acct.interval = pi.interval; acct.priceLabel = pi.label; }
+  }
+  if ((STORAGE_PRICES.month || STORAGE_PRICES.year || STORAGE_OLD) && Array.isArray(sub.items?.data)) {   // storage add-on: the quantity on its subscription line is the number of packs
+    const si = sub.items.data.find(i => isStoragePrice(i.price?.id));
     acct.storagePacks = si ? Math.max(0, Math.min(STORAGE_MAX_PACKS, parseInt(si.quantity, 10) || 0)) : 0;
   }
   if (sub.customer) acct.stripeCustomer = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
@@ -543,14 +764,15 @@ function rawBody(req, limit = 1e6) {
   });
 }
 function redirect(res, to) { res.writeHead(302, { Location: to }); res.end(); }
-function setSessionCookie(res, ctx, token) {
-  res.setHeader('Set-Cookie', `chamber_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${ctx.sessionTtl / 1000}` + (ctx.cookieSecure ? '; Secure' : ''));
+function setSessionCookie(res, ctx, token, pol) {                  // T-0241 part 2: pol = sessionPolicyOf(acct); remember off = a cookie that ends with the browser
+  const age = pol ? (pol.remember ? `; Max-Age=${pol.days * 86400}` : '') : `; Max-Age=${ctx.sessionTtl / 1000}`;
+  res.setHeader('Set-Cookie', `chamber_session=${token}; HttpOnly; SameSite=Strict; Path=/${age}` + (ctx.cookieSecure ? '; Secure' : ''));
 }
 function clientIp(req) {                                          // behind nginx the real address is the LAST X-Forwarded-For hop (nginx appends it; the first hop is whatever the client sent) — T-0030
   const hops = String(req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
   return hops.length ? hops[hops.length - 1] : (req.socket.remoteAddress || '?');
 }
-function signIn(res, ctx, acct) {                                 // create the Chamber session + make sure the app knows the user (in ITS workspace)
+function signIn(res, ctx, acct, req) {                                 // create the Chamber session + make sure the app knows the user (in ITS workspace)
   const chatRole = acct.chatRole || 'human';
   ctx.withWorkspace(acct.workspace, () => {
     const data = ctx.loadData();
@@ -558,8 +780,10 @@ function signIn(res, ctx, acct) {                                 // create the 
     data.users[acct.username] = { username: acct.username, role: chatRole, lastSeen: Date.now(), joinedAt: existing?.joinedAt || Date.now() };
     ctx.saveData(data);
   });
-  const token = ctx.createSession(acct.username, chatRole, { email: acct.email });
-  setSessionCookie(res, ctx, token);
+  const wsNow = load().workspaces[acct.workspace], pol = effectiveSession(acct, wsNow);   // T-0241 parts 2+3: the sign-in length (the workspace rule may shorten it); device and address for the devices list
+  const token = ctx.createSession(acct.username, chatRole, { email: acct.email, ...effectiveLock(acct, wsNow), recheckMin: effectiveRecheck(acct, wsNow), checkedAt: Date.now(), ttlMs: pol.days * 864e5,   // T-0241 part 4: signing in is a fresh check
+    ua: req ? String(req.headers['user-agent'] || '').slice(0, 200) : '', ip: req ? clientIp(req) : '' });   // T-0241: the person's screen-lock choices ride on the session
+  setSessionCookie(res, ctx, token, pol);
   return token;
 }
 function endSessions(ctx, email) {                                // log an account out everywhere (removal, etc.)
@@ -630,13 +854,14 @@ async function handle(req, res, url, ctx0) {
   const myWs = me ? store.workspaces[me.workspace] : null;
   const amOwner = !!(me && myWs && myWs.owner === me.email);
   const amAdmin = amOwner || !!(me && myWs && me.wsRole === 'admin');   // T-0034: admins manage members, invites and agent tokens; billing, roles and transfer stay with the owner
+  const myRole = me && myWs ? wsRoleOf(me, myWs) : null;              // T-0246: the role permissions.js reads (owner, admin, member, viewer, requester)
 
   // Pages
   if (m === 'GET' && (p === '/' || p === '/index.html')) {
     if (me && entitled(me, store)) return redirect(res, '/app'), true;
     return ctx.serveStatic(res, LANDING, req), true;
   }
-  if (m === 'GET' && (['/signup', '/login', '/billing', '/account', '/forgot'].includes(p) || /^\/(join|reset)\/[A-Za-z0-9_-]{8,}$/.test(p))) {
+  if (m === 'GET' && (['/signup', '/login', '/billing', '/account', '/settings', '/forgot'].includes(p) || /^\/(join|reset)\/[A-Za-z0-9_-]{8,}$/.test(p))) {
     return ctx.serveStatic(res, LANDING, req), true;
   }
   if (m === 'GET' && (p === '/source' || p === '/source/')) {               // T-0010: AGPL §13, the exact source we run, as a tarball
@@ -704,6 +929,11 @@ async function handle(req, res, url, ctx0) {
           acct.stripeCustomer = obj.customer;
           const sub = paidSub; if (!sub) throw new Error('checkout completed without a subscription');
           applySubscription(acct, sub); clearFailure(acct);
+          if (!acct.founding && ['active', 'trialing'].includes(sub.status)) {   // T-0295: the first paying workspaces keep the price they signed up at
+            const n = Object.values(store.accounts).filter(a => a.founding).length;
+            if (n < FOUNDING_MAX) acct.founding = { n: n + 1, at: Date.now(), plan: acct.plan || 'team', interval: periodOf(acct), label: priceLabelOf(acct, store.workspaces[acct.workspace]),   // T-0310: the exact price
+                                                    price: (sub.items?.data || []).map(i => i.price?.id).find(id => priceInfo(id)) || null };
+          }
           console.log(`[accounts] paid: ${acct.username} (${sub.status})`);
         }
       } else if (['customer.subscription.updated', 'customer.subscription.deleted', 'customer.subscription.paused', 'customer.subscription.resumed'].includes(ev.type)) {
@@ -729,7 +959,21 @@ async function handle(req, res, url, ctx0) {
         } else console.log(`[accounts] payment failed for unknown customer ${obj.customer}`);
       } else if (ev.type === 'invoice.payment_succeeded' || ev.type === 'invoice.paid') {
         const acct = findByCustomer(store, obj.customer);
-        if (acct) { clearFailure(acct); console.log(`[accounts] payment ok: ${acct.username}`); }
+        if (acct) { clearFailure(acct); console.log(`[accounts] payment ok: ${acct.username}`);
+          // T-0310: a receipt by email for every payment, so a monthly plan gets one each month. Only on invoice.paid (Stripe also
+          // sends invoice.payment_succeeded for the same payment), once per invoice even if Stripe sends the event again.
+          if (ev.type === 'invoice.paid' && (obj.amount_paid || 0) > 0 && obj.id && !(acct.receipts || []).includes(obj.id)) {
+            acct.receipts = [...(acct.receipts || []), obj.id].slice(-50);
+            const cur = String(obj.currency || 'usd').toUpperCase(), amt = (cur === 'USD' ? '$' : cur + ' ') + (obj.amount_paid / 100).toFixed(2);
+            const when = new Date(((obj.status_transitions && obj.status_transitions.paid_at) || obj.created || Date.now() / 1000) * 1000).toUTCString().slice(0, 16);
+            const link = typeof obj.hosted_invoice_url === 'string' && /^https:\/\/[a-z0-9.-]*stripe\.com\//.test(obj.hosted_invoice_url) ? obj.hosted_invoice_url : '';
+            const number = typeof obj.number === 'string' ? obj.number.replace(/[^\w-]/g, '').slice(0, 40) : '';
+            const letter = { to: acct.email, subject: `Chamber: receipt for ${amt}`, text: `Hello ${acct.username},\n\nThank you. We received ${amt} for Chamber on ${when}${number ? ` (invoice ${number})` : ''}.\n\n`
+              + (link ? `The invoice, with a PDF to download: ${link}\n\n` : '') + `Your plan and storage: ${PUBLIC_URL}/billing\n\nQuestions, or a refund within 14 days: reply to this email or write to ${CONTACT_TO}.\n` };
+            if (TEST_HOOKS) console.log(`[accounts] receipt mail to ${letter.to}: ${amt}${number ? ' ' + number : ''}`);
+            if (mail.enabled) mail.send(letter).catch(e => console.error('[accounts] receipt mail failed:', e.message));
+          }
+        }
       }
       seen(); save(store);
     } catch (e) { console.error('[accounts] webhook:', e.message); return ctx.json(res, 500, { error: 'internal' }), true; }
@@ -738,7 +982,7 @@ async function handle(req, res, url, ctx0) {
 
   // Public bits the sign-up form needs
   if (p === '/account/config' && m === 'GET') {
-    return ctx.json(res, 200, { inviteRequired: !!INVITE_CODE && !TRIAL_ON(), trialDays: TRIAL_ON() ? TRIAL_DAYS : 0, price: PRICE_LABEL, resetByEmail: mail.enabled, freePlan: FREE_ON() ? { tokens: FREE_TOKENS } : null, storage: STORAGE_ON() ? { packGb: STORAGE_PACK_GB, label: STORAGE_LABEL, baseMb: STORAGE_BASE_MB } : null }), true;
+    return ctx.json(res, 200, { inviteRequired: !!INVITE_CODE && !TRIAL_ON(), trialDays: TRIAL_ON() ? TRIAL_DAYS : 0, price: PRICE_LABEL, resetByEmail: mail.enabled, freePlan: FREE_ON() ? { tokens: FREE_TOKENS, people: FREE_PEOPLE } : null, plans: SELF_HOSTED ? null : { ...planList(null), foundingLeft: Math.max(0, FOUNDING_MAX - Object.values(load().accounts).filter(a => a.founding).length) }, storage: STORAGE_ON() ? { packGb: STORAGE_PACK_GB, label: STORAGE_PRICES.month ? STORAGE_LABELS.month : STORAGE_LABELS.year, month: STORAGE_PRICES.month ? STORAGE_LABELS.month : null, year: STORAGE_PRICES.year ? STORAGE_LABELS.year : null, baseMb: PLANS.team.baseMb, companyMb: companyMb() } : null }), true;   // T-0310; T-0314: the plans' own sizes
   }
   // T-0162: public contact form. Anyone may write; nothing here is trusted. Plain text only, strict sizes, 3 per address per
   // hour and 200 a day in total, a hidden field that only bots fill, stored in contact.jsonl beside accounts.json (owner-only
@@ -786,11 +1030,11 @@ async function handle(req, res, url, ctx0) {
     const email = String(b?.email || '').trim().toLowerCase();
     const username = String(b?.username || '').trim();
     const password = String(b?.password || '');
-    const joined = b?.join ? findInvite(store, String(b.join)) : null, joinWs = joined ? joined.ws : null, joinRole = joined ? joined.role : 'member';   // T-0199: the link decides the role
+    const joined = b?.join ? findInvite(store, String(b.join)) : null, joinWs = joined ? joined.ws : null, joinApprover = !!joined && joined.role === 'approver', joinRole = joined ? (joinApprover ? 'viewer' : joined.role) : 'member';   // T-0295: an approver link = viewer + approves   // T-0199: the link decides the role
     if (b?.join && !joinWs) return ctx.json(res, 400, { error: 'This invite link is not valid any more.' }), true;
-    if (joinWs && billingState(store.accounts[joinWs.owner]) === 'free') return ctx.json(res, 403, { error: 'This workspace is on Chamber\'s free plan, which is for one person. Ask its owner to subscribe, then open the invite link again.', plan: 'free' }), true;   // T-0225
-    if (joinWs && joinRole === 'member' && fullMembers(store, joinWs.id).length >= MAX_MEMBERS) return ctx.json(res, 403, { error: `This workspace is full (${MAX_MEMBERS} members). Ask the owner to free a seat.` }), true;   // T-0033
-    if (joinWs && joinRole !== 'member' && guestMembers(store, joinWs.id).length >= MAX_GUESTS) return ctx.json(res, 403, { error: `This workspace has no free places for viewers and requesters (${MAX_GUESTS}). Ask the owner.` }), true;   // T-0199
+    if (joinWs && billingState(store.accounts[joinWs.owner]) === 'free' && members(store, joinWs.id).length >= freePeopleFor(joinWs)) return ctx.json(res, 403, { error: `This workspace is on Chamber's free plan, which covers ${freePeopleFor(joinWs) === 1 ? 'one person' : freePeopleText()}, and it is full. Ask its owner to subscribe, then open the invite link again.`, plan: 'free' }), true;   // T-0225; T-0288: full at FREE_PEOPLE
+    if (joinWs && joinRole === 'member' && fullMembers(store, joinWs.id).length >= builderLimit(store, joinWs)) return ctx.json(res, 403, { error: `This workspace has no free builder seat (${builderLimit(store, joinWs)} on its plan). Ask the owner for an approver link, which uses no seat, or to move to a bigger plan.` }), true;   // T-0033; T-0295: by plan
+    if (joinWs && joinRole !== 'member' && !guestsUnlimited(store, joinWs) && guestMembers(store, joinWs.id).length >= MAX_GUESTS) return ctx.json(res, 403, { error: `This workspace has no free places for viewers and requesters (${MAX_GUESTS}). Ask the owner.` }), true;   // T-0199; T-0295: no limit on a paid plan
     const trialSignup = !joinWs && TRIAL_ON();                                             // T-0159: a new workspace on the free trial
     if (trialSignup) { const day = (trialSignups.get(clientIp(req)) || []).filter(t => Date.now() - t < 86400e3);
       if (day.length >= TRIAL_SIGNUPS_PER_IP_DAY) return ctx.json(res, 429, { error: 'Too many new accounts from this network today. Try again tomorrow, or write to us from the Contact form.' }), true; }
@@ -806,7 +1050,7 @@ async function handle(req, res, url, ctx0) {
     const salt = crypto.randomBytes(16).toString('hex');
     const acct = { email, username, salt, hash: hash(password, salt), role: 'member', chatRole: b?.role === 'ai' ? 'ai' : 'human',
                    createdAt: Date.now(), stripeCustomer: null, subscription: null, subStatus: null, periodEnd: null };
-    if (joinWs) { acct.workspace = joinWs.id; acct.wsRole = joinRole; } else createWorkspace(store, acct);
+    if (joinWs) { acct.workspace = joinWs.id; acct.wsRole = joinRole; if (joinApprover) acct.approves = true; } else createWorkspace(store, acct);
     if (trialSignup) { const used = (store.trials ||= {}), h = sha('trial:' + email);       // T-0159 review: one trial per email address, also after deleting the account and signing up again
       acct.trialEndsAt = used[h] || Date.now() + TRIAL_MS; used[h] = acct.trialEndsAt; const ip = clientIp(req); trialSignups.set(ip, [...(trialSignups.get(ip) || []).filter(t => Date.now() - t < 86400e3), Date.now()]);
       if (trialSignups.size > 5000) for (const [k, v] of trialSignups) if (!v.some(t => Date.now() - t < 86400e3)) trialSignups.delete(k); }
@@ -815,7 +1059,7 @@ async function handle(req, res, url, ctx0) {
     if (trialSignup && acct.emailVerified === false) acct.unconfirmedSince = Date.now();   // T-0176: only sign-ups carrying this mark are ever cleaned up
     acct.logins = [{ ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 120), at: Date.now() }];
     save(store);
-    const token = signIn(res, ctx, acct);
+    const token = signIn(res, ctx, acct, req);
     console.log(`[accounts] signup: ${username}${joinWs ? ' (joined ' + joinWs.id + ')' : ''}`);
     ctx.withWorkspace(acct.workspace, () => ctx.audit({ username }, { action: joinWs ? 'member-join' : 'workspace-create' }, true));   // T-0057
     return ctx.json(res, 200, { ok: true, account: publicView(acct, store), token }), true;   // token: for API clients (Authorization: Bearer)
@@ -826,17 +1070,19 @@ async function handle(req, res, url, ctx0) {
     const id = String(b?.email || '').trim().toLowerCase();
     const acct = store.accounts[id] || store.accounts[store.usernames[id] || ''];     // email or username
     if (!acct || !checkPw(acct, b?.password)) return ctx.json(res, 401, { error: 'Wrong email/username or password.' }), true;
-    if (acct.totp && !rememberedDevice(req, acct)) {                                               // T-0040: second step
+    if (twoStep(acct) && !rememberedDevice(req, acct)) {                                           // T-0040: second step (T-0241 (a): the code or a passkey)
       const mfaToken = crypto.randomBytes(24).toString('base64url');
       store.mfaPending ||= {};
       for (const [k, v] of Object.entries(store.mfaPending)) if (v.expires < Date.now()) delete store.mfaPending[k];
       store.mfaPending[sha(mfaToken)] = { email: acct.email, expires: Date.now() + 5 * 60e3 }; save(store);
-      return ctx.json(res, 200, { ok: true, mfa: true, mfaToken, message: 'Enter the 6-digit code from your authenticator app, or a recovery code.' }), true;
+      const pk = (acct.passkeys || []).length > 0 && !!pkRp(), totp = !!acct.totp;
+      return ctx.json(res, 200, { ok: true, mfa: true, mfaToken, totp, passkey: pk, message: totp && pk ? 'Enter the 6-digit code from your authenticator app or a recovery code, or use a passkey.'
+        : totp ? 'Enter the 6-digit code from your authenticator app, or a recovery code.' : 'Use your passkey to finish signing in.' }), true;
     }
     acct.lastLogin = Date.now(); const fresh = noteLogin(req, acct); save(store);                 // T-0032
     if (acct.workspace) ctx.withWorkspace(acct.workspace, () => ctx.audit({ username: acct.username }, { action: 'login', newAddress: fresh && acct.logins.length > 1 ? true : undefined }, true));   // T-0057
     if (fresh && acct.logins.length > 1) console.log(`[accounts] login from a new address: ${acct.username} ${clientIp(req)}`);
-    const token = signIn(res, ctx, acct);
+    const token = signIn(res, ctx, acct, req);
     return ctx.json(res, 200, { ok: true, account: publicView(acct, store), token }), true;
   }
   if (p === '/account/reset-request' && m === 'POST') {           // T-0008: send a time-limited reset link (always answers OK)
@@ -867,6 +1113,7 @@ async function handle(req, res, url, ctx0) {
     const acct = store.accounts[rec.email];
     if (!acct) return ctx.json(res, 400, { error: 'That account no longer exists.' }), true;
     if (acct.totp && !secondFactorOk(acct, b?.code)) { save(store); return ctx.json(res, 403, { error: 'This account uses two-factor authentication. Enter the code from your authenticator app or a recovery code.', mfa: true }), true; }   // T-0040
+    const pkOnly = !acct.totp && pkLoginOn(acct);                     // T-0241 (a): the reset link proves the email, not the passkey: change the password, then sign in with both
     acct.salt = crypto.randomBytes(16).toString('hex'); acct.hash = hash(pw, acct.salt);
     if (acct.emailVerified === false) {                                // 2026-11-12: the reset link was mailed to this address and opened, which proves the address as well as
       acct.emailVerified = true; delete acct.unconfirmedSince;         // the confirm link would. Before this, someone who set a password by email was still told to confirm their email.
@@ -875,7 +1122,8 @@ async function handle(req, res, url, ctx0) {
     }
     delete store.resets[sha(String(b.token))]; save(store);
     endSessions(ctx, acct.email);
-    const token = signIn(res, ctx, acct);
+    if (pkOnly) { console.log(`[accounts] password reset via email (passkey sign-in on, not signed in): ${acct.username}`); return ctx.json(res, 200, { ok: true, signIn: true, message: 'Password changed. Now sign in with it and your passkey.' }), true; }
+    const token = signIn(res, ctx, acct, req);
     console.log(`[accounts] password reset via email: ${acct.username}`);
     return ctx.json(res, 200, { ok: true, account: publicView(acct, store), token }), true;
   }
@@ -924,7 +1172,7 @@ async function handle(req, res, url, ctx0) {
     const rec = store.mfaPending?.[sha(String(b?.mfaToken || ''))];
     if (!rec || rec.expires < Date.now()) return ctx.json(res, 400, { error: 'This sign-in attempt expired. Start again.' }), true;
     const acct = store.accounts[rec.email];
-    if (!acct || !acct.totp) { delete store.mfaPending[sha(String(b.mfaToken))]; save(store); return ctx.json(res, 400, { error: 'Start the sign-in again.' }), true; }
+    if (!acct || !acct.totp) { if (acct && pkLoginOn(acct)) return ctx.json(res, 400, { error: 'This account signs in with a passkey, not a code. Use your passkey.' }), true; delete store.mfaPending[sha(String(b.mfaToken))]; save(store); return ctx.json(res, 400, { error: 'Start the sign-in again.' }), true; }
     if (!secondFactorOk(acct, b?.code)) { save(store); return ctx.json(res, mfaLocked(acct) ? 429 : 401, { error: mfaLocked(acct) ? 'Too many wrong codes. Wait 15 minutes, then try again.' : 'That code is not right. Codes change every 30 seconds; recovery codes work once.' }), true; }
     delete store.mfaPending[sha(String(b.mfaToken))];
     let dev = null;
@@ -934,10 +1182,50 @@ async function handle(req, res, url, ctx0) {
     }
     acct.lastLogin = Date.now(); noteLogin(req, acct); save(store);
     if (acct.workspace) ctx.withWorkspace(acct.workspace, () => ctx.audit({ username: acct.username }, { action: 'login-2fa', remembered: !!b?.remember }, true));   // T-0057
-    const token = signIn(res, ctx, acct);                                                           // sets the session cookie
+    const token = signIn(res, ctx, acct, req);                                                           // sets the session cookie
     if (dev) res.setHeader('Set-Cookie', [...[].concat(res.getHeader('Set-Cookie') || []), `chamber_mfa=${dev}; HttpOnly; SameSite=Strict; Path=/account; Max-Age=${30 * 86400}` + (ctx.cookieSecure ? '; Secure' : '')]);   // add, not replace
     console.log(`[accounts] 2fa login: ${acct.username}`);
     return ctx.json(res, 200, { ok: true, account: publicView(acct, store), token }), true;
+  }
+  if ((p === '/account/login/passkey/options' || p === '/account/login/passkey') && m === 'POST') {   // T-0241 (a): the second step with a passkey
+    if (ctx.loginThrottled(clientIp(req))) return ctx.json(res, 429, { error: 'Too many attempts. Wait a minute.' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({}));
+    const rec = store.mfaPending?.[sha(String(b?.mfaToken || ''))];
+    if (!rec || rec.expires < Date.now()) return ctx.json(res, 400, { error: 'This sign-in attempt expired. Start again.' }), true;
+    const acct = store.accounts[rec.email], rp = pkRp();
+    if (!acct || !rp || !(acct.passkeys || []).length) return ctx.json(res, 400, { error: 'This account has no passkey here. Use the code from your authenticator app.' }), true;
+    if (p === '/account/login/passkey/options') return ctx.json(res, 200, { publicKey: { challenge: pkChallenge(acct.email, 'get'), rpId: rp.id, timeout: 120000, userVerification: 'required', allowCredentials: acct.passkeys.map(k => ({ type: 'public-key', id: k.id })) } }), true;
+    try { pkVerifyGet(acct, b); }
+    catch (e) { save(store); if (acct.workspace) ctx.withWorkspace(acct.workspace, () => ctx.audit({ username: acct.username }, { action: 'login-2fa-failed', via: 'passkey', why: e.message }, true)); return ctx.json(res, 401, { error: 'The passkey did not work: ' + e.message + '.' }), true; }
+    delete store.mfaPending[sha(String(b.mfaToken))];
+    let dev = null;
+    if (b?.remember) {                                                                             // the same 30-day device cookie as the code step
+      dev = crypto.randomBytes(24).toString('base64url');
+      acct.mfaDevices = [...(acct.mfaDevices || []).filter(d => d.expires > Date.now()), { hash: sha(dev), expires: Date.now() + 30 * 86400e3, ua: String(req.headers['user-agent'] || '').slice(0, 80) }].slice(-5);
+    }
+    acct.lastLogin = Date.now(); noteLogin(req, acct); save(store);
+    if (acct.workspace) ctx.withWorkspace(acct.workspace, () => ctx.audit({ username: acct.username }, { action: 'login-2fa', via: 'passkey', remembered: !!b?.remember }, true));
+    const token = signIn(res, ctx, acct, req);
+    if (dev) res.setHeader('Set-Cookie', [...[].concat(res.getHeader('Set-Cookie') || []), `chamber_mfa=${dev}; HttpOnly; SameSite=Strict; Path=/account; Max-Age=${30 * 86400}` + (ctx.cookieSecure ? '; Secure' : '')]);
+    console.log(`[accounts] 2fa login (passkey): ${acct.username}`);
+    return ctx.json(res, 200, { ok: true, account: publicView(acct, store), token }), true;
+  }
+  if (p === '/account/passkey-login' && m === 'POST') {               // T-0241 (a): ask for the passkey when this person signs in
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({})), on = b?.on === true;
+    if (typeof b?.on !== 'boolean') return ctx.json(res, 400, { error: 'on must be true or false' }), true;
+    if (on) {
+      if (!(me.passkeys || []).length || !pkRp()) return ctx.json(res, 400, { error: 'Add a passkey first (above), then switch this on.' }), true;
+      me.passkeyLogin = true; save(store);
+      for (const [t, s] of ctx.sessions) if (s.email === me.email && t !== sess.token) ctx.sessions.delete(t);   // as with the app: other sign-ins must prove the new step
+    } else {
+      if (!me.passkeyLogin) return ctx.json(res, 200, { ok: true, on: false }), true;
+      if (!me.totp && wsSecurity(store.workspaces[me.workspace]).require2fa) return ctx.json(res, 400, { error: 'Your workspace requires two-step sign-in, so it cannot be turned off. Turn on the authenticator app first if you want to use that instead.' }), true;
+      const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g, b?.password ? 'Password is wrong.' : 'Enter your password to stop asking for the passkey at sign-in.'), true;
+      delete me.passkeyLogin; save(store);
+    }
+    if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'passkey-login', on }, true));
+    return ctx.json(res, 200, { ok: true, on }), true;
   }
   if (p === '/account/totp' && m === 'GET') {
     if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
@@ -967,6 +1255,7 @@ async function handle(req, res, url, ctx0) {
     if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
     const b = await ctx.parseBody(req).catch(() => ({}));
     if (!me.totp) return ctx.json(res, 400, { error: 'Two-factor is not on.' }), true;
+    if (wsSecurity(store.workspaces[me.workspace]).require2fa && !pkLoginOn(me)) return ctx.json(res, 400, { error: 'Your workspace requires two-factor authentication, so it cannot be turned off.' + (store.workspaces[me.workspace]?.owner === me.email ? ' Switch that rule off first (Rules for everyone, on this page).' : '') }), true;   // T-0241 part 3
     { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g), true; }
     if (!secondFactorOk(me, b?.code)) { save(store); return ctx.json(res, 401, { error: 'Enter a current code from your app or a recovery code.' }), true; }
     delete me.totp; delete me.totpRecovery; delete me.mfaDevices; delete me.totpPending; save(store);
@@ -1016,6 +1305,161 @@ async function handle(req, res, url, ctx0) {
     if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
     me.push = []; save(store); return ctx.json(res, 200, { ok: true }), true;
   }
+  // T-0241 part 1: screen lock. GET/POST the person's choices; POST /account/unlock with the password (the gate in server.js lets
+  // only this, sign-out and the public sign-in routes through for a locked session). Making the lock stricter needs nothing;
+  // making it weaker (shorter protection, or off) needs the password, so a passer-by at an open session cannot switch it off.
+  if (p === '/account/screen-lock' && m === 'GET') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const cur = screenLockPrefs(me), wsl = store.workspaces[me.workspace], eff = effectiveLock(me, wsl), r = wsSecurity(wsl);   // T-0241 part 3: what applies, the person's own choice, the rule
+    return ctx.json(res, 200, { idle: eff.lockIdle, reopen: eff.lockReopen, own: { idle: cur.lockIdle, reopen: cur.lockReopen }, rule: { idleMax: r.idleMax, reopen: r.reopen }, choices: LOCK_IDLE_CHOICES, reopenMinutes: ctx.screenLock.reopenMin }), true;
+  }
+  if (p === '/account/screen-lock' && m === 'POST') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({}));
+    const idle = Number(b?.idle), reopen = b?.reopen === true;
+    if (!LOCK_IDLE_CHOICES.includes(idle)) return ctx.json(res, 400, { error: 'idle must be 0 (never), 5, 15, 30 or 60 minutes' }), true;
+    if (b?.reopen !== undefined && typeof b.reopen !== 'boolean') return ctx.json(res, 400, { error: 'reopen must be true or false' }), true;
+    { const rl = wsSecurity(store.workspaces[me.workspace]);                     // T-0241 part 3: stricter than the workspace rule, never weaker
+      if ((rl.idleMax && (idle === 0 || idle > rl.idleMax)) || (rl.reopen && !reopen)) return ctx.json(res, 400, { error: `Your workspace requires ${ruleWords(rl)}. You can choose something stricter, not weaker.`, rule: { idleMax: rl.idleMax, reopen: rl.reopen } }), true; }
+    const cur = screenLockPrefs(me);
+    const weaker = (cur.lockIdle > 0 && (idle === 0 || idle > cur.lockIdle)) || (cur.lockReopen && !reopen);
+    if (weaker) { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g, b?.password ? 'Password is wrong.' : 'Enter your password to make the screen lock less strict.'), true; }
+    me.screenLock = { idle, reopen, at: Date.now() }; save(store);
+    const now = Date.now();
+    for (const [t, s] of ctx.sessions) if (s.email === me.email) { s.lockIdle = idle; s.lockReopen = reopen; if (t === sess?.token) { s.lastActive = now; s.lastAlive = now; } }
+    if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'screen-lock-settings', idle, reopen }, true));
+    return ctx.json(res, 200, { ok: true, idle, reopen }), true;
+  }
+  // T-0241 part 5: passkeys. Add one (with the person's own device), list, remove; then use one to unlock or to confirm it is you.
+  if (p === '/account/passkeys' && m === 'GET') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    return ctx.json(res, 200, { passkeys: (me.passkeys || []).map(k => ({ id: k.id, name: k.name, at: k.at, lastUsed: k.lastUsed || null })), max: PK_MAX, available: !!pkRp(), login: pkLoginOn(me), totp: !!me.totp }), true;
+  }
+  if (p === '/account/passkeys/options' && m === 'POST') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const rp = pkRp(); if (!rp) return ctx.json(res, 400, { error: 'Passkeys need this Chamber\'s address to be set (CHAMBER_PUBLIC_URL).' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({})), kind = b?.kind === 'create' ? 'create' : 'get', mine = me.passkeys || [];
+    if (kind === 'create' && mine.length >= PK_MAX) return ctx.json(res, 400, { error: `At most ${PK_MAX} passkeys. Remove one first.` }), true;
+    if (kind === 'get' && !mine.length) return ctx.json(res, 400, { error: 'You have no passkey here yet.' }), true;
+    const challenge = pkChallenge(me.email, kind);
+    if (kind === 'create') return ctx.json(res, 200, { publicKey: { challenge, rp: { id: rp.id, name: 'Chamber' }, user: { id: b64u(crypto.createHash('sha256').update(me.email).digest().subarray(0, 16)), name: me.username, displayName: me.username },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], timeout: 120000, attestation: 'none',
+      authenticatorSelection: { userVerification: 'required', residentKey: 'preferred' }, excludeCredentials: mine.map(k => ({ type: 'public-key', id: k.id })) } }), true;
+    return ctx.json(res, 200, { publicKey: { challenge, rpId: rp.id, timeout: 120000, userVerification: 'required', allowCredentials: mine.map(k => ({ type: 'public-key', id: k.id })) } }), true;
+  }
+  if (p === '/account/passkeys/add' && m === 'POST') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({}));
+    let cred; try { pkClientData(b, 'create', me.email); const [att] = cborRead(unb64u(b?.attestationObject)); if (!(att instanceof Map) || !Buffer.isBuffer(att.get('authData'))) throw new Error('the answer is not readable'); cred = pkAuthData(att.get('authData'), true); }
+    catch (e) { return ctx.json(res, 400, { error: 'Could not add the passkey: ' + e.message + '.' }), true; }
+    const id = b64u(cred.credId); if ((me.passkeys || []).some(k => k.id === id)) return ctx.json(res, 400, { error: 'That passkey is already added.' }), true;
+    if ((me.passkeys || []).length >= PK_MAX) return ctx.json(res, 400, { error: `At most ${PK_MAX} passkeys. Remove one first.` }), true;
+    const name = String(b?.name || '').replace(/\s+/g, ' ').trim().slice(0, 40) || 'Passkey';
+    (me.passkeys ||= []).push({ id, alg: cred.alg, jwk: cred.jwk, counter: cred.counter, name, at: Date.now() }); save(store);
+    if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'passkey-add', name }, true));
+    return ctx.json(res, 200, { ok: true, id, name }), true;
+  }
+  if (p === '/account/passkeys/remove' && m === 'POST') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({})), k = (me.passkeys || []).find(x => x.id === String(b?.id || ''));
+    if (!k) return ctx.json(res, 404, { error: 'No such passkey here.' }), true;
+    if (me.passkeyLogin && me.passkeys.length === 1) {                // T-0241 (a): the last passkey also ends the passkey at sign-in
+      if (!me.totp && wsSecurity(store.workspaces[me.workspace]).require2fa) return ctx.json(res, 400, { error: 'This is your last passkey and your workspace requires two-step sign-in. Add another passkey or turn on the authenticator app first.' }), true;
+      delete me.passkeyLogin;
+    }
+    me.passkeys = me.passkeys.filter(x => x !== k); if (!me.passkeys.length) delete me.passkeys; save(store);
+    if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'passkey-remove', name: k.name }, true));
+    return ctx.json(res, 200, { ok: true }), true;
+  }
+  if (p === '/account/passkeys/use' && m === 'POST') {                // unlock the screen, or confirm it is you
+    if (!me || !sess?.token) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({})), purpose = b?.purpose === 'unlock' ? 'unlock' : 'recheck';
+    try { pkVerifyGet(me, b); }
+    catch (e) { if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: purpose === 'unlock' ? 'screen-unlock-failed' : 'recheck-failed', why: 'passkey: ' + e.message }, true)); return ctx.json(res, 403, { error: 'The passkey did not work: ' + e.message + '.' }), true; }
+    save(store);                                                      // its counter and when it was last used
+    if (purpose === 'unlock') { ctx.screenLock.unlock(sess.token); if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'screen-unlock', via: 'passkey' }, true)); }
+    else { const s = ctx.sessions.get(sess.token); if (s) { s.checkedAt = Date.now(); ctx.persistSessions(); } if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'recheck', via: 'passkey' }, true)); }
+    return ctx.json(res, 200, { ok: true, purpose }), true;
+  }
+  // T-0241 part 4: ask for the password again before sensitive actions (the list is RECHECK in permissions.js; the gate is in
+  // server.js). Asking more often needs nothing; less often needs the password; never weaker than the owner's rule.
+  if (p === '/account/recheck-settings' && m === 'GET') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const wsr = store.workspaces[me.workspace];
+    return ctx.json(res, 200, { min: effectiveRecheck(me, wsr), own: recheckPrefOf(me), rule: { recheckMax: wsSecurity(wsr).recheckMax }, choices: RECHECK_CHOICES }), true;
+  }
+  if (p === '/account/recheck-settings' && m === 'POST') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({})), min = Number(b?.min), wsr = store.workspaces[me.workspace], rule = wsSecurity(wsr).recheckMax;
+    if (!RECHECK_CHOICES.includes(min)) return ctx.json(res, 400, { error: 'min must be 0 (never), 5, 15 or 60 minutes' }), true;
+    if (rule && (!min || min > rule)) return ctx.json(res, 400, { error: `Your workspace requires the password again after at most ${rule} minutes. You can choose more often, not less.`, rule: { recheckMax: rule } }), true;
+    const cur = recheckPrefOf(me);
+    if (cur && (!min || min > cur)) { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g, b?.password ? 'Password is wrong.' : 'Enter your password to be asked less often.'), true; }
+    me.recheck = { min, at: Date.now() }; save(store);
+    const now = Date.now(), eff = effectiveRecheck(me, wsr);
+    for (const [t, s] of ctx.sessions) if (s.email === me.email) { s.recheckMin = eff; if (t === sess?.token) s.checkedAt = now; }
+    ctx.persistSessions();
+    if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'recheck-settings', min }, true));
+    return ctx.json(res, 200, { ok: true, min: eff, own: min }), true;
+  }
+  if (p === '/account/recheck' && m === 'POST') {
+    if (!me || !sess?.token) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({}));
+    const g = reauth(me, b?.password);
+    if (g !== 'ok') { if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'recheck-failed', why: g }, true)); return reauthFail(ctx, res, g), true; }
+    const s = ctx.sessions.get(sess.token); if (s) { s.checkedAt = Date.now(); ctx.persistSessions(); }
+    if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'recheck' }, true));
+    return ctx.json(res, 200, { ok: true }), true;
+  }
+  if (p === '/account/unlock' && m === 'POST') {
+    if (!me || !sess?.token) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({}));
+    const g = reauth(me, b?.password);
+    if (g !== 'ok') {
+      if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'screen-unlock-failed', why: g }, true));
+      return reauthFail(ctx, res, g), true;
+    }
+    const was = ctx.screenLock.unlock(sess.token);
+    if (was && me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'screen-unlock' }, true));
+    return ctx.json(res, 200, { ok: true, unlocked: was }), true;
+  }
+  // T-0241 part 2: the signed-in devices list (sign out one device) and how long a sign-in lasts. Shorter is stricter and needs
+  // nothing; longer, or keeping the sign-in after the browser closes, needs the password. A shorter length also cuts the sign-ins
+  // that already exist down to the new length from now.
+  if (p === '/account/sessions' && m === 'GET') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const now = Date.now(), list = [];
+    for (const [t, s] of ctx.sessions) if (s.email === me.email && s.expires > now) list.push({ id: sessionId(t), current: t === sess?.token, kind: s.web ? 'browser' : 'other', device: deviceOf(s.ua), ip: s.ip || null, created: s.created || null, seen: s.seen || null, expires: s.expires, locked: !!s.lock });
+    list.sort((a, b) => (b.current - a.current) || ((b.seen || 0) - (a.seen || 0)));
+    return ctx.json(res, 200, { sessions: list, policy: effectiveSession(me, store.workspaces[me.workspace]), own: sessionPolicyOf(me), rule: { daysMax: wsSecurity(store.workspaces[me.workspace]).daysMax }, dayChoices: SESSION_DAY_CHOICES }), true;   // T-0241 part 3
+  }
+  if (p === '/account/sessions/revoke' && m === 'POST') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({}));
+    const id = String(b?.id || ''), hit = /^[a-f0-9]{16}$/.test(id) ? [...ctx.sessions].find(([t, s]) => s.email === me.email && sessionId(t) === id) : null;
+    if (!hit) return ctx.json(res, 404, { error: 'No such signed-in device. It may have signed out already.' }), true;
+    ctx.sessions.delete(hit[0]); ctx.persistSessions();
+    const current = hit[0] === sess?.token;
+    if (current) res.setHeader('Set-Cookie', 'chamber_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + (ctx.cookieSecure ? '; Secure' : ''));
+    if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'session-revoke', device: deviceOf(hit[1].ua), current: current || undefined }, true));
+    return ctx.json(res, 200, { ok: true, current }), true;
+  }
+  if (p === '/account/session-policy' && m === 'POST') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    const b = await ctx.parseBody(req).catch(() => ({}));
+    const days = Number(b?.days), remember = b?.remember !== false;
+    if (!SESSION_DAY_CHOICES.includes(days)) return ctx.json(res, 400, { error: 'days must be 1, 7 or 30' }), true;
+    if (b?.remember !== undefined && typeof b.remember !== 'boolean') return ctx.json(res, 400, { error: 'remember must be true or false' }), true;
+    { const rs = wsSecurity(store.workspaces[me.workspace]); if (rs.daysMax && days > rs.daysMax) return ctx.json(res, 400, { error: `Your workspace allows sign-ins of at most ${rs.daysMax} day${rs.daysMax === 1 ? '' : 's'}. You can choose a shorter one, not a longer one.`, rule: { daysMax: rs.daysMax } }), true; }   // T-0241 part 3
+    const cur = sessionPolicyOf(me), weaker = days > cur.days || (remember && !cur.remember);
+    if (weaker) { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g, b?.password ? 'Password is wrong.' : 'Enter your password to keep sign-ins longer.'), true; }
+    me.sessionPolicy = { days, remember, at: Date.now() }; save(store);
+    const cap = Date.now() + days * 864e5; let shortened = 0;
+    for (const s of ctx.sessions.values()) if (s.email === me.email && s.expires > cap) { s.expires = cap; shortened++; }
+    if (shortened) ctx.persistSessions();
+    if (me.workspace) ctx.withWorkspace(me.workspace, () => ctx.audit(sess, { action: 'session-policy', days, remember, shortened: shortened || undefined }, true));
+    return ctx.json(res, 200, { ok: true, days, remember, shortened }), true;
+  }
   if (p === '/account/logout' && m === 'POST') {
     if (sess) ctx.sessions.delete(sess.token);
     res.setHeader('Set-Cookie', 'chamber_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + (ctx.cookieSecure ? '; Secure' : ''));
@@ -1055,7 +1499,7 @@ async function handle(req, res, url, ctx0) {
   }
   if (p === '/account/export' && m === 'GET') {                   // owner only: everything in the workspace, as one JSON file
     if (!me || !myWs) return ctx.json(res, 401, { error: 'not signed in' }), true;
-    if (!amOwner) return ctx.json(res, 403, { error: 'Only the workspace owner can export.' }), true;
+    if (!perm.allows(myRole, 'ws.export')) return ctx.json(res, 403, { error: 'Only the workspace owner can export.' }), true;   // T-0246
     const dir = path.join(DATA_DIR, 'ws', myWs.id); const read = n => { try { return JSON.parse(wsfiles.readText(myWs.id, path.join(dir, n))); } catch { return null; } };   // T-0222: opened if sealed
     const out = { exported_at: new Date().toISOString(), workspace: { id: myWs.id, name: myWs.name, members: members(store, myWs.id).map(a => ({ username: a.username, role: a.email === myWs.owner ? 'owner' : 'member' })) },
                   chat: ctx.withWorkspace(myWs.id, () => { const d = ctx.loadDataFull(); return { users: d.users, rooms: d.rooms, messages: d.messages }; }),   // T-0017: from SQLite
@@ -1066,7 +1510,7 @@ async function handle(req, res, url, ctx0) {
   }
   if (p === '/account/import' && m === 'POST') {                 // T-0079: read an export back into an EMPTY workspace (owner only). Dry-run reports counts + conflicts; ids are preserved.
     if (!me || !myWs) return ctx.json(res, 401, { error: 'not signed in' }), true;
-    if (!amOwner) return ctx.json(res, 403, { error: 'Only the workspace owner can import.' }), true;
+    if (!perm.allows(myRole, 'ws.export')) return ctx.json(res, 403, { error: 'Only the workspace owner can import.' }), true;   // T-0246
     const b = await ctx.parseBody(req).catch(() => null);
     const exp = b && b.export;
     if (!exp || typeof exp !== 'object' || !exp.chat || typeof exp.chat !== 'object') return ctx.json(res, 400, { error: 'Upload a Chamber export file (the JSON from Account \u2192 Export).' }), true;
@@ -1132,12 +1576,13 @@ async function handle(req, res, url, ctx0) {
   // Workspace: members and invite link (T-0003 / T-0006). Everyone in the workspace can see members; only the owner manages.
   if (p.startsWith('/account/workspace')) {
     if (!me || !myWs) return ctx.json(res, 401, { error: 'not signed in' }), true;
-    if (wsRoleOf(me, myWs) === 'requester') return ctx.json(res, 403, { error: 'A requester sees only their own requests, not the workspace.' }), true;   // T-0199
+    if (myRole === 'requester') return ctx.json(res, 403, { error: 'A requester sees only their own requests, not the workspace.' }), true;   // T-0199 (the table says the same: ws.view)
+    { const g = perm.gate(myRole, m, p); if (g) return ctx.json(res, g.status, { error: g.error }), true; }   // T-0246: the gate, as for /api/ (permissions.js)
     if (p === '/account/workspace/lock' || p.startsWith('/account/workspace/lock/')) {   // T-0222: the owner lock (the key is the owner's, so the owner switches it)
       if (!LOCK_FEATURE) return ctx.json(res, 404, { error: 'not found' }), true;
       if (m === 'GET' && p === '/account/workspace/lock') return ctx.json(res, 200, lockView(myWs, amOwner)), true;
       if (m !== 'POST') return ctx.json(res, 405, { error: 'GET or POST' }), true;
-      if (!amOwner) return ctx.json(res, 403, { error: 'Only the workspace owner can lock or unlock it: the key is theirs.' }), true;
+      if (!perm.allows(myRole, 'ws.lock')) return ctx.json(res, 403, { error: 'Only the workspace owner can lock or unlock it: the key is theirs.' }), true;   // T-0246
       const lb = (await ctx.parseBody(req).catch(() => ({}))) || {}, L = myWs.lock && myWs.lock.on ? myWs.lock : null;
       if (p === '/account/workspace/lock' && lb.on === true) {
         if (L) return ctx.json(res, 409, { error: 'The owner lock is already on.' }), true;
@@ -1183,14 +1628,16 @@ async function handle(req, res, url, ctx0) {
       let seen = {}; try { seen = ctx.withWorkspace(myWs.id, () => ctx.loadData().users) || {}; } catch (e) { if (!e.locked) throw e; }   // T-0222: not known while locked                                   // T-0034: last activity per member
       const roleOf = (a) => wsRoleOf(a, myWs);                                                                   // T-0199
       return ctx.json(res, 200, {
-        id: myWs.id, name: myWs.name, role: roleOf(me), canManage: amAdmin, owner: store.accounts[myWs.owner]?.username || null, plan: billingState(store.accounts[myWs.owner]) === 'free' ? 'free' : 'team',   // T-0225
-        members: members(store, myWs.id).map(a => ({ username: a.username, role: roleOf(a), email: amAdmin ? a.email : undefined, chatRole: a.chatRole || 'human',
+        id: myWs.id, name: myWs.name, role: roleOf(me), canManage: amAdmin, owner: store.accounts[myWs.owner]?.username || null, plan: billingState(store.accounts[myWs.owner]) === 'free' ? 'free' : 'team', freePeople: freePeopleFor(myWs),   // T-0225; T-0288; T-0295: an earlier workspace keeps the old size until its notice has run
+        members: members(store, myWs.id).map(a => ({ username: a.username, role: roleOf(a) === 'viewer' && a.approves ? 'approver' : roleOf(a), email: amAdmin ? a.email : undefined, chatRole: a.chatRole || 'human',
                                                       lastSeen: seen[a.username]?.lastSeen || null, joinedAt: a.createdAt || null })),
         inviteUrl: amAdmin ? `${PUBLIC_URL}/join/${myWs.invite}` : null,
-        inviteUrls: amAdmin ? Object.fromEntries(GUEST_ROLES.map(r => [r, myWs.invites && myWs.invites[r] ? `${PUBLIC_URL}/join/${myWs.invites[r]}` : null])) : null,   // T-0199
-        seats: { full: fullMembers(store, myWs.id).length, maxFull: MAX_MEMBERS, guests: guestMembers(store, myWs.id).length, maxGuests: MAX_GUESTS },   // T-0199
+        inviteUrls: amAdmin ? Object.fromEntries(INVITE_KINDS.map(r => [r, myWs.invites && myWs.invites[r] ? `${PUBLIC_URL}/join/${myWs.invites[r]}` : null])) : null,   // T-0199
+        seats: { full: fullMembers(store, myWs.id).length, maxFull: builderLimit(store, myWs), guests: guestMembers(store, myWs.id).length, maxGuests: guestsUnlimited(store, myWs) ? null : MAX_GUESTS }, sizePlan: planOf(store, myWs), legacy: legacyWs(myWs) || undefined,   // T-0199; T-0295: builders by plan, guests unlimited when paid   // T-0199
         approval: approvalRules(myWs),                                           // T-0190
         requestDrafts: !myWs.requestDraftsOff,                                   // T-0207
+        agentTasks: myWs.agentTasks === true,                                    // T-0245
+        security: wsSecurity(myWs),                                              // T-0241 part 3
         report: amAdmin ? reportView(myWs) : null,                               // T-0202
         budget: budgetOf(myWs.id),                                               // T-0203
         fleet: myWs.fleet ? { linked: true, tenant: myWs.fleet.tenant || '', by: myWs.fleet.by, at: myWs.fleet.at, state: myWs.fleet.state || 'ok', lastError: myWs.fleet.lastError || null } : { linked: false },   // T-0153: never the key
@@ -1209,7 +1656,7 @@ async function handle(req, res, url, ctx0) {
       const since = parseInt(url.searchParams.get('since')) || 0, until = parseInt(url.searchParams.get('until')) || Infinity, format = url.searchParams.get('format');
       const match = (r) => r.ts >= since && r.ts <= until && (!actor || String(r.actor || r.agent || '').toLowerCase() === actor) && (!action || String(r.action || '').toLowerCase().includes(action)) && (!q || JSON.stringify(r).toLowerCase().includes(q));
       if (format === 'csv' || format === 'json') {
-        if (!amAdmin) return ctx.json(res, 403, { error: 'Only the workspace owner or an admin can export the audit log.' }), true;
+        if (!perm.allows(myRole, 'audit.export')) return ctx.json(res, 403, { error: 'Only the workspace owner or an admin can export the audit log.' }), true;   // T-0246
         const all = ctx.auditAll(dir).filter(match);
         const filtered = !!(q || actor || action || since || until !== Infinity), ch = filtered ? null : ctx.verifyAudit(dir);   // T-0194: before the export adds its own entry
         ctx.audit(sess, { action: 'audit-export', format, entries: all.length }, true);
@@ -1224,18 +1671,18 @@ async function handle(req, res, url, ctx0) {
       const filtered = log.filter(match);
       return ctx.json(res, 200, { audit: filtered.slice(-300).reverse(), total: filtered.length, actors: [...new Set(log.map(r => r.actor || r.agent).filter(Boolean))].sort() }), true;
     }
-    if (!amAdmin) return ctx.json(res, 403, { error: 'Only the workspace owner or an admin can do that.' }), true;   // T-0034
+    if (!amAdmin) return ctx.json(res, 403, { error: 'Only the workspace owner or an admin can do that.' }), true;   // T-0034. T-0246: a fence; the gate above already refused by the table, and every route below has a row
     const b = await ctx.parseBody(req).catch(() => ({}));
     const ownerOnly = () => ctx.json(res, 403, { error: 'Only the workspace owner can do that.' });
     // ── T-0219: the owner's key for sealed copies of the record, and the copies. Owner only: the wrapped private key and the
     // copies go to nobody else. The server keeps the PUBLIC key (to seal with) and the private key only as the browser wrapped
     // it with the owner's passphrase and with a recovery code; it never sees either secret, so it can never open a copy.
     if (p === '/account/workspace/ownerkey' && m === 'GET') {
-      if (!amOwner) return ownerOnly(), true;
+      if (!perm.allows(myRole, 'ws.records')) return ownerOnly(), true;   // T-0246
       return ctx.json(res, 200, ownerKeyView(myWs, me, true)), true;
     }
     if (p === '/account/workspace/ownerkey' && m === 'POST') {
-      if (!amOwner) return ownerOnly(), true;
+      if (!perm.allows(myRole, 'ws.records')) return ownerOnly(), true;   // T-0246
       const str = (v, max) => typeof v === 'string' && v.length > 0 && v.length <= max && /^[A-Za-z0-9+/=]+$/.test(v);
       const wrapOk = w => w && str(w.wrapped, 8192) && str(w.salt, 64) && str(w.iv, 64) && Number.isInteger(w.iter) && w.iter >= 100000 && w.iter <= 5000000;
       const wrapOf = w => ({ wrapped: w.wrapped, salt: w.salt, iv: w.iv, iter: w.iter });
@@ -1263,7 +1710,7 @@ async function handle(req, res, url, ctx0) {
     }
     const savedM = p.match(/^\/account\/workspace\/records-saved(?:\/([A-Za-z0-9.-]{1,80}))?(\/delete)?$/);
     if (savedM) {
-      if (!amOwner) return ownerOnly(), true;
+      if (!perm.allows(myRole, 'ws.records')) return ownerOnly(), true;   // T-0246
       const dir = path.join(DATA_DIR, 'ws', myWs.id);
       if (!savedM[1] && m === 'GET') return ctx.json(res, 200, { copies: records.listSaved(dir) }), true;
       if (!savedM[1] && m === 'POST') {                                 // "Save a sealed copy now": the whole record as it stands, nothing deleted
@@ -1289,7 +1736,7 @@ async function handle(req, res, url, ctx0) {
       return ctx.json(res, 405, { error: 'GET or POST' }), true;
     }
     if (p === '/account/workspace/fleet' && m === 'POST') {      // T-0153: link this workspace to a GhostPort fleet tenant (read-only router status), or unlink
-      if (!amOwner) return ownerOnly(), true;
+      if (!perm.allows(myRole, 'fleet.link')) return ownerOnly(), true;   // T-0246
       if (b?.unlink) {
         if (myWs.fleet) { delete myWs.fleet; save(store); ctx.audit(sess, { action: 'fleet-unlink' }, true); }
         fleet.forget(myWs.id); return ctx.json(res, 200, { ok: true, linked: false }), true;
@@ -1321,21 +1768,23 @@ async function handle(req, res, url, ctx0) {
       return ctx.json(res, 200, { ok: true, report: reportView(myWs), asked }), true;
     }
     if (p === '/account/workspace/role' && m === 'POST') {       // T-0034: owner promotes/demotes a member
-      if (!amOwner) return ownerOnly(), true;
+      if (!perm.allows(myRole, 'ws.roles')) return ownerOnly(), true;   // T-0246
       const target = Object.values(store.accounts).find(a => a.username.toLowerCase() === String(b?.username || '').toLowerCase() && a.workspace === myWs.id);
       if (!target) return ctx.json(res, 404, { error: 'No such member in your workspace.' }), true;
       if (target.email === myWs.owner) return ctx.json(res, 400, { error: 'The owner already has every permission. Use Transfer to hand the workspace over.' }), true;
-      if (!['admin', 'member', 'viewer', 'requester'].includes(b?.role)) return ctx.json(res, 400, { error: 'role must be admin, member, viewer or requester' }), true;   // T-0199
+      if (!['admin', 'member', 'viewer', 'requester', 'approver'].includes(b?.role)) return ctx.json(res, 400, { error: 'role must be admin, member, approver, viewer or requester' }), true;   // T-0199; T-0295: + approver
+      const asApprover = b.role === 'approver'; if (asApprover) b.role = 'viewer';                                   // an approver is a viewer who may approve by default
       const toGuest = GUEST_ROLES.includes(b.role), wasGuest = GUEST_ROLES.includes(wsRoleOf(target, myWs));
       if (toGuest && (target.chatRole || 'human') !== 'human') return ctx.json(res, 400, { error: 'An AI account cannot be a viewer or requester.' }), true;
-      if (!toGuest && wasGuest && fullMembers(store, myWs.id).length >= MAX_MEMBERS) return ctx.json(res, 409, { error: `No free seat: this workspace already has ${MAX_MEMBERS} members. Remove someone, or make someone a viewer, first.` }), true;
-      if (toGuest && !wasGuest && guestMembers(store, myWs.id).length >= MAX_GUESTS) return ctx.json(res, 409, { error: `No free place for viewers and requesters (${MAX_GUESTS}).` }), true;
-      target.wsRole = b.role; save(store);
+      if (!toGuest && wasGuest && fullMembers(store, myWs.id).length >= builderLimit(store, myWs)) return ctx.json(res, 409, { error: `No free builder seat: this workspace's plan covers ${builderLimit(store, myWs)} builders. Make someone an approver or a viewer first, or move to a bigger plan.` }), true;   // T-0295: by plan
+      if (toGuest && !wasGuest && !guestsUnlimited(store, myWs) && guestMembers(store, myWs.id).length >= MAX_GUESTS) return ctx.json(res, 409, { error: `No free place for viewers and requesters (${MAX_GUESTS}).` }), true;
+      target.wsRole = b.role; if (asApprover) target.approves = true; else delete target.approves; save(store);
+      if (asApprover) b.role = 'approver';                                                                           // what the record and the answer say
       console.log(`[accounts] ${me.username} made ${target.username} ${b.role} in ${myWs.id}`); ctx.audit(sess, { action: 'member-role', username: target.username, role: b.role }, true);   // T-0057
       return ctx.json(res, 200, { ok: true, username: target.username, role: b.role }), true;
     }
     if (p === '/account/workspace/transfer' && m === 'POST') {   // T-0034: hand the workspace (and its subscription) to another human member
-      if (!amOwner) return ownerOnly(), true;
+      if (!perm.allows(myRole, 'ws.transfer')) return ownerOnly(), true;   // T-0246
       if (myWs.lock && myWs.lock.on) return ctx.json(res, 400, { error: 'Switch the owner lock off first: the workspace is locked with your key, and the new owner could not open it.' }), true;   // T-0222
       { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g), true; }
       const target = Object.values(store.accounts).find(a => a.username.toLowerCase() === String(b?.username || '').toLowerCase() && a.workspace === myWs.id);
@@ -1357,7 +1806,7 @@ async function handle(req, res, url, ctx0) {
     if (p === '/account/workspace' && m === 'POST') {           // rename and/or agent policy
       let approvalWarning;
       if (b?.budget !== undefined) {                                                                                 // T-0203: the owner's monthly AI budget
-        if (!amOwner) return ownerOnly(), true;
+        if (!perm.allows(myRole, 'ws.settings')) return ownerOnly(), true;   /* T-0246 */
         const bu = b.budget && typeof b.budget === 'object' ? b.budget : {}, cents = v => v === undefined || v === null || v === '' ? 0 : (Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 1e7 ? Number(v) : NaN);
         const monthlyCents = cents(bu.monthlyCents); if (Number.isNaN(monthlyCents)) return ctx.json(res, 400, { error: 'The budget is whole cents from 0 to 100,000 dollars.' }), true;
         let pa = bu.perAgent || {};
@@ -1368,7 +1817,7 @@ async function handle(req, res, url, ctx0) {
         ctx.audit(sess, { action: 'ai-budget', monthlyCents, agents: Object.keys(clean).length }, true);
       }
       if (b?.approval !== undefined) {                                                                               // T-0190: the owner's approval rules
-        if (!amOwner) return ownerOnly(), true;
+        if (!perm.allows(myRole, 'ws.settings')) return ownerOnly(), true;   /* T-0246 */
         const ap = b.approval && typeof b.approval === 'object' ? b.approval : {}, two = ap.two === undefined ? 'none' : ap.two;
         if (!['none', 'high', 'all'].includes(two)) return ctx.json(res, 400, { error: 'two must be none, high or all' }), true;
         let names = Array.isArray(ap.approvers) ? ap.approvers : typeof ap.approvers === 'string' ? ap.approvers.split(',') : [];
@@ -1391,29 +1840,53 @@ async function handle(req, res, url, ctx0) {
         if (n < 2 && (two !== 'none' || ap.noSelf)) approvalWarning = 'Only one person may approve right now, so these rules cannot fully apply yet: tickets are not blocked, and each one notes that a rule could not be met. They apply fully once a second approver exists.';
       }
       if (b?.requestDrafts !== undefined) {                                                                          // T-0207: a connected agent drafts a plan for each new request
-        if (!amOwner) return ownerOnly(), true;
+        if (!perm.allows(myRole, 'ws.settings')) return ownerOnly(), true;   /* T-0246 */
         if (typeof b.requestDrafts !== 'boolean') return ctx.json(res, 400, { error: 'requestDrafts must be true or false' }), true;
         if (b.requestDrafts) delete myWs.requestDraftsOff; else myWs.requestDraftsOff = true;
         ctx.audit(sess, { action: 'request-drafts', on: b.requestDrafts }, true);
       }
+      if (b?.agentTasks !== undefined) {                                                                             // T-0245: may agents see the Tasks list?
+        if (!perm.allows(myRole, 'ws.settings')) return ownerOnly(), true;
+        if (typeof b.agentTasks !== 'boolean') return ctx.json(res, 400, { error: 'agentTasks must be true or false' }), true;
+        if (b.agentTasks) myWs.agentTasks = true; else delete myWs.agentTasks;
+        ctx.audit(sess, { action: 'agent-tasks', on: b.agentTasks }, true);
+      }
       if (b?.agentPolicy !== undefined) {
-        if (!amOwner) return ownerOnly(), true;                                                                        // T-0034: policy is the owner's call
+        if (!perm.allows(myRole, 'ws.settings')) return ownerOnly(), true;   /* T-0246 */                                                                        // T-0034: policy is the owner's call
         if (!['owner', 'members'].includes(b.agentPolicy)) return ctx.json(res, 400, { error: 'agentPolicy must be owner or members' }), true;
         myWs.agentPolicy = b.agentPolicy; ctx.audit(sess, { action: 'agent-policy', policy: b.agentPolicy }, true);   // T-0057
       }
       if (b?.retentionDays !== undefined) {                                                                          // T-0037
-        if (!amOwner) return ownerOnly(), true;
+        if (!perm.allows(myRole, 'ws.settings')) return ownerOnly(), true;   /* T-0246 */
         const d = parseInt(b.retentionDays, 10);
         if (!Number.isInteger(d) || d < 0 || (d > 0 && d < 7) || d > 3650) return ctx.json(res, 400, { error: 'retentionDays must be 0 (keep forever) or between 7 and 3650' }), true;
         myWs.retentionDays = d; console.log(`[accounts] ${me.username} set retention ${d || 'forever'} for ${myWs.id}`); ctx.audit(sess, { action: 'retention', days: d }, true);   // T-0057
       }
       if (b?.recordDays !== undefined || b?.recordCopy !== undefined) {                                              // T-0219: how long the who-did-what record is kept
-        if (!amOwner) return ownerOnly(), true;
+        if (!perm.allows(myRole, 'ws.settings')) return ownerOnly(), true;   /* T-0246 */
         const d = b.recordDays !== undefined ? parseInt(b.recordDays, 10) : (myWs.recordDays || 0), copy = b.recordCopy !== undefined ? b.recordCopy === true : !!myWs.recordCopy, k = ownerKeyNow(myWs);
         if (!Number.isInteger(d) || d < 0 || (d > 0 && d < records.MIN_DAYS) || d > records.MAX_DAYS) return ctx.json(res, 400, { error: `Keep the record for good (0), or for ${records.MIN_DAYS} to ${records.MAX_DAYS} days.` }), true;
         if (copy && !(k && k.by === me.username)) return ctx.json(res, 400, { error: 'Set your passphrase for saved copies first. Without it nobody could open them.' }), true;
         myWs.recordDays = d; myWs.recordCopy = copy; console.log(`[accounts] ${me.username} set the record to ${d ? d + ' days' : 'for good'}${copy ? ' with sealed copies' : ''} for ${myWs.id}`);
         ctx.audit(sess, { action: 'record-retention', days: d, copy }, true);
+      }
+      if (b?.security !== undefined) {                                                                               // T-0241 part 3: the owner's rules for everyone
+        if (!perm.allows(myRole, 'ws.settings')) return ownerOnly(), true;
+        const s = b.security && typeof b.security === 'object' ? b.security : {};
+        const next = { idleMax: Number(s.idleMax) || 0, reopen: s.reopen === true, daysMax: Number(s.daysMax) || 0, require2fa: s.require2fa === true, recheckMax: Number(s.recheckMax) || 0 };
+        if (next.recheckMax && !RECHECK_CHOICES.includes(next.recheckMax)) return ctx.json(res, 400, { error: 'recheckMax must be 0 (no rule), 5, 15 or 60 minutes' }), true;   // T-0241 part 4
+        if (next.idleMax && !LOCK_IDLE_CHOICES.includes(next.idleMax)) return ctx.json(res, 400, { error: 'idleMax must be 0 (no rule), 5, 15, 30 or 60 minutes' }), true;
+        if (next.daysMax && !SESSION_DAY_CHOICES.includes(next.daysMax)) return ctx.json(res, 400, { error: 'daysMax must be 0 (no rule), 1, 7 or 30 days' }), true;
+        if (next.require2fa && !twoStep(me)) return ctx.json(res, 400, { error: 'Turn on two-step sign-in for yourself first (Security, on this page: the authenticator app, or a passkey at sign-in). You cannot require it of others before you use it.' }), true;
+        const cur = wsSecurity(myWs), looser = (cur.idleMax && (!next.idleMax || next.idleMax > cur.idleMax)) || (cur.reopen && !next.reopen) || (cur.daysMax && (!next.daysMax || next.daysMax > cur.daysMax)) || (cur.require2fa && !next.require2fa) || (cur.recheckMax && (!next.recheckMax || next.recheckMax > cur.recheckMax));
+        if (looser) { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g, b?.password ? 'Password is wrong.' : 'Enter your password to make the rules less strict.'), true; }
+        if (next.idleMax || next.reopen || next.daysMax || next.require2fa || next.recheckMax) myWs.security = { ...next, at: Date.now(), by: me.username }; else delete myWs.security;
+        const now = Date.now(); let applied = 0;                                                                    // the rules apply at once to every sign-in of everyone here
+        for (const ss of ctx.sessions.values()) { const a = ss.email && store.accounts[ss.email]; if (!a || a.workspace !== myWs.id) continue;
+          const eff = effectiveLock(a, myWs); ss.lockIdle = eff.lockIdle; ss.lockReopen = eff.lockReopen; ss.recheckMin = effectiveRecheck(a, myWs);
+          if (next.daysMax && ss.expires > now + next.daysMax * 864e5) ss.expires = now + next.daysMax * 864e5; applied++; }
+        ctx.persistSessions();
+        ctx.audit(sess, { action: 'security-rules', ...next, sessions: applied }, true);
       }
       if (b?.name !== undefined) {
         const name = String(b.name || '').trim().slice(0, 48);
@@ -1421,12 +1894,12 @@ async function handle(req, res, url, ctx0) {
         myWs.name = name; ctx.audit(sess, { action: 'workspace-rename', name }, true);   // T-0057
       }
       save(store);
-      return ctx.json(res, 200, { ok: true, name: myWs.name, agentPolicy: myWs.agentPolicy || 'owner', retentionDays: myWs.retentionDays || 0, recordDays: myWs.recordDays || 0, recordCopy: !!myWs.recordCopy, requestDrafts: !myWs.requestDraftsOff, approval: approvalRules(myWs), approvalWarning, budget: budgetOf(myWs.id) }), true;
+      return ctx.json(res, 200, { ok: true, name: myWs.name, agentPolicy: myWs.agentPolicy || 'owner', retentionDays: myWs.retentionDays || 0, recordDays: myWs.recordDays || 0, recordCopy: !!myWs.recordCopy, requestDrafts: !myWs.requestDraftsOff, agentTasks: myWs.agentTasks === true, security: wsSecurity(myWs), approval: approvalRules(myWs), approvalWarning, budget: budgetOf(myWs.id) }), true;
     }
     if (p === '/account/workspace/invite-reset' && m === 'POST') {
       if (!verified(me)) return ctx.json(res, 403, { error: 'Confirm your email address first (account page).', needsVerification: true }), true;   // T-0032
       const role = b?.role === undefined ? 'member' : b.role;                                    // T-0199: member, viewer or requester link
-      if (!['member', ...GUEST_ROLES].includes(role)) return ctx.json(res, 400, { error: 'role must be member, viewer or requester' }), true;
+      if (!['member', ...INVITE_KINDS].includes(role)) return ctx.json(res, 400, { error: 'role must be member, approver, viewer or requester' }), true;   // T-0295: + approver
       if (role === 'member') { myWs.invite = newInvite(); save(store); ctx.audit(sess, { action: 'invite-rotate' }, true); return ctx.json(res, 200, { ok: true, inviteUrl: `${PUBLIC_URL}/join/${myWs.invite}` }), true; }   // T-0057
       myWs.invites = myWs.invites || {};
       if (b?.off) { delete myWs.invites[role]; save(store); ctx.audit(sess, { action: 'invite-off', role }, true); return ctx.json(res, 200, { ok: true, inviteUrl: null }), true; }
@@ -1434,7 +1907,7 @@ async function handle(req, res, url, ctx0) {
       return ctx.json(res, 200, { ok: true, role, inviteUrl: `${PUBLIC_URL}/join/${myWs.invites[role]}` }), true;
     }
     if (p === '/account/workspace/tokens' && m === 'GET') {
-      return ctx.json(res, 200, { tokens: Object.values(myWs.tokens || {}).map(t => ({ id: t.id, name: t.name, username: t.username, createdAt: t.createdAt, lastUsed: t.lastUsed || null, mayAsk: !!t.mayAsk })) }), true;
+      return ctx.json(res, 200, { tokens: Object.values(myWs.tokens || {}).map(t => ({ id: t.id, name: t.name, username: t.username, createdAt: t.createdAt, lastUsed: t.lastUsed || null, mayAsk: !!t.mayAsk, answersAgents: !!t.answersAgents })) }), true;   // T-0317: + answersAgents
     }
     if (p === '/account/workspace/tokens' && m === 'POST') {    // create: returns the token ONCE
       if (!verified(me)) return ctx.json(res, 403, { error: 'Confirm your email address first (account page).', needsVerification: true }), true;   // T-0032
@@ -1527,11 +2000,18 @@ async function handle(req, res, url, ctx0) {
       return ctx.json(res, 200, { ok: true, username: made.username, id: made.id, message: `Paired: ${made.username} is collecting its token now. Nothing to copy.` }), true;
     }
     if (p === '/account/workspace/tokens/ask' && m === 'POST') {   // T-0188: may this agent ask a person to allow a tool use mid-job? Off by default; the owner decides per agent
-      if (!amOwner) return ctx.json(res, 403, { error: 'Only the workspace owner can do that.' }), true;
+      if (!perm.allows(myRole, 'agents.askswitch')) return ctx.json(res, 403, { error: 'Only the workspace owner can do that.' }), true;   // T-0246
       const t = myWs.tokens?.[String(b?.id || '')];
       if (!t) return ctx.json(res, 404, { error: 'No such token.' }), true;
       t.mayAsk = !!b?.on; save(store); ctx.audit(sess, { action: 'agent-may-ask', username: t.username, on: t.mayAsk }, true);
       return ctx.json(res, 200, { ok: true, mayAsk: t.mayAsk }), true;
+    }
+    if (p === '/account/workspace/tokens/peers' && m === 'POST') {   // T-0317: may this agent answer other agents' questions (read-only, no orders)? Off by default; the owner decides per agent
+      if (!perm.allows(myRole, 'agents.peerswitch')) return ctx.json(res, 403, { error: 'Only the workspace owner can do that.' }), true;
+      const t = myWs.tokens?.[String(b?.id || '')];
+      if (!t) return ctx.json(res, 404, { error: 'No such token.' }), true;
+      t.answersAgents = !!b?.on; save(store); ctx.audit(sess, { action: 'agent-answers-agents', username: t.username, on: t.answersAgents }, true);
+      return ctx.json(res, 200, { ok: true, answersAgents: t.answersAgents }), true;
     }
     if (p === '/account/workspace/tokens/revoke' && m === 'POST') {
       const t = myWs.tokens?.[String(b?.id || '')];
@@ -1553,6 +2033,28 @@ async function handle(req, res, url, ctx0) {
     }
   }
 
+  // T-0311: the Billing tab. The owner and admins see the plan, the next charge, founding and the storage bar; everyone else is
+  // refused, so approvers, viewers and requesters never see a price. Only the OWNER changes anything (their answer, 20 Nov):
+  // for an admin the tab is read-only (canChange false) and preview, plan and storage refuse them (ws.billing).
+  if (p === '/billing/overview' && m === 'GET') {
+    if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
+    if (!myWs || !perm.allows(myRole, 'ws.billing.view')) return ctx.json(res, 403, { error: 'Only the workspace owner or an admin can see billing.' }), true;
+    if (SELF_HOSTED) return ctx.json(res, 200, { selfHosted: true }), true;
+    const P = store.accounts[myWs.owner]; if (!P) return ctx.json(res, 404, { error: 'This workspace has no owner.' }), true;
+    const st = billingState(P), plan = P.subscription && ['ok', 'grace', 'readonly'].includes(st) ? (P.plan === 'company' ? 'company' : 'team') : null, iv = periodOf(P);
+    const packs = storagePacksOf(P), baseMb = plan ? limitMbOf(plan, 0) : null, usedB = usedBytesOf(ctx, myWs);
+    const sold = Object.values(store.accounts).reduce((n, a) => n + (a.subscription && a.email !== P.email ? (a.storagePacks || 0) : 0), 0);
+    let next = null;
+    if (plan && P.subStatus === 'active' && !P.cancelAtPeriodEnd && P.stripeCustomer) { const inv = await previewInvoice(P, {}); if (inv) next = { amount: inv.amount_due, currency: inv.currency || 'usd', at: inv.next_payment_attempt || inv.period_end || P.periodEnd || null }; }
+    const may = perm.allows(myRole, 'ws.billing');
+    return ctx.json(res, 200, { isOwner: P.email === me.email, owner: P.username, role: myRole, state: st, plan, interval: plan ? iv : null, price: plan ? priceLabelOf(P, myWs) : null,
+      status: P.subStatus || null, periodEnd: P.periodEnd || null, cancelAtPeriodEnd: !!P.cancelAtPeriodEnd, paymentFailed: !!P.paymentFailedAt && st !== 'ok', graceEndsAt: st === 'grace' ? graceEndsAt(P) : null, next,
+      founding: P.founding ? { n: P.founding.n, label: P.founding.label || null } : null, trial: st === 'trial', trialEndsAt: onTrialClock(P) ? P.trialEndsAt : null, free: st === 'free',
+      builders: { n: fullMembers(store, myWs.id).length, team: planCap(myWs, 'team'), company: planCap(myWs, 'company') }, plans: planList(myWs), teamMb: limitMbOf('team', 0), companyMb: limitMbOf('company', 0),
+      storage: { offered: STORAGE_ON(), usedBytes: usedB, baseMb, packs, packGb: STORAGE_PACK_GB, maxPacks: STORAGE_MAX_PACKS, limitMb: plan ? limitMbOf(plan, packs) : null, label: STORAGE_PRICES[iv] ? STORAGE_LABELS[iv] : '',
+                 labels: STORAGE_LABELS, soldOut: (sold + packs + 1) * STORAGE_PACK_GB > STORAGE_SELLABLE_GB, paused: !!P.subscription && (P.storagePacks || 0) > 0 && packs === 0, biggest: biggestFiles(ctx, myWs) },
+      canChange: may && !!plan && P.subStatus === 'active' && !P.cancelAtPeriodEnd, canSubscribe: may && !plan, canCancel: may && !!plan && P.subStatus === 'active', canPortal: may && !!P.stripeCustomer }), true;
+  }
   // Billing API (needs a signed-in account)
   if (p.startsWith('/billing/') && m === 'POST') {
     if (!me) return ctx.json(res, 401, { error: 'not signed in' }), true;
@@ -1560,16 +2062,23 @@ async function handle(req, res, url, ctx0) {
     try {
       if (p === '/billing/checkout') {
         if (entitled(me, store) && !onTrialClock(me)) return ctx.json(res, 200, { url: '/app' }), true;   // T-0159: someone on (or past) the free trial may subscribe
-        if (!amOwner) return ctx.json(res, 400, { error: `Your workspace is paid for by its owner (${store.accounts[myWs?.owner]?.username || 'the owner'}).` }), true;
+        if (!perm.allows(myRole, 'ws.billing')) return ctx.json(res, 400, { error: `Your workspace is paid for by its owner (${store.accounts[myWs?.owner]?.username || 'the owner'}).` }), true;
         if (!verified(me)) return ctx.json(res, 403, { error: 'Confirm your email address first (check your inbox for the link, or resend it below).', needsVerification: true }), true;   // T-0032
         if (!me.stripeCustomer) {
           const c = await stripe('POST', 'customers', { email: me.email, metadata: { chamber_username: me.username, chamber_workspace: me.workspace } });
           me.stripeCustomer = c.id;
           const fresh = load(); if (fresh.accounts[me.email]) { fresh.accounts[me.email].stripeCustomer = c.id; save(fresh); }   // re-read: the call above waited on Stripe
         }
+        const cb = await ctx.parseBody(req).catch(() => ({})), wantPlan = cb?.plan === 'company' ? 'company' : 'team';        // T-0295: Team or Company
+        const wantIv = cb?.interval === undefined ? 'month' : cb.interval;                                                   // T-0310: monthly (the default) or yearly
+        if (!['month', 'year'].includes(wantIv)) return ctx.json(res, 400, { error: 'interval must be month or year' }), true;
+        const wantPrice = priceFor(wantPlan, wantIv, myWs);
+        if (!wantPrice) return ctx.json(res, 400, { error: `The ${wantPlan === 'company' ? 'Company' : 'Team'} plan is not offered ${wantIv === 'year' ? 'yearly' : 'monthly'} on this Chamber.` }), true;
+        { const n = fullMembers(store, myWs.id).length, cap = planCap(myWs, wantPlan);
+          if (n > cap) return ctx.json(res, 409, { error: `This workspace has ${n} builders and the ${wantPlan === 'company' ? 'Company' : 'Team'} plan covers ${cap}. Make some of them approvers or viewers (they use no seat)${wantPlan === 'team' ? ', or choose Company' : ''}.`, builders: n, covers: cap }), true; }
         const cs = await stripe('POST', 'checkout/sessions', {
           mode: 'subscription', customer: me.stripeCustomer, client_reference_id: me.email,
-          line_items: { 0: { price: PRICE, quantity: 1 } },
+          line_items: { 0: { price: wantPrice, quantity: 1 } }, subscription_data: { metadata: { chamber_workspace: me.workspace, chamber_plan: wantPlan, chamber_period: wantIv } },
           success_url: `${PUBLIC_URL}/billing?done=1`, cancel_url: `${PUBLIC_URL}/billing`,
           allow_promotion_codes: 'true',
         });
@@ -1577,46 +2086,123 @@ async function handle(req, res, url, ctx0) {
       }
       if (p === '/billing/portal') {
         if (!me.stripeCustomer) return ctx.json(res, 400, { error: 'No subscription yet.' }), true;
-        const ps = await stripe('POST', 'billing_portal/sessions', { customer: me.stripeCustomer, return_url: `${PUBLIC_URL}/billing` });
+        if (!perm.allows(myRole, 'ws.billing')) return ctx.json(res, 400, { error: 'Only the workspace owner can open the card and invoices page: it is their card.' }), true;   // T-0311: said, not only implied by having no customer
+        const pb = await ctx.parseBody(req).catch(() => ({}));                     // T-0311: from the Billing tab, Stripe's page comes back to the tab
+        const ps = await stripe('POST', 'billing_portal/sessions', { customer: me.stripeCustomer, return_url: `${PUBLIC_URL}${pb?.from === 'app' ? '/app#billing' : '/billing'}` });
         return ctx.json(res, 200, { url: ps.url }), true;
+      }
+      if (p === '/billing/preview') {                                            // T-0311: what a change would charge today, before anything is changed
+        if (!perm.allows(myRole, 'ws.billing')) return ctx.json(res, 403, { error: 'Only the workspace owner can change the plan or the storage: it is their card.' }), true;   // T-0311: the owner only (20 Nov)
+        const P = store.accounts[myWs?.owner], b = await ctx.parseBody(req).catch(() => ({}));
+        if (!P || P.subStatus !== 'active' || !P.subscription) return ctx.json(res, 400, { error: 'There is no active subscription to change.' }), true;
+        const t = changeTarget(store, myWs, P, b); if (t.error) return ctx.json(res, t.status || 400, { error: t.error }), true;
+        const sub = await stripe('GET', `subscriptions/${P.subscription}`);
+        const inv = t.same ? null : await previewInvoice(P, { subscription_items: changeItems(sub, t, myWs), subscription_proration_behavior: 'always_invoice', subscription_proration_date: Math.floor(Date.now() / 1000), ...(t.iv !== t.haveIv ? { subscription_billing_cycle_anchor: 'now' } : {}) });
+        const usedB = usedBytesOf(ctx, myWs), newMb = limitMbOf(t.plan, t.packs);
+        return ctx.json(res, 200, { plan: t.plan, interval: t.iv, packs: t.packs, same: t.same, dueNow: inv ? Math.max(0, inv.amount_due || 0) : null, total: inv ? inv.total : null, currency: inv?.currency || 'usd',
+          then: `${labelFor(t.plan, t.iv, myWs)}${t.packs ? `, plus ${t.packs} × ${STORAGE_LABELS[t.iv]} for ${t.packs * STORAGE_PACK_GB} GB of storage` : ''}`, newPeriod: t.iv !== t.haveIv,
+          overFiles: usedB > newMb * 1048576, usedMb: Math.ceil(usedB / 1048576), limitMb: newMb, needsPassword: t.charges }), true;
+      }
+      if (p === '/billing/cancel') {                                             // T-0311: one tap and one confirmation (the page asks once); {undo:true} keeps the plan
+        if (!perm.allows(myRole, 'ws.billing')) return ctx.json(res, 400, { error: 'Only the workspace owner can cancel the plan: it is their card.' }), true;
+        const b = await ctx.parseBody(req).catch(() => ({})), undo = b?.undo === true;
+        if (me.subStatus !== 'active' || !me.subscription) return ctx.json(res, 400, { error: 'There is no active plan to cancel.' }), true;
+        if (!!me.cancelAtPeriodEnd === !undo) return ctx.json(res, 200, publicView(me, store)), true;
+        await stripe('POST', `subscriptions/${me.subscription}`, { cancel_at_period_end: undo ? 'false' : 'true' });
+        const after = await stripe('GET', `subscriptions/${me.subscription}`), fresh = load(), cur = fresh.accounts[me.email];
+        if (!cur) return ctx.json(res, 401, { error: 'not signed in' }), true;
+        applySubscription(cur, after); save(fresh);
+        const until = cur.periodEnd ? new Date(cur.periodEnd * 1000).toUTCString().slice(0, 16) : 'the end of the paid period';
+        console.log(`[accounts] plan ${undo ? 'kept' : 'cancelled'}: ${cur.username} (until ${until})`); ctx.audit(sess, { action: undo ? 'plan-kept' : 'plan-cancel', until: cur.periodEnd || null }, true);
+        { const letter = { to: cur.email, subject: undo ? 'Chamber: your plan continues' : 'Chamber: your plan is cancelled', text: `Hello ${cur.username},\n\n`
+            + (undo ? `Your Chamber plan will not end: it renews as before (${priceLabelOf(cur, fresh.workspaces[cur.workspace])}).` : `Your Chamber plan is cancelled. It stays as it is until ${until}. Then the workspace moves to the free plan: nothing is deleted, and everyone in it can still read and export the record. Nothing more is charged.\n\nChanged your mind? Keep the plan in the Billing tab before then.`)
+            + `\n\n${PUBLIC_URL}/app\n\nIf you did not do this, change your password now and write to ${CONTACT_TO}.\n` };
+          if (TEST_HOOKS) console.log(`[accounts] cancel mail to ${letter.to}: ${undo ? 'kept' : 'cancelled'}`);
+          if (mail.enabled) mail.send(letter).catch(e => console.error('[accounts] cancel mail failed:', e.message)); }
+        return ctx.json(res, 200, publicView(cur, fresh)), true;
+      }
+      if (p === '/billing/plan') {                                               // T-0295: Team or Company; T-0311: and monthly or yearly, by the owner only; prorated
+        if (!PRICES.company.month && !PRICES.company.year && !(PRICES.team.month && PRICES.team.year)) return ctx.json(res, 404, { error: 'This Chamber has one plan.' }), true;
+        if (!perm.allows(myRole, 'ws.billing')) return ctx.json(res, 400, { error: 'Only the workspace owner can change the plan: it is their card.' }), true;   // T-0311: the owner only (20 Nov)
+        const b = await ctx.parseBody(req).catch(() => ({})), P = store.accounts[myWs?.owner];
+        if (b?.plan !== undefined && !['team', 'company'].includes(b.plan)) return ctx.json(res, 400, { error: 'plan must be team or company' }), true;
+        if (!P || P.subStatus !== 'active' || !P.subscription) return ctx.json(res, 400, { error: 'Changing the plan needs an active subscription. Subscribe first.' }), true;
+        const t = changeTarget(store, myWs, P, { plan: b?.plan, interval: b?.interval });          // the storage packs stay as they are
+        if (t.error) return ctx.json(res, t.status || 400, { error: t.error }), true;
+        if (t.same) return ctx.json(res, 200, publicView(me, store)), true;
+        { const usedB = usedBytesOf(ctx, myWs), newMb = limitMbOf(t.plan, t.packs);              // warn first when the files would be over the new limit
+          if (usedB > newMb * 1048576 && b?.confirmOver !== true) return ctx.json(res, 409, { error: `The files use ${mbText(usedB)} and the ${t.plan === 'company' ? 'Company' : 'Team'} plan with your storage gives ${mbText(newMb * 1048576)}. After the change nobody can add files until some are deleted or storage is added. Nothing was changed: confirm to go ahead.`, overFiles: true, usedMb: Math.ceil(usedB / 1048576), limitMb: newMb }), true; }
+        if (t.charges) { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g, 'Password is wrong. Nothing was charged.'), true; }   // a charge to the owner's card needs the password of whoever asks
+        try {
+          const sub = await stripe('GET', `subscriptions/${P.subscription}`);
+          const item = (sub.items?.data || []).find(i => priceInfo(i.price?.id));
+          if (!item) return ctx.json(res, 409, { error: 'We could not find the plan on the subscription. Nothing was changed; write to us and we will sort it out.' }), true;
+          if (t.iv === t.haveIv) await stripe('POST', `subscription_items/${item.id}`, { price: priceFor(t.plan, t.iv, myWs), ...(t.charges ? { proration_behavior: 'always_invoice', payment_behavior: 'error_if_incomplete' } : { proration_behavior: 'create_prorations' }) });
+          else await stripe('POST', `subscriptions/${P.subscription}`, { items: changeItems(sub, t, myWs), billing_cycle_anchor: 'now', proration_behavior: 'always_invoice', payment_behavior: 'error_if_incomplete' });   // the new period starts today; the unused part of the old one comes off
+        } catch (e) {
+          if (/^Stripe/.test(e.message) || e.code) throw e;
+          console.error('[accounts] plan:', e.message);
+          return ctx.json(res, 402, { error: `Nothing was changed and the card was not charged. The payment service said: ${String(e.message).slice(0, 200)}` }), true;
+        }
+        const after = await stripe('GET', `subscriptions/${P.subscription}`);
+        const fresh = load(), cur = fresh.accounts[P.email];
+        if (!cur) return ctx.json(res, 409, { error: 'The workspace owner is gone. Nothing more was changed.' }), true;
+        applySubscription(cur, after); save(fresh);
+        const name = (pl, v) => `${pl === 'company' ? 'Company' : 'Team'}, ${v === 'year' ? 'yearly' : 'monthly'}`;
+        console.log(`[accounts] plan ${name(t.havePlan, t.haveIv)} -> ${name(cur.plan, periodOf(cur))}: ${cur.username} (by ${me.username})`); ctx.audit(sess, { action: 'plan-change', from: t.havePlan, to: cur.plan, fromPeriod: t.haveIv, toPeriod: periodOf(cur) }, true);
+        { const letter = { to: cur.email, subject: 'Chamber: your plan was changed', text: `Hello ${cur.username},\n\nYour Chamber workspace moved from ${name(t.havePlan, t.haveIv)} to ${name(cur.plan, periodOf(cur))} (${priceLabelOf(cur, fresh.workspaces[cur.workspace])}).\n\n`
+            + (t.iv !== t.haveIv ? 'The new period starts today; the unused part of the old one was taken off.' : t.charges ? `Your card on file was charged the difference for the rest of your current ${periodOf(cur)}.` : 'The unused part of what you paid is taken off your next bill. Nothing was deleted.')
+            + (me.email !== cur.email ? `\n\nThe change was made by ${me.username}, an admin of your workspace.` : '')
+            + `\n\nYou can change it again at any time in the Billing tab: ${PUBLIC_URL}/app\n\nIf you did not expect this, change your password now and write to ${CONTACT_TO}.\n` };
+          if (TEST_HOOKS) console.log(`[accounts] plan mail to ${letter.to}: ${t.havePlan} -> ${cur.plan} (${t.haveIv} -> ${periodOf(cur)}, by ${me.username})`);
+          if (mail.enabled) mail.send(letter).catch(e => console.error('[accounts] plan mail failed:', e.message)); }
+        return ctx.json(res, 200, publicView(fresh.accounts[me.email] || me, fresh)), true;
       }
       if (p === '/billing/storage') {                                            // storage add-on: set how many packs the workspace has
         if (!STORAGE_ON()) return ctx.json(res, 404, { error: 'Extra storage is not offered on this Chamber.' }), true;
-        if (!amOwner) return ctx.json(res, 400, { error: 'Only the workspace owner can change storage: it is paid for with their card.' }), true;
-        const b = await ctx.parseBody(req).catch(() => ({})), want = b?.packs, have = me.storagePacks || 0;
+        if (!perm.allows(myRole, 'ws.billing')) return ctx.json(res, 400, { error: 'Only the workspace owner can change the storage: it is their card.' }), true;   // T-0246; T-0311: the owner only (20 Nov)
+        const P = store.accounts[myWs?.owner] || me;                                 // T-0311: always the owner's subscription, whoever asks
+        const b = await ctx.parseBody(req).catch(() => ({})), want = b?.packs, have = P.storagePacks || 0;
         if (!Number.isInteger(want) || want < 0 || want > STORAGE_MAX_PACKS) return ctx.json(res, 400, { error: `Choose between 0 and ${STORAGE_MAX_PACKS} packs.` }), true;
-        if (me.subStatus !== 'active' || !me.subscription) return ctx.json(res, 400, { error: 'Extra storage needs an active subscription. Subscribe first.' }), true;
-        if (me.cancelAtPeriodEnd) return ctx.json(res, 400, { error: 'Your subscription is set to cancel. Keep it (Manage billing) before changing storage.' }), true;
+        if (P.subStatus !== 'active' || !P.subscription) return ctx.json(res, 400, { error: 'Extra storage needs an active subscription. Subscribe first.' }), true;
+        if (P.cancelAtPeriodEnd) return ctx.json(res, 400, { error: 'The subscription is set to cancel. Keep it (Billing tab) before changing storage.' }), true;
+        const siv = periodOf(P), sprice = STORAGE_PRICES[siv];                                      // T-0310: storage follows the plan's period
+        if (!sprice && want > have) return ctx.json(res, 400, { error: `Extra storage is not offered on ${siv === 'month' ? 'monthly' : 'yearly'} plans on this Chamber.` }), true;
         if (want === have) return ctx.json(res, 200, publicView(me, store)), true;
-        if (want > have) { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g, 'Password is wrong. Nothing was charged.'), true; }   // a charge to the card on file needs the password again, not only a signed-in browser
+        if (want < have) {                                                         // T-0311: never leave the files over the limit; say what to delete
+          const usedB = usedBytesOf(ctx, myWs), newMb = limitMbOf(P.plan === 'company' ? 'company' : 'team', want);
+          if (usedB > newMb * 1048576) { const big = biggestFiles(ctx, myWs); return ctx.json(res, 409, { error: `The files use ${mbText(usedB)}, and with ${want * STORAGE_PACK_GB} GB of extra storage the limit would be ${mbText(newMb * 1048576)}. Delete files first (${big.map(f => `${f.name}, ${mbText(f.size)}`).join('; ') || 'see the Files tab'}). Nothing was changed.`, overFiles: true, usedMb: Math.ceil(usedB / 1048576), limitMb: newMb, biggest: big }), true; }
+        }
+        if (want > have) { const g = reauth(me, b?.password); if (g !== 'ok') return reauthFail(ctx, res, g, 'Password is wrong. Nothing was charged.'), true; }   // a charge to the card on file needs the password again (of whoever asks), not only a signed-in browser
         if (want > have) {                                                         // never sell space the disk does not have
-          const sold = Object.values(store.accounts).reduce((n, a) => n + (a.subscription && a.email !== me.email ? (a.storagePacks || 0) : 0), 0);
-          if ((sold + want) * STORAGE_PACK_GB > STORAGE_SELLABLE_GB) return ctx.json(res, 409, { error: 'We cannot add that much storage right now. Write to us through the contact form and we will make room. Nothing was charged.' }), true;
+          const sold = Object.values(store.accounts).reduce((n, a) => n + (a.subscription && a.email !== P.email ? (a.storagePacks || 0) : 0), 0);
+          if ((sold + want) * STORAGE_PACK_GB > STORAGE_SELLABLE_GB) return ctx.json(res, 409, { error: 'More storage is coming soon: we cannot add that much right now. Nothing was charged.', soldOut: true }), true;
         }
         try {                                                                      // an increase is charged now; if the card fails Stripe changes nothing
-          const sub = await stripe('GET', `subscriptions/${me.subscription}`);
-          const item = (sub.items?.data || []).find(i => i.price?.id === STORAGE_PRICE);
+          const sub = await stripe('GET', `subscriptions/${P.subscription}`);
+          const item = (sub.items?.data || []).find(i => isStoragePrice(i.price?.id));
           const charge = { proration_behavior: 'always_invoice', payment_behavior: 'error_if_incomplete' };
           if (want === 0) { if (item) await stripe('DELETE', `subscription_items/${item.id}`, { proration_behavior: 'create_prorations' }); }
           else if (item) await stripe('POST', `subscription_items/${item.id}`, { quantity: want, ...(want > (item.quantity || 0) ? charge : { proration_behavior: 'create_prorations' }) });
-          else await stripe('POST', 'subscription_items', { subscription: me.subscription, price: STORAGE_PRICE, quantity: want, ...charge });
+          else await stripe('POST', 'subscription_items', { subscription: P.subscription, price: sprice, quantity: want, ...charge });
         } catch (e) {
           if (/^Stripe/.test(e.message) || e.code) throw e;                        // network trouble: the generic answer below
           console.error('[accounts] storage:', e.message);
           return ctx.json(res, 402, { error: `Nothing was changed and your card was not charged. The payment service said: ${String(e.message).slice(0, 200)}` }), true;
         }
-        const after = await stripe('GET', `subscriptions/${me.subscription}`);
-        const fresh = load(), cur = fresh.accounts[me.email];                      // re-read: the calls above waited on Stripe
-        if (!cur) return ctx.json(res, 401, { error: 'not signed in' }), true;
+        const after = await stripe('GET', `subscriptions/${P.subscription}`);
+        const fresh = load(), cur = fresh.accounts[P.email];                       // re-read: the calls above waited on Stripe
+        if (!cur) return ctx.json(res, 409, { error: 'The workspace owner is gone. Nothing more was changed.' }), true;
         applySubscription(cur, after); save(fresh);
-        console.log(`[accounts] storage packs ${have} -> ${cur.storagePacks}: ${cur.username}`); ctx.audit(sess, { action: 'storage-packs', from: have, to: cur.storagePacks }, true);
+        console.log(`[accounts] storage packs ${have} -> ${cur.storagePacks}: ${cur.username} (by ${me.username})`); ctx.audit(sess, { action: 'storage-packs', from: have, to: cur.storagePacks }, true);
         { const now = cur.storagePacks || 0, up = now > have;                         // tell the owner by email every time: it is their card, and it is how they notice a change they did not make
           const letter = { to: cur.email, subject: 'Chamber: your extra storage was changed', text: `Hello ${cur.username},\n\nThe extra file storage of your Chamber workspace was changed from ${have * STORAGE_PACK_GB} GB to ${now * STORAGE_PACK_GB} GB.\n\n`
-            + (up ? `Your card on file was charged for the rest of your current subscription year. From your next renewal it costs ${STORAGE_LABEL} for each ${STORAGE_PACK_GB} GB pack, together with your subscription.` : 'The unused part of what you paid is taken off your next bill. No files were deleted.')
+            + (up ? `Your card on file was charged for the rest of your current ${siv}. From your next renewal it costs ${STORAGE_LABELS[siv]} for each ${STORAGE_PACK_GB} GB pack, together with your subscription.` : 'The unused part of what you paid is taken off your next bill. No files were deleted.')
+            + (me.email !== cur.email ? `\n\nThe change was made by ${me.username}, an admin of your workspace.` : '')   // T-0311
             + `\n\nYou can change it again at any time: ${PUBLIC_URL}/billing\n\nIf you did not do this, change your password now and write to ${CONTACT_TO}.\n` };
           if (TEST_HOOKS) console.log(`[accounts] storage mail to ${letter.to}: ${have * STORAGE_PACK_GB} GB -> ${now * STORAGE_PACK_GB} GB`);
           if (mail.enabled) mail.send(letter).catch(e => console.error('[accounts] storage mail failed:', e.message)); }
-        return ctx.json(res, 200, publicView(cur, fresh)), true;
+        return ctx.json(res, 200, publicView(fresh.accounts[me.email] || me, fresh)), true;
       }
       if (p === '/billing/refresh') {
         const best = await bestSubscription(me.stripeCustomer);
@@ -1637,7 +2223,7 @@ async function handle(req, res, url, ctx0) {
 function check() {
   if (!ENABLED) return;
   const missing = (SELF_HOSTED ? [['CHAMBER_PUBLIC_URL', PUBLIC_URL]] : [['CHAMBER_STRIPE_SECRET', STRIPE_KEY], ['CHAMBER_STRIPE_WEBHOOK_SECRET', WEBHOOK_SECRET],
-                   ['CHAMBER_STRIPE_PRICE', PRICE], ['CHAMBER_PUBLIC_URL', PUBLIC_URL]]).filter(([, v]) => !v).map(([k]) => k);   // T-0061
+                   ['CHAMBER_STRIPE_TEAM_MONTH or CHAMBER_STRIPE_TEAM_YEAR', PRICES.team.month || PRICES.team.year || PRICE], ['CHAMBER_PUBLIC_URL', PUBLIC_URL]]).filter(([, v]) => !v).map(([k]) => k);   // T-0061; T-0310: a price that is not set is simply not offered
   if (missing.length) { console.error('REFUSING TO START: CHAMBER_ACCOUNTS=1 but missing ' + missing.join(', ')); process.exit(1); }
   if (!fs.existsSync(LANDING)) { console.error('REFUSING TO START: public/landing.html is missing'); process.exit(1); }
 }
@@ -1681,8 +2267,8 @@ if (require.main === module) {
     console.log(`${ws.name}: owner is now ${to.username} (${from.username} stays as a member). Agent tokens, invite link and history are unchanged.`);
   } else if (cmd === '2fa-off') {                                   // T-0052: rescue after an out-of-band identity check
     const a = store.accounts[id]; if (!a) { console.error('no such account'); process.exit(1); }
-    if (!a.totp) { console.log(`${a.username} does not have two-factor on; nothing changed`); process.exit(0); }
-    delete a.totp; delete a.totpRecovery; delete a.mfaDevices; delete a.totpPending; save(store);
+    if (!a.totp && !a.passkeyLogin) { console.log(`${a.username} does not have two-factor on; nothing changed`); process.exit(0); }
+    delete a.totp; delete a.totpRecovery; delete a.mfaDevices; delete a.totpPending; delete a.passkeyLogin; save(store);   // T-0241 (a): the passkey at sign-in too (the passkeys stay for unlocking)
     console.log(`two-factor removed for ${a.username} <${a.email}>; they can sign in with the password alone and set it up again on the account page`);
   } else if (cmd === 'remove') {
     const a = store.accounts[id]; if (!a) { console.error('no such account'); process.exit(1); }
@@ -1764,12 +2350,24 @@ function trialHousekeeping(ctx, now = Date.now()) {
                : (left <= TRIAL_SOON_MS && !sent.soon && a.trialEndsAt - (a.createdAt || 0) > TRIAL_SOON_MS ? 'soon' : null);
     if (!kind) continue;
     a.trialMail = { ...sent, [kind]: now }; out.reminded.push({ username: a.username, kind });
-    const keep = FREE_ON() ? `Nothing is deleted. Your workspace ${kind === 'over' ? 'is now' : 'then moves'} on Chamber's free plan: it stays yours to use for free, for you alone and up to ${FREE_TOKENS} AI agents, without inviting others and without storing files. Anyone you invited can still read it but not post.`   // T-0225
+    const keep = FREE_ON() ? `Nothing is deleted. Your workspace ${kind === 'over' ? 'is now' : 'then moves'} on Chamber's free plan: it stays yours to use for free, for ${FREE_PEOPLE === 1 ? 'you alone' : `${freePeopleText()} (you and the people who joined first)`} and ${FREE_TOKENS} AI agents${FREE_PEOPLE === 1 ? '' : ' each'}, without storing files. Anyone beyond that can still read it but not post.`   // T-0225; T-0288
       : `Nothing is deleted. Your workspace ${kind === 'over' ? 'is now' : 'then becomes'} read-only: you can still open it and read everything, but you and your AI agents cannot post or change anything until you subscribe.`;
     sends.push({ to: a.email, subject: kind === 'over' ? 'Chamber: your free trial has ended' : `Chamber: your free trial ends on ${day(a.trialEndsAt)}`,
-      text: `Hi ${a.username},\n\n${kind === 'over' ? 'Your Chamber free trial has ended.' : `Your Chamber free trial ends on ${day(a.trialEndsAt)}.`}\n\n${keep}\n\n${FREE_ON() ? 'To keep your team and your files' : 'To keep going'}, subscribe (${PRICE_LABEL}, refundable for 14 days):\n\n${PUBLIC_URL}/billing\n\nIf Chamber was not for you, you do not need to do anything, and nothing will be charged. Questions? Reply to this email.\n` });
+      text: `Hi ${a.username},\n\n${kind === 'over' ? 'Your Chamber free trial has ended.' : `Your Chamber free trial ends on ${day(a.trialEndsAt)}.`}\n\n${keep}\n\n${FREE_ON() ? 'To keep your team and your files' : 'To keep going'}, subscribe (${keptDeal('team', 'year', ws) ? 'Team $50 / month, or $49 / year: the deal your workspace keeps' : PRICE_LABEL}, refundable for 14 days):\n\n${PUBLIC_URL}/billing\n\nIf Chamber was not for you, you do not need to do anything, and nothing will be charged. Questions? Reply to this email.\n` });
   }
-  if (out.reminded.length || out.removed.length) save(store);
+  // T-0310: a yearly plan gets an email 14 days before each renewal (the pricing page and the Terms promise it), once per renewal
+  // date (renewMailFor). A monthly plan gets a receipt every month instead (the invoice.paid webhook).
+  out.renewals = [];
+  if (mail.enabled || TEST_HOOKS) for (const a of Object.values(store.accounts)) {
+    if (!a.subscription || a.subStatus !== 'active' || a.cancelAtPeriodEnd || periodOf(a) !== 'year' || !a.periodEnd || a.renewMailFor === a.periodEnd) continue;
+    const at = a.periodEnd * 1000; if (at <= now || at - now > RENEW_NOTE_MS) continue;
+    a.renewMailFor = a.periodEnd; out.renewals.push(a.username);
+    const packs = storagePacksOf(a), label = priceLabelOf(a, store.workspaces[a.workspace]);
+    sends.push({ to: a.email, subject: `Chamber: your plan renews on ${day(at)}`,
+      text: `Hi ${a.username},\n\nYour Chamber ${a.plan === 'company' ? 'Company' : 'Team'} plan renews on ${day(at)} at ${label}${packs ? `, with ${packs * STORAGE_PACK_GB} GB of extra storage at ${STORAGE_LABELS.year} per ${STORAGE_PACK_GB} GB` : ''}. The card on file is charged then.\n\n`
+        + `If you want to keep it, there is nothing to do. To change the plan or the storage, or to cancel: ${PUBLIC_URL}/billing\n\nIf you forget to cancel, write to us within 14 days of the charge and we refund it in full.\n` });
+  }
+  if (out.reminded.length || out.removed.length || out.renewals.length) save(store);
   for (const s of sends) { if (TEST_HOOKS) console.log(`[accounts] trial mail to ${s.to}: ${s.subject}`);
     if (mail.enabled) mail.send(s).then(() => console.log(`[accounts] trial mail sent: ${s.subject}`), e => console.error('[accounts] trial mail failed:', e.message)); }
   return out;
@@ -1795,6 +2393,25 @@ function hookHit(wsId, id) { const store = load(); const h = ((store.workspaces[
 // T-0181 (security): may this session run commands on the Chamber server itself? On the hosted service only a site operator:
 // an account whose role is 'admin', which only the server-side CLI (accounts.js add-admin / promote) can set, and who owns
 // their workspace. Being the owner of a workspace is NOT enough: every sign-up owns one. Self-hosted: the owner, as before.
+// T-0314: what paying workspaces could still upload (their plan's storage plus packs, minus what they use), for the disk check.
+// The site's own workspace is left out (its owner runs the server); a workspace that can no longer write is left out too.
+function storagePromised(ctx) {
+  if (SELF_HOSTED) return { bytes: 0, count: 0 };
+  const store = load(); let bytes = 0, count = 0;
+  for (const ws of Object.values(store.workspaces)) {
+    const owner = store.accounts[ws.owner]; if (!owner || owner.role === 'admin') continue;
+    const plan = planOf(store, ws), st = billingState(owner);
+    if ((plan !== 'team' && plan !== 'company') || (st !== 'ok' && st !== 'grace')) continue;
+    bytes += Math.max(0, limitMbOf(plan, storagePacksOf(owner)) * 1048576 - usedBytesOf(ctx, ws)); count++;
+  }
+  return { bytes, count };
+}
+// T-0314: the workspaces the site operators own (accounts with role admin), and their usernames, for operator notices.
+function operatorWorkspaces() {
+  const store = load(), out = [];
+  for (const a of Object.values(store.accounts)) if (a.role === 'admin' && a.workspace && store.workspaces[a.workspace]?.owner === a.email) out.push({ ws: a.workspace, username: a.username });
+  return out;
+}
 function serverConsoleAllowed(sess) {
   if (!ENABLED) return true;
   if (!sess || sess.agent || !sess.email) return false;
@@ -1870,4 +2487,4 @@ function retentionSettings() {                                    // T-0037: [{ 
 function fleetLinkOf(wsId) { return (load().workspaces[wsId] || {}).fleet || null; }                       // T-0153: the stored link record (sealed key + status), or null
 function fleetMark(wsId, patch) { const store = load(); const f = (store.workspaces[wsId] || {}).fleet; if (!f) return; Object.assign(f, patch); save(store); }
 const fleetDir = () => path.dirname(FILE);                                                                  // where fleet-link.key lives (beside accounts.json)
-module.exports = { enabled: ENABLED, lockStates, lockConverted, scheduleText, lockConvertSchedules, recordSettings, reportMailFind, reportMailSet, standingRules, draftsOn, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };
+module.exports = { storagePromised, operatorWorkspaces, enabled: ENABLED, lockStates, lockConverted, scheduleText, lockConvertSchedules, recordSettings, reportMailFind, reportMailSet, standingRules, draftsOn, agentTasksOn, needs2fa, passkeyCount, requestMailFor, setRequestMail, workspaceName, budgetOf, budgetWorkspaces, reportByToken, reportWorkspaces, approvalCheck, canApprove, reminderWorkspaces, remindTargets, storageExtraMbFor, planBaseMbFor, storageOffered: STORAGE_ON, serverConsoleAllowed, trialHousekeeping, fleetLinkOf, fleetMark, fleetDir, handle, check, sessionEntitled, sessionReadOnly, billingFor, workspaceOf, entitled, tokenSession, commandersFor, pushTo, flushQuietHeld, retentionSettings, dueSchedules, hookByToken, hookHit, sessionRole, mirrorsFor, mirrorResult, selfHosted: SELF_HOSTED };

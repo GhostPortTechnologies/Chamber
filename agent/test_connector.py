@@ -104,6 +104,12 @@ print("gemini")
 m = load("gemini", "gemini-2.0-flash", key="g-key")
 r = m.ask("general", hist, msg)
 check("answers from generateContent (parts joined), key in header, systemInstruction used", r.startswith("gemini says hi") and seen[-1][1].get("x-goog-api-key") == "g-key" and ":generateContent" in seen[-1][0] and "systemInstruction" in seen[-1][2], r)
+check("3.35.0 (T-0284): an older Gemini model still gets temperature 0.3", (seen[-1][2].get("generationConfig") or {}).get("temperature") == 0.3, str(seen[-1][2].get("generationConfig")))
+m4 = load("gemini", "gemini-4-hydrogen", key="g-key"); r4 = m4.ask("general", hist, msg)
+check("3.35.0 (T-0284): a current Gemini model (4, or 3.6 and later) is sent no temperature, as Google's documentation asks; the rest of the request is unchanged",
+      r4.startswith("gemini says hi") and "generationConfig" not in seen[-1][2] and "gemini-4-hydrogen:generateContent" in seen[-1][0] and seen[-1][1].get("x-goog-api-key") == "g-key" and "systemInstruction" in seen[-1][2], str(seen[-1][2])[:200])
+check("3.35.0 (T-0284): the cut is at 3.6 (3.5 takes it, 3.6 and 3.8 do not; an unknown name gets none)",
+      m4.gemini_takes_temperature("gemini-3.5-flash-lite") and m4.gemini_takes_temperature("gemini-2.0-flash") and not m4.gemini_takes_temperature("gemini-3.6-pro") and not m4.gemini_takes_temperature("gemini-3.8-flash") and not m4.gemini_takes_temperature("models/gemini-4-neon") and not m4.gemini_takes_temperature("my-tuned-model"))
 import re
 prop = re.search(r"^PROPOSE:\s*(.+?)\s*::\s*(.+?)(?:\s*::\s*(.+))?$", r, re.M)
 check("a PROPOSE line from any backend parses into title / body / reason", prop and prop.group(1) == "Fix it" and prop.group(2) == "Do the thing" and prop.group(3) == "Because")
@@ -194,6 +200,38 @@ THREAD.update({"root": {"id": "r1", "username": "alice", "kind": "human"}, "agen
 ok, why = m.handoff_ok(peer_msg, "general")
 check("the hop cap stops the exchange", ok is False and why.startswith("hop cap"), why)
 THREAD.update({"agentHops": 1})
+print("trusted agents (3.33.0)")
+m.TRUSTED_AGENTS = {"pi-claude"}; m.PEER_MAX_PER_HOUR = 2
+top = {**peer_msg, "reply_to": None}
+check("a trusted agent's mention outside any thread is answered", m.peer_ok(top, {})[0] is True)
+check("an agent that is not trusted is still ignored", m.peer_ok({**top, "username": "other-bot"}, {})[0] is False)
+now = 1_800_000_000
+ok, why = m.peer_ok(top, {"peer_runs": [now - 60, now - 120]}, now)
+check("the hourly limit stops a ping-pong", ok is False and "limit" in why, why)
+check("answers older than an hour no longer count", m.peer_ok(top, {"peer_runs": [now - 4000, now - 5000]}, now)[0] is True)
+THREAD.update({"agentHops": 3})
+check("in a thread the hop cap still applies to trusted agents", m.peer_ok(peer_msg, {})[0] is False)
+THREAD.update({"agentHops": 1})
+check("an answer to an agent keeps only the read tools", m.peer_tools(["Read", "Grep", "Glob", "Write", "Edit", "WebSearch", "Bash", "Bash(git status:*)"]) == ["Read", "Grep", "Glob"])
+rt = m.rules_text("general", True, {**top, "_peer": True})
+check("the model is told the message comes from an agent and to change nothing for it", "ANOTHER AI AGENT (@pi-claude)" in rt and "propose a ticket" in rt and "ANOTHER AI AGENT" not in m.rules_text("general", True, msg))
+mre = re.compile(r"(^|[^\w])@" + re.escape(m.ME) + r"\b", re.I); led = m.AnsweredLedger(["done1"]); T0 = 1_800_000_000_000
+hist2 = [{"id": "a1", "ts": T0 - 3600_000, "username": "pi-claude", "text": "@test-bot plan for tomorrow", "type": "message"},
+         {"id": "a2", "ts": T0 - 7200_000, "username": "pi-claude", "text": "@test-bot answered already", "type": "message"},
+         {"id": "r2", "ts": T0 - 7200_000 + 60_000, "username": "test-bot", "text": "on it", "reply_to": "a2", "type": "message"},
+         {"id": "done1", "ts": T0 - 1800_000, "username": "pi-claude", "text": "@test-bot in the ledger", "type": "message"},
+         {"id": "a3", "ts": T0 - 50 * 3600_000, "username": "pi-claude", "text": "@test-bot too old", "type": "message"},
+         {"id": "a4", "ts": T0 - 600_000, "username": "other-bot", "text": "@test-bot not trusted", "type": "message"},
+         {"id": "a5", "ts": T0 - 900_000, "username": "pi-claude", "text": "no mention here", "type": "message"},
+         {"id": "a6", "ts": T0 - 300_000, "username": "pi-claude", "text": "@test-bot second", "type": "message"}]
+got = [x["id"] for x in m.peer_catchup(hist2, led, T0, mre, hours=48)]
+check("catch-up picks only unanswered mentions by trusted agents in the window, oldest first", got == ["a1", "a6"], str(got))
+check("catch-up is off unless asked for", m.peer_catchup(hist2, led, T0, mre, hours=0) == [])
+m.TRUSTED_AGENTS = set()
+m.SERVER_PEERS = True
+check("T-0317: with the owner's switch on, any agent's mention is answered read-only, still under the hourly limit", m.peer_ok({**top, "username": "phone-bot"}, {})[0] is True and m.peer_ok({**top, "username": "phone-bot"}, {"peer_runs": [now - 60, now - 120]}, now)[0] is False)
+m.SERVER_PEERS = False
+check("by default nobody is trusted (behaviour as before)", m.peer_ok(top, {})[0] is False and m.peer_catchup(hist2, led, T0, mre, hours=48) == [])
 script[:] = ["fine"]; m.ask("general", hist, msg)
 check("the rules name the peers and how to hand off", "@pi-claude" in seen[-1][2]["messages"][0]["content"] and "hand a sub-task" in seen[-1][2]["messages"][0]["content"])
 print("on-demand tool runner (T-0056)")
@@ -308,7 +346,7 @@ reacts = [x[2]["emoji"] for x in seen[n1:] if x[0] == "/api/messages/react"]
 check("closing takes the eyes off and marks the outcome", reacts == ["👀", "✅"], str(reacts))
 n2 = len(seen); rf = m.Run("general", msg); rf.open(); rf.close("(I hit an error)", "failed")
 check("a failed run gets a cross", [x[2]["emoji"] for x in seen[n2:] if x[0] == "/api/messages/react"][-1] == "❌")
-check("the connector reports its version", m.AGENT_VERSION == "3.31.0")
+check("the connector reports its version", m.AGENT_VERSION == "3.36.0")
 # ── 3.17.0: T-0165 files from the Files tab, T-0166 dated history, T-0167 digest from the activity record
 import time
 _api0 = m.api
@@ -552,9 +590,30 @@ check("'signout' removes the saved sign-in", c == 0 and not os.path.exists(m.SIG
 os.environ.update(saved)
 shutil.rmtree(askroot, ignore_errors=True)
 
+_im = m.installer_made; m.installer_made = lambda: True                    # 3.34.0: the installer's own install (the case T-0174 covers)
 h = m.signin_help("Not logged in · Please run /login")
 check("a connector with no Claude sign-in answers with the two commands to run, not 'Please run /login' (T-0174)",
       bool(h) and "setup-token" in h and "--oauth-token" in h and "/login" not in h and m.signin_help("Invalid API key · Fix external API key") and m.signin_help("Hello! You are not logged in to the wiki, " + "x" * 300) is None and m.signin_help("All good.") is None, str(h)[:200])
+m.installer_made = lambda: False
+hh = m.signin_help("Not logged in · Please run /login")
+check("on a machine set up by hand the sign-in help never suggests the installer, and says why (T-0267)", bool(hh) and "install.sh" not in hh and "set up by hand" in hh and "setup-token" in hh and "/login" in hh, str(hh)[:200])
+m.installer_made = _im
+_evd = tempfile.mkdtemp(prefix="envmark-"); _evf = os.path.join(_evd, "agent.env")
+open(_evf, "w").write("# written by https://chamber.example/install.sh on 2026-11-18T00:00:00Z; re-run the installer to change settings\nCHAMBER_ROOMS=general\n")
+_sv = list(sys.argv); sys.argv = ["chamber-agent.py", "--env", _evf]; _mark_yes = m.installer_made()
+open(_evf, "w").write("CHAMBER_ROOMS=general\n"); _mark_no = m.installer_made(); sys.argv = _sv
+os.environ["CHAMBER_INSTALL"] = "manual"; sys.argv = ["chamber-agent.py", "--env", _evf]; open(_evf, "w").write("# written by https://x/install.sh\n"); _mark_manual = m.installer_made(); sys.argv = _sv; del os.environ["CHAMBER_INSTALL"]
+check("the installer's own settings file is recognised by its first line; a hand-made one, or CHAMBER_INSTALL=manual, is not (T-0267)", _mark_yes is True and _mark_no is False and _mark_manual is False, str((_mark_yes, _mark_no, _mark_manual)))
+shutil.rmtree(_evd, ignore_errors=True)
+print("attachment folder (T-0263)")
+_ad = tempfile.mkdtemp(prefix="attdir-"); m.ATTACH_DIR = os.path.join(_ad, "att")
+_d, _f = m.fetch_attachments({**msg, "attachments": [{"id": "txt1", "name": "notes.txt", "mime": "text/plain", "size": 50}]})
+check("with CHAMBER_ATTACH_DIR set, attachments are downloaded into that folder (made private), not the system temp folder", bool(_d) and _d.startswith(m.ATTACH_DIR + os.sep) and oct(os.stat(m.ATTACH_DIR).st_mode & 0o777) == "0o700" and _f and _f[0].get("path", "").startswith(_d), str((_d, _f)))
+_old = os.path.join(m.ATTACH_DIR, "chamber-att-old"); os.makedirs(_old); os.utime(_old, (time.time() - 7 * 3600, time.time() - 7 * 3600))
+_other = os.path.join(m.ATTACH_DIR, "not-ours"); os.makedirs(_other); os.utime(_other, (time.time() - 7 * 3600, time.time() - 7 * 3600))
+_n = m.sweep_attachments()
+check("leftover download folders older than six hours are swept at start; a fresh one and anything not ours stay", _n == 1 and not os.path.exists(_old) and os.path.exists(_d) and os.path.exists(_other), str(_n))
+shutil.rmtree(_ad, ignore_errors=True); m.ATTACH_DIR = None
 print("follow-ups continue the same session (T-0187)")
 sroot = os.path.join(askroot, "sessions"); os.makedirs(sroot, exist_ok=True)
 spylog = os.path.join(sroot, "argv.log")
@@ -977,5 +1036,18 @@ att193(); shutil.rmtree(r193, ignore_errors=True)
 for k in ("FAKE_CODEX_MODE", "FAKE_CODEX_VERSION", "FAKE_CODEX_LOG"): os.environ.pop(k, None)
 sys.argv = ["chamber-agent.py"]
 srv.shutdown()
+print("Tasks due in the digest (3.32.0, T-0245)")
+def _fake_tasks(method, path, body=None):
+    if path.startswith("/api/tasks"): return {"tasks": [{"title": "Daily Backups", "due": "today", "agentTick": True}, {"title": "Pay the hosting bill", "due": "late"}, {"title": "Done one", "due": "done"}, {"title": "Later one", "due": "later"}]}
+    return {}
+m.api = _fake_tasks
+_dt = m.digest_text({"text": "@bot DIGEST: what happened"})
+check("3.32: the digest lists tasks due today or late, and says which an agent may tick off", "Tasks due today or late (Tasks tab): Daily Backups (today, an agent may tick it off); Pay the hosting bill (late)" in _dt and "Done one" not in _dt and "Later one" not in _dt, _dt)
+def _fake_off(method, path, body=None):
+    if path.startswith("/api/tasks"): raise RuntimeError("HTTP 403: not switched on")
+    return {}
+m.api = _fake_off
+check("3.32: with the Tasks list not switched on for agents the digest says nothing about tasks", "Tasks due" not in m.digest_text({"text": "@bot DIGEST: what happened"}))
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

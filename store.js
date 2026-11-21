@@ -66,6 +66,11 @@ function open(file) {
   if (!cols.has('attachments')) db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT');    // T-0064: JSON [{id, name, mime, size}]
   const fcols = new Set(db.prepare('PRAGMA table_info(files)').all().map(c => c.name));          // T-0149: folders are metadata only (no on-disk moves)
   if (!fcols.has('folder')) db.exec('ALTER TABLE files ADD COLUMN folder TEXT');
+  if (!fcols.has('version')) db.exec('ALTER TABLE files ADD COLUMN version INTEGER');            // T-0266: the current version's number (null = 1)
+  if (!fcols.has('updated')) db.exec('ALTER TABLE files ADD COLUMN updated INTEGER');            // T-0266: when the current version arrived, and from whom
+  if (!fcols.has('updated_by')) db.exec('ALTER TABLE files ADD COLUMN updated_by TEXT');
+  db.exec(`CREATE TABLE IF NOT EXISTS file_versions (vid TEXT PRIMARY KEY, file_id TEXT NOT NULL, n INTEGER NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT, by TEXT NOT NULL, ts INTEGER NOT NULL);
+           CREATE INDEX IF NOT EXISTS file_versions_file ON file_versions (file_id, n);`);   // T-0266: earlier versions; their bytes sit in files/<vid>
   db.exec('CREATE TABLE IF NOT EXISTS folders (path TEXT PRIMARY KEY, by TEXT, ts INTEGER)');    // T-0149: so an empty folder exists before anything is put in it
   if (!cols.has('run')) db.exec('ALTER TABLE messages ADD COLUMN run TEXT');                    // T-0071: an agent's progress record {state, steps, tools, ...}
   if (!cols.has('updated')) db.exec('ALTER TABLE messages ADD COLUMN updated INTEGER');         // T-0071: last change of any kind (edit, delete, run), drives since= polling
@@ -386,6 +391,9 @@ function foldersList(file) {
 }
 function folderAdd(file, p, by, ts) { open(file).prepare('INSERT OR IGNORE INTO folders (path, by, ts) VALUES (?, ?, ?)').run(p, by || null, ts || Date.now()); }
 const likeUnder = p => p.replace(/[\\%_]/g, '\\$&') + '/%';   // everything strictly below a folder
+function folderSharers(file, p) {                                  // T-0244: who shared the files in a folder and everything below it
+  return open(file).prepare("SELECT DISTINCT by FROM files WHERE folder = ? OR folder LIKE ? ESCAPE '\\'").all(p, likeUnder(p)).map(r => String(r.by || ''));
+}
 function folderRename(file, from, to) {                       // moves the folder and everything under it; returns how many files moved
   const db = open(file); db.exec('BEGIN');
   try {
@@ -419,8 +427,28 @@ function attachmentRemoved(file, msgId, fileId) {             // T-0149: the mes
   return get(file, msgId);
 }
 function filesOrphans(file, olderThanTs) { return open(file).prepare('SELECT * FROM files WHERE msg_id IS NULL AND ts < ?').all(olderThanTs).map(r => fileRow(file, r)); }
+// T-0266: versions. fileNewVersion moves the current row's facts into file_versions under vid (the caller has already moved the
+// bytes to files/<vid> and put the new bytes at files/<id>) and makes the new facts current, in one transaction.
+function fileNewVersion(file, id, vid, rec) {
+  const db = open(file); db.exec('BEGIN');
+  try {
+    const cur = db.prepare('SELECT * FROM files WHERE id = ?').get(String(id)); if (!cur) throw new Error('no such file');
+    const n = cur.version || 1;
+    db.prepare('INSERT INTO file_versions (vid, file_id, n, mime, size, sha256, by, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(String(vid), cur.id, n, cur.mime, cur.size, cur.sha256 || null, cur.updated_by || cur.by, cur.updated || cur.ts);
+    db.prepare('UPDATE files SET mime = ?, size = ?, sha256 = ?, version = ?, updated = ?, updated_by = ? WHERE id = ?').run(rec.mime, rec.size, rec.sha256 || null, n + 1, rec.ts, rec.by, cur.id);
+    db.exec('COMMIT');
+  } catch (e) { try { db.exec('ROLLBACK'); } catch {} throw e; }
+  return fileGet(file, id);
+}
+function fileVersions(file, id) { return open(file).prepare('SELECT * FROM file_versions WHERE file_id = ? ORDER BY n DESC').all(String(id)); }
+function fileVersionGet(file, id, vid) { return open(file).prepare('SELECT * FROM file_versions WHERE file_id = ? AND vid = ?').get(String(id), String(vid)) || null; }
+function fileVersionsTrim(file, id, keep) {                         // the oldest beyond `keep` go; returns their ids (the caller removes the bytes)
+  const db = open(file), old = db.prepare('SELECT vid FROM file_versions WHERE file_id = ? ORDER BY n DESC LIMIT -1 OFFSET ?').all(String(id), keep).map(r => r.vid);
+  const del = db.prepare('DELETE FROM file_versions WHERE vid = ?'); for (const v of old) del.run(v); return old;
+}
+function fileVersionsDelete(file, id) { const db = open(file), vids = db.prepare('SELECT vid FROM file_versions WHERE file_id = ?').all(String(id)).map(r => r.vid); db.prepare('DELETE FROM file_versions WHERE file_id = ?').run(String(id)); return vids; }
 function fileDelete(file, id) { open(file).prepare('DELETE FROM files WHERE id = ?').run(String(id)); }
-function filesBytes(file) { return open(file).prepare('SELECT COALESCE(SUM(size), 0) AS b, COUNT(*) AS n FROM files').get(); }
+function filesBytes(file) { return open(file).prepare('SELECT (SELECT COALESCE(SUM(size), 0) FROM files) + (SELECT COALESCE(SUM(size), 0) FROM file_versions) AS b, (SELECT COUNT(*) FROM files) AS n').get(); }   // T-0266: earlier versions count too
 function deleteWorkspaceDb(file) {                       // used when a workspace is deleted (the directory is removed anyway)
   const p = dbPathFor(file); const db = dbs.get(p); if (db) { try { db.close(); } catch {} dbs.delete(p); }
 }
@@ -496,5 +524,5 @@ function importWorkspaceData(file, chat, files) {
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 module.exports = { setCodec, convertChatBatch, convertChatRest, runsSince, archivePick, archiveRemove, archiveRowToMsg, load, loadLight, save, importChat, importFiles, importWorkspaceData, messages, messagesSince, maxSeq, before, get, edit, update, remove, search, pinnedIn, toggleReaction, repliesTo, setPrefs, maintenance, retention, deleteWorkspaceDb,
-                   fileAdd, fileGet, filesAttach, filesForMsg, filesList, filesOrphans, fileDelete, filesBytes,   // T-0064
-                   fileSetFolder, foldersList, folderAdd, folderRename, folderDelete, attachmentRemoved };        // T-0149
+                   fileAdd, fileGet, filesAttach, filesForMsg, filesList, filesOrphans, fileDelete, filesBytes, fileNewVersion, fileVersions, fileVersionGet, fileVersionsTrim, fileVersionsDelete,   // T-0064
+                   fileSetFolder, foldersList, folderAdd, folderRename, folderDelete, folderSharers, attachmentRemoved };        // T-0149

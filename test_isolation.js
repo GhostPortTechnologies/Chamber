@@ -17,7 +17,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const INVITE = 'TEST-CODE-1234';
 const freePort = () => new Promise((resolve, reject) => { const s = require('net').createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });   // a port the system says is free right now; fixed ranges collided now and then with the runner's own outgoing connections
 const env = { ...process.env, CHAMBER_ACCOUNTS: '1', CHAMBER_STRIPE_SECRET: 'sk_test_dummy', CHAMBER_STRIPE_WEBHOOK_SECRET: 'whsec_dummy',
-  CHAMBER_STRIPE_PRICE: 'price_dummy', CHAMBER_PUBLIC_URL: BASE, CHAMBER_INVITE_CODE: INVITE, CHAMBER_PORT: String(PORT), CHAMBER_HOST: '127.0.0.1', CHAMBER_TEST_HOOKS: '1', CHAMBER_WRITES_PER_MINUTE: '1000', CHAMBER_MAX_ROOMS: '4', CHAMBER_MAX_MEMBERS: '3', CHAMBER_MAX_STREAMS_SESSION: '3', CHAMBER_LOGIN_PER_MINUTE: '1000',
+  CHAMBER_STRIPE_PRICE: 'price_dummy', CHAMBER_STRIPE_TEAM_MONTH: 'price_team_month', CHAMBER_STRIPE_TEAM_YEAR: 'price_dummy', CHAMBER_PUBLIC_URL: BASE, CHAMBER_INVITE_CODE: INVITE, CHAMBER_PORT: String(PORT), CHAMBER_HOST: '127.0.0.1', CHAMBER_TEST_HOOKS: '1', CHAMBER_FILES_QUOTA_MB: '500' /* T-0314: Team as it was, for the older tests */, CHAMBER_WRITES_PER_MINUTE: '1000', CHAMBER_MAX_ROOMS: '4', CHAMBER_MAX_MEMBERS: '3', CHAMBER_MAX_STREAMS_SESSION: '3', CHAMBER_LOGIN_PER_MINUTE: '1000', CHAMBER_LOCK_MINUTE_MS: '200',
   CHAMBER_DATA: path.join(TMP, 'chamber.json'), CHAMBER_REVIEWS: path.join(TMP, 'reviews.json'),
   CHAMBER_TICKETS_FILE: path.join(TMP, 'tickets.json'), CHAMBER_TICKETS_CLI: path.join(APP, 'tickets-cli.js') };
 const FLEET_PORT = 10000 + Math.floor(Math.random() * 9000);   /* below the system's outgoing range */ env.CHAMBER_FLEET_URL = `http://127.0.0.1:${FLEET_PORT}/fleet/tenant/routers`; env.CHAMBER_FLEET_CACHE_MS = '300';   // T-0153: a stub fleet (loopback, test hooks only), started in the fleet section
@@ -169,6 +169,55 @@ function markPaid(...emails) {                                   // simulate a p
     check("alice's stream does not receive bob's workspace events", !aliceStream.includes('"kind":"messages"'), aliceStream.slice(0, 200));
     const [aliceStream2] = await Promise.all([listen(A.token, 1500), (async () => { await new Promise(r => setTimeout(r, 300)); await call('POST', '/api/messages', { token: A.token, body: { username: 'alice', text: 'alice-event' } }); })()]);
     check('alice receives her own workspace events', aliceStream2.includes('"kind":"messages"') && aliceStream2.includes('"from":"alice"'), aliceStream2.slice(0, 200));
+    console.log('live events for agents: mentions, edits and tickets, no polling (T-0316)');
+    { const listenAt = async (q, token, ms) => {                         // like listen(), with a query
+        const ctl = new AbortController(); const r = await fetch(BASE + '/api/events' + q, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal });
+        const reader = r.body.getReader(); let got = ''; const t0 = Date.now();
+        const pump = (async () => { try { while (Date.now() - t0 < ms) { const { value, done } = await reader.read(); if (done) break; got += Buffer.from(value).toString(); } } catch {} })();
+        await new Promise(res => setTimeout(res, ms)); ctl.abort(); await pump; return got; };
+      const after = (ms, fn) => (async () => { await new Promise(r => setTimeout(r, ms)); return fn(); })();
+      const evs = (raw, name) => raw.split('\n\n').filter(b => b.includes(`event: ${name}\n`)).map(b => { try { return JSON.parse(b.slice(b.indexOf('data: ') + 6)); } catch { return null; } }).filter(Boolean);
+      const say = (token, username, text, room) => call('POST', '/api/messages', { token, body: { username, text, ...(room ? { room } : {}) } });
+      const dmE = (await call('POST', '/api/rooms', { token: A.token, body: { username: 'alice', dm: 'erin' } })).json.room;
+      const dmMsg = (await say(A.token, 'alice', 'dm-before-edit', dmKey)).json.message;
+      const [erinRaw, aliceRaw] = await Promise.all([listenAt('', E.token, 1500), listenAt('', A.token, 1500), after(300, () => call('POST', '/api/messages/edit', { token: A.token, body: { id: dmMsg.id, text: 'dm-secret-after-edit' } }))]);
+      check("T-0316: an edited DM reaches only the people in it: another member's open screen gets neither its words nor a sign that it changed (it used to get the full text)",
+        !erinRaw.includes('dm-secret-after-edit') && !erinRaw.includes(dmKey) && aliceRaw.includes('dm-secret-after-edit'), erinRaw.slice(0, 300));
+      const prop = (await call('POST', '/api/proposals', { token: tk2.token, body: { title: 'Event stream ticket', body: 'Check the ticket event.', reason: 'tests' } })).json;
+      let st16 = null;
+      const [botRaw] = await Promise.all([listenAt('?mentions=me', tk2.token, 3500), (async () => {
+        await new Promise(r => setTimeout(r, 300));
+        await say(A.token, 'alice', 'm316-plain message with no mention');
+        await say(A.token, 'alice', '@dm-bot m316-please look');
+        await say(A.token, 'alice', '@dm-bot m316-not-yours', dmE);              // a DM between alice and erin: the agent is not in it
+        st16 = (await say(A.token, 'alice', 'm316-one moment')).json.message;
+        await call('POST', '/api/messages/edit', { token: A.token, body: { id: st16.id, text: '@dm-bot m316-the answer' } });
+        await call('POST', `/api/tickets/${prop.id}/approve`, { token: A.token, body: { by: 'alice' } });
+      })()]);
+      const bm = evs(botRaw, 'message'), bt = evs(botRaw, 'ticket'), ready = evs(botRaw, 'ready')[0] || {};
+      check('T-0316: an agent stream with ?mentions=me starts with a cursor and gets each mention as a full message event, nothing for a plain message',
+        typeof ready.cursor === 'number' && bm.some(e => e.action === 'new' && e.message.text === '@dm-bot m316-please look' && e.for_me === true) && !bm.some(e => /m316-plain/.test(e.message.text || '')) && !botRaw.includes('event: change'), botRaw.slice(0, 400));
+      check('T-0316: an edit that adds the mention is its own event, marked as a new mention (an "on it" line turned into the answer)',
+        bm.some(e => e.action === 'edit' && e.what === 'text' && e.new_mention === true && e.message.id === st16.id && e.message.text === '@dm-bot m316-the answer'), JSON.stringify(bm.map(e => [e.action, e.what, e.new_mention, e.message.text])));
+      check('T-0316: a DM the agent is not in never reaches it, even when it is @mentioned there', !botRaw.includes('m316-not-yours') && !botRaw.includes(dmE), botRaw.slice(0, 300));
+      check('T-0316: a ticket status change is its own event (approved, was proposed)', bt.some(e => e.id === prop.id && e.status === 'approved' && e.was === 'proposed'), JSON.stringify(bt));
+      const w0 = (await call('GET', '/api/events/wait?mentions=me&timeout=0', { token: tk2.token })).json || {};
+      let t0 = Date.now();
+      const [w1] = await Promise.all([call('GET', `/api/events/wait?mentions=me&timeout=5&since=${w0.cursor}`, { token: tk2.token }), after(400, () => say(A.token, 'alice', '@dm-bot m316-wake up'))]);
+      const took1 = Date.now() - t0, e1 = (w1.json || {}).events || [];
+      check('T-0316: a long poll answers as soon as the agent is @mentioned (well before its timeout), with the message and a newer cursor',
+        w1.status === 200 && took1 < 3000 && e1.length === 1 && e1[0].message.text === '@dm-bot m316-wake up' && w1.json.cursor > w0.cursor, JSON.stringify([took1, w1.status, w1.json]));
+      const st17 = (await say(A.token, 'alice', 'm316-working on it')).json.message;
+      await call('POST', '/api/messages/edit', { token: A.token, body: { id: st17.id, text: '@dm-bot m316-done between waits' } });
+      t0 = Date.now(); const w2 = await call('GET', `/api/events/wait?mentions=me&timeout=5&since=${w1.json.cursor}`, { token: tk2.token }); const took2 = Date.now() - t0;
+      check('T-0316: nothing is missed between two waits: an edit that added the mention while no one waited comes back at once from the cursor',
+        took2 < 1500 && ((w2.json || {}).events || []).some(e => e.action === 'edit' && e.new_mention === true && e.message.text === '@dm-bot m316-done between waits'), JSON.stringify([took2, w2.json]));
+      t0 = Date.now();
+      const [w3] = await Promise.all([call('GET', `/api/events/wait?mentions=me&timeout=2&since=${w2.json.cursor}`, { token: tk2.token }), after(300, () => say(A.token, 'alice', '@dm-bot m316-private', dmE))]);
+      const took3 = Date.now() - t0;
+      check('T-0316: with nothing for it, a wait answers empty after its timeout; a DM between two other people does not wake it',
+        w3.status === 200 && took3 >= 1800 && took3 < 4500 && ((w3.json || {}).events || []).length === 0 && !w3.text.includes('m316-private'), JSON.stringify([took3, w3.text.slice(0, 200)]));
+    }
     const meAg = (await call('GET', '/api/me', { token: tk2.token })).json;
     check('agents obey only the owner by default', JSON.stringify(meAg.commanders) === '["alice"]', JSON.stringify(meAg.commanders));
     check('owner can allow all members to command agents', (await call('POST', '/account/workspace', { token: A.token, body: { agentPolicy: 'members' } })).json.agentPolicy === 'members');
@@ -339,7 +388,7 @@ function markPaid(...emails) {                                   // simulate a p
       const j1 = await call('POST', '/account/signup', { body: { email: 'j1@test.invalid', username: 'j1', password: 'password-for-tests', join: inv } });
       const j2 = await call('POST', '/account/signup', { body: { email: 'j2@test.invalid', username: 'j2', password: 'password-for-tests', join: inv } });
       const j3 = await call('POST', '/account/signup', { body: { email: 'j3@test.invalid', username: 'j3', password: 'password-for-tests', join: inv } });
-      check('member cap per workspace (3 in tests, alice + carol already in): one more fits, the next is refused with 403', j1.status === 200 && j2.status === 403 && j3.status === 403 && /full/.test(j2.json?.error || ''), `${j1.status} ${j2.status} ${j3.status}`);
+      check('member cap per workspace (3 in tests, alice + carol already in): one more fits, the next is refused with 403', j1.status === 200 && j2.status === 403 && j3.status === 403 && /no free builder seat \(3 on its plan\)/.test(j2.json?.error || ''), `${j1.status} ${j2.status} ${j3.status}`);
     }
     console.log('loop guard (T-0089)');
     { const lt = await call('POST', '/account/workspace/tokens', { token: A.token, body: { name: 'Loopy', username: 'loop-bot' } }); const LB = lt.json.token;
@@ -611,7 +660,7 @@ function markPaid(...emails) {                                   // simulate a p
       check('an agent cannot approve or reject a ticket, not even its own (403, still proposed)', selfAp.status === 403 && selfRj.status === 403 && stillProposed === 'proposed', `${selfAp.status}/${selfRj.status}/${stillProposed}`);
       check('a person approves the same ticket', (await call('POST', `/api/tickets/${own.id}/approve`, { token: A.token, body: { by: 'alice' } })).status === 200);
       check('a ticket title that is not text is refused cleanly, not a server error', (await call('POST', '/api/tickets', { token: A.token, body: { by: 'alice', title: { a: 1 } } })).status === 400);
-      { const rn = await call('POST', '/api/rooms', { token: A.token, body: { name: 12345 } }), rl = await call('POST', '/api/rooms', { token: A.token, body: { name: 'General', topic: 'y'.repeat(5000) } }); const made = ((await call('GET', '/api/rooms', { token: A.token })).json.rooms || {})[(rl.json || {}).room] || {}; check('a room name that is not text is refused cleanly, and a long topic is cut', rn.status === 400 && rl.status === 201 && made.name.length <= 60 && made.topic.length <= 300, `${rn.status}/${rl.status}/${(made.name || '').length}/${(made.topic || '').length} ${rl.text}`); }
+      { const rn = await call('POST', '/api/rooms', { token: A.token, body: { name: 12345 } }), rl = await call('POST', '/api/rooms', { token: D.token, body: { name: 'Long topic room', topic: 'y'.repeat(5000) } });   /* T-0247: was 'General' in alice's full workspace, which replaced #general's topic; now a new room in dave's */ const made = ((await call('GET', '/api/rooms', { token: D.token })).json.rooms || {})[(rl.json || {}).room] || {}; check('a room name that is not text is refused cleanly, and a long topic is cut', rn.status === 400 && rl.status === 201 && made.name.length <= 60 && made.topic.length <= 300, `${rn.status}/${rl.status}/${(made.name || '').length}/${(made.topic || '').length} ${rl.text}`); }
       check('an import whose ids could run in the page is refused', (await call('POST', '/account/import', { token: A.token, body: { dryRun: true, export: { chat: { users: {}, rooms: {}, messages: [{ id: "x');alert(1);('", room: 'general', username: 'alice', text: 'hi', ts: 1 }] } } } })).status === 400 && (await call('POST', '/account/import', { token: A.token, body: { dryRun: true, export: { chat: { users: {}, rooms: {}, messages: [{ id: 'abc123', room: 'general', username: 'alice', text: "it's fine to have quotes in the text", ts: 1 }] } } } })).status === 200);
       check('names every object has are not rooms or agents', (await call('POST', '/api/messages', { token: A.token, body: { text: 'x', room: 'constructor' } })).status === 404 && (await call('GET', '/api/memory?agent=constructor', { token: A.token })).status === 404);
       await call('POST', '/account/push', { token: A.token, body: { subscription: { endpoint: 'https://push.test.invalid/x', keys: {} } } });
@@ -1034,11 +1083,67 @@ function markPaid(...emails) {                                   // simulate a p
       check('a member cannot delete someone else\'s file (403); another workspace cannot even see it (404)', (await call('DELETE', `/api/files/${fa.json.file.id}`, { token: J1.token })).status === 403 && (await call('DELETE', `/api/files/${fa.json.file.id}`, { token: CA2.token })).status === 404 && (await call('GET', `/api/files/${fa.json.file.id}`, { token: A.token })).status === 200);
       const mv = await call('PATCH', `/api/files/${fj.json.file.id}`, { token: J1.token, body: { folder: 'notes' } });
       check('the uploader can move a file into a (new) folder', mv.status === 200 && mv.json.file.folder === 'notes' && (await call('GET', '/api/folders', { token: J1.token })).json.folders.some(f => f.path === 'notes' && f.files === 1), JSON.stringify(mv.json));
+      // T-0240: moving needs the same right as deleting (sharer, owner, admin; agents only their own uploads)
+      const folderOf = async id => (await call('GET', '/api/files', { token: A.token })).json.files.find(f => f.id === id).folder;
+      const jMove = await call('PATCH', `/api/files/${fa.json.file.id}`, { token: J1.token, body: { folder: 'taken' } });
+      check('T-0240: a member cannot move someone else\'s file (403); it stays put and no folder is made', jMove.status === 403 && (await folderOf(fa.json.file.id)) === 'installers/pi' && !(await call('GET', '/api/folders', { token: A.token })).json.folders.some(f => f.path === 'taken'), JSON.stringify(jMove.json));
+      const oMove = await call('PATCH', `/api/files/${fj.json.file.id}`, { token: A.token, body: { folder: 'notes/checked' } });
+      check('T-0240: the owner can move a member\'s file', oMove.status === 200 && oMove.json.file.folder === 'notes/checked', JSON.stringify(oMove.json));
+      await call('POST', '/account/workspace/role', { token: A.token, body: { username: 'j1', role: 'admin' } });
+      const adMove = await call('PATCH', `/api/files/${fa.json.file.id}`, { token: J1.token, body: { folder: 'admin-moved' } });
+      const adBack = await call('PATCH', `/api/files/${fa.json.file.id}`, { token: J1.token, body: { folder: 'installers/pi' } });
+      await call('POST', '/account/workspace/role', { token: A.token, body: { username: 'j1', role: 'member' } });
+      check('T-0240: an admin can move someone else\'s file', adMove.status === 200 && adMove.json.file.folder === 'admin-moved' && adBack.status === 200 && (await folderOf(fa.json.file.id)) === 'installers/pi', JSON.stringify([adMove.json, adBack.json]));
+      check('T-0240: back to member, the move is refused again; moving needs a session', (await call('PATCH', `/api/files/${fa.json.file.id}`, { token: J1.token, body: { folder: 'again' } })).status === 403 && (await fetch(BASE + `/api/files/${fa.json.file.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: 'x' }) })).status === 401);
       const rn = await call('POST', '/api/folders', { token: A.token, body: { path: 'installers', to: 'setup' } });
       check('renaming a folder carries its subfolders and files along', rn.status === 200 && rn.json.files === 1 && (await call('GET', '/api/files', { token: A.token })).json.files.find(f => f.id === fa.json.file.id).folder === 'setup/pi', JSON.stringify(rn.json));
       check('a folder cannot be moved inside itself', (await call('POST', '/api/folders', { token: A.token, body: { path: 'setup', to: 'setup/x' } })).status === 400);
       const bot = (await call('POST', '/account/workspace/tokens', { token: A.token, body: { name: 'folders-test', username: 'folder-bot' } })).json;
       check('agents may create folders but not rename or delete them', (await call('POST', '/api/folders', { token: bot.token, body: { path: 'from-bot' } })).status === 201 && (await call('POST', '/api/folders', { token: bot.token, body: { path: 'from-bot', to: 'x' } })).status === 403 && (await call('POST', '/api/folders', { token: bot.token, body: { path: 'from-bot', delete: true } })).status === 403);
+      const bMove = await call('PATCH', `/api/files/${fa.json.file.id}`, { token: bot.token, body: { folder: 'from-bot' } });
+      const fb = await up(bot.token, 'bot.txt', 'text/plain', Buffer.from('bot file'));
+      const bOwn = fb.json && fb.json.file ? await call('PATCH', `/api/files/${fb.json.file.id}`, { token: bot.token, body: { folder: 'from-bot' } }) : null;
+      check('T-0240: an agent cannot move a person\'s file (403) but can move its own upload', bMove.status === 403 && (await folderOf(fa.json.file.id)) === 'setup/pi' && bOwn && bOwn.status === 200 && bOwn.json.file.folder === 'from-bot', JSON.stringify([bMove.json, fb.json, bOwn && bOwn.json]));
+      {   // T-0273: while the agent works on a ticket a person approved, it may move, re-version and delete THAT person's files, and nobody else's
+        const tid = j => (JSON.stringify(j || {}).match(/T-\d{4}/) || [])[0];
+        const tk = tid((await call('POST', '/api/tickets', { token: A.token, body: { by: 'alice', title: '[agent] [files] tidy my files', body: 'Put my loose files into folders and delete duplicates.', for: 'agent' } })).json);
+        const fx = await up(A.token, 'dupe.txt', 'text/plain', Buffer.from('a duplicate'));
+        const pre = await call('PATCH', `/api/files/${fx.json.file.id}`, { token: bot.token, body: { folder: 'tidy' } });
+        const preDel = await call('DELETE', `/api/files/${fx.json.file.id}`, { token: bot.token });
+        await call('POST', `/api/tickets/${tk}/approve`, { token: A.token, body: { by: 'alice' } });
+        const approvedOnly = await call('PATCH', `/api/files/${fx.json.file.id}`, { token: bot.token, body: { folder: 'tidy' } });
+        const cl = await call('POST', `/api/tickets/${tk}/claim`, { token: bot.token, body: { by: 'folder-bot' } });
+        const mvA = await call('PATCH', `/api/files/${fx.json.file.id}`, { token: bot.token, body: { folder: 'tidy' } });
+        const mvJ = await call('PATCH', `/api/files/${fj.json.file.id}`, { token: bot.token, body: { folder: 'tidy' } });   // j1's file: j1 approved nothing
+        const delA = await call('DELETE', `/api/files/${fx.json.file.id}`, { token: bot.token });
+        const gone = (await call('GET', `/api/files/${fx.json.file.id}`, { token: A.token })).status;
+        check('T-0273: an agent cannot touch a person\'s file before working on a ticket that person approved (proposed, approved but not claimed: 403), and is told how to get the right',
+          tk && pre.status === 403 && preDel.status === 403 && approvedOnly.status === 403 && /ticket that person approved/.test(pre.json.error || ''), JSON.stringify([tk, pre.json, approvedOnly.status]));
+        check('T-0273: while working on it, the agent can move and delete the approver\'s file, but still not another member\'s (403)',
+          cl.status === 200 && mvA.status === 200 && mvA.json.file.folder === 'tidy' && delA.status === 200 && gone === 404 && mvJ.status === 403, JSON.stringify([cl.json, mvA.json, delA.json, gone, mvJ.status]));
+        const fy = await up(A.token, 'later.txt', 'text/plain', Buffer.from('after the ticket'));
+        await call('POST', `/api/tickets/${tk}/close`, { token: bot.token, body: { by: 'folder-bot', note: 'Moved one file into tidy and deleted the duplicate; checked both. CHECK: ran it once. RESULT: it worked. FAIL-IF: it did not.' } });
+        const after = await call('PATCH', `/api/files/${fy.json.file.id}`, { token: bot.token, body: { folder: 'tidy' } });
+        check('T-0273: once the ticket is closed the right is gone again (403)', after.status === 403, JSON.stringify(after.json));
+        const tkN = tid((await call('POST', '/api/tickets', { token: A.token, body: { by: 'alice', title: '[agent] rename the backups', body: 'Nothing to do with files in the Files tab.', for: 'agent' } })).json);
+        await call('POST', `/api/tickets/${tkN}/approve`, { token: A.token, body: { by: 'alice' } }); const clN = await call('POST', `/api/tickets/${tkN}/claim`, { token: bot.token, body: { by: 'folder-bot' } });
+        const noTag = await call('PATCH', `/api/files/${fy.json.file.id}`, { token: bot.token, body: { folder: 'tidy' } });
+        check('T-0273: a ticket without [files] in its title opens nothing, even approved by that person and in progress (403)', clN.status === 200 && noTag.status === 403, JSON.stringify([clN.json, noTag.json]));
+        await call('POST', `/api/tickets/${tkN}/release`, { token: bot.token, body: { by: 'folder-bot', note: 'Not needed for this test.' } });
+        // T-0278: an agent's close must name the check, the result and what would have meant no; a person's close need not
+        const tk2 = tid((await call('POST', '/api/tickets', { token: A.token, body: { by: 'alice', title: '[agent] verify rule', body: 'Rename the backup folder.', for: 'agent' } })).json);
+        await call('POST', `/api/tickets/${tk2}/approve`, { token: A.token, body: { by: 'alice' } }); await call('POST', `/api/tickets/${tk2}/claim`, { token: bot.token, body: { by: 'folder-bot' } });
+        const plainAg = await call('POST', `/api/tickets/${tk2}/close`, { token: bot.token, body: { by: 'folder-bot', note: 'All done, the backup folder looks fine to me.' } });
+        const stillOpen = (await call('GET', '/api/tickets', { token: A.token })).json.tickets.find(x => x.id === tk2).status;
+        const twoOf3 = await call('POST', `/api/tickets/${tk2}/close`, { token: bot.token, body: { by: 'folder-bot', note: 'CHECK: listed the folder. RESULT: renamed.' } });
+        const goodAg = await call('POST', `/api/tickets/${tk2}/close`, { token: bot.token, body: { by: 'folder-bot', note: '1. Renamed the folder.\ncheck: listed it afterwards\nresult: new name shown\nfail-if: the old name still shows' } });
+        check('T-0278: an agent close without CHECK/RESULT/FAIL-IF is refused (400) with the rule, two of three is not enough, the ticket stays in progress; all three (any case) closes it',
+          plainAg.status === 400 && /CHECK: \(what it checked\), RESULT: .* FAIL-IF:/.test(plainAg.json.error || '') && stillOpen === 'in_progress' && twoOf3.status === 400 && goodAg.status === 200, JSON.stringify([plainAg.json, stillOpen, twoOf3.status, goodAg.json]));
+        const tk3 = tid((await call('POST', '/api/tickets', { token: A.token, body: { by: 'alice', title: 'Call the landlord', body: 'About the heating.', for: 'human' } })).json);
+        await call('POST', `/api/tickets/${tk3}/approve`, { token: A.token, body: { by: 'alice' } }); await call('POST', `/api/tickets/${tk3}/claim`, { token: A.token, body: { by: 'alice' } });
+        const person = await call('POST', `/api/tickets/${tk3}/close`, { token: A.token, body: { by: 'alice', note: 'Called him, the heating gets fixed Friday.' } });
+        check('T-0278: a person still closes with a plain note (no labels asked of people)', person.status === 200, JSON.stringify(person.json));
+      }
       const mk = await call('POST', '/api/folders', { token: A.token, body: { path: 'empty one' } });
       check('an empty folder can be created and is listed', mk.status === 201 && mk.json.folder === 'empty one' && (await call('GET', '/api/folders', { token: A.token })).json.folders.some(f => f.path === 'empty one' && f.files === 0));
       check('deleting a folder with files is refused (409) unless contents go to the parent', (await call('POST', '/api/folders', { token: A.token, body: { path: 'setup/pi', delete: true } })).status === 409 && (await call('POST', '/api/folders', { token: A.token, body: { path: 'setup/pi', delete: true, contents: 'parent' } })).status === 200 && (await call('GET', '/api/files', { token: A.token })).json.files.find(f => f.id === fa.json.file.id).folder === 'setup');
@@ -1051,6 +1156,227 @@ function markPaid(...emails) {                                   // simulate a p
       await call('POST', '/api/ping', { token: bot.token, body: { username: 'folder-bot', version: 'worker-1.2.0', rooms: ['general'], state: 'idle' } });
       const pr = (await call('GET', '/api/presence', { token: A.token })).json.presence.find(u => u.username === 'folder-bot');
       check('a worker-* version line is not flagged stale against the connector version', pr && pr.agent && pr.agent.version === 'worker-1.2.0' && pr.agent.stale === false, JSON.stringify(pr));
+    }
+    console.log('screen lock (T-0241 part 1)');
+    {
+      const M = 200;                                                            // CHAMBER_LOCK_MINUTE_MS for this test server: a "minute" is 200 ms
+      const nap = ms => new Promise(r => setTimeout(r, ms));
+      const ck = async (method, p, tok, body) => { const r = await fetch(BASE + p, { method, headers: { 'Content-Type': 'application/json', Cookie: `chamber_session=${tok}` }, body: body === undefined ? undefined : JSON.stringify(body) }); let j = null; try { j = await r.json(); } catch {} return { status: r.status, json: j }; };
+      const PW = 'password-for-tests';
+      const W = (await call('POST', '/account/login', { body: { email: 'j1@test.invalid', password: PW } })).json.token;    // a browser session (used with the cookie below)
+      const C = (await call('POST', '/account/login', { body: { email: 'j1@test.invalid', password: PW } })).json.token;    // a command-line session (Bearer only)
+      check('setup: two sessions for j1', !!W && !!C && W !== C);
+      const g0 = await ck('GET', '/account/screen-lock', W);
+      check('the screen lock is off by default; the presence report answers with the choices', g0.status === 200 && g0.json.idle === 0 && g0.json.reopen === false && (await ck('POST', '/account/activity', W, { active: true })).json.lock.idle === 0, JSON.stringify(g0.json));
+      await nap(4 * M);
+      check('with the lock off, a browser session that sat unused stays open', (await ck('GET', '/api/me', W)).status === 200);
+      check('only 0, 5, 15, 30 or 60 minutes are accepted', (await ck('POST', '/account/screen-lock', W, { idle: 7 })).status === 400 && (await ck('POST', '/account/screen-lock', W, { idle: 5, reopen: 'yes' })).status === 400);
+      const on = await ck('POST', '/account/screen-lock', W, { idle: 5, reopen: false });
+      check('turning the idle lock on (stricter) needs no password', on.status === 200 && on.json.idle === 5 && (await ck('GET', '/account/screen-lock', W)).json.idle === 5, JSON.stringify(on.json));
+      for (let i = 0; i < 5; i++) { await nap(300); await ck('POST', '/account/activity', W, { active: true }); }
+      check('a person using the page keeps it open past the idle time', (await ck('GET', '/api/me', W)).status === 200);
+      for (let i = 0; i < 5; i++) { await nap(300); await ck('POST', '/account/activity', W, { active: false }); }
+      const lk = await ck('GET', '/api/me', W);
+      check('T-0241: no input for the idle time locks the session: 423 with sessionLocked and the reason', lk.status === 423 && lk.json.sessionLocked === true && lk.json.reason === 'idle' && lk.json.username === 'j1', JSON.stringify(lk.json));
+      const bearer = await call('GET', '/api/messages?room=general', { token: W });
+      check('the server refuses the locked session everywhere: the same token as Bearer, messages, files, tickets, Terminal, live updates, the presence report, account data', bearer.status === 423
+        && (await ck('GET', '/api/files', W)).status === 423 && (await ck('GET', '/api/tickets', W)).status === 423 && (await ck('POST', '/api/console', W, { cmd: 'id' })).status === 423
+        && (await ck('GET', '/api/events', W)).status === 423 && (await ck('POST', '/account/activity', W, { active: true })).status === 423 && (await ck('GET', '/account/me', W)).status === 423
+        && (await ck('GET', '/account/export', W)).status === 423 && (await ck('POST', '/api/asks/abc/answer', W, { decision: 'allow', via: 'notification' })).status === 423, JSON.stringify(bearer.json));
+      check('pages still load while locked (the app shows the unlock form), and sign-in stays reachable', (await ck('GET', '/help', W)).status === 200 && (await ck('GET', '/app', W)).status === 200 && (await ck('POST', '/account/login', W, { email: 'nobody@test.invalid', password: 'x' })).status === 401);
+      check('the command-line session of the same person is not locked (it never uses the browser cookie)', (await call('GET', '/api/me', { token: C })).status === 200);
+      const bad = await ck('POST', '/account/unlock', W, { password: 'wrong-password' });
+      check('a wrong password does not unlock', bad.status === 403 && (await ck('GET', '/api/me', W)).status === 423, JSON.stringify(bad.json));
+      const ok = await ck('POST', '/account/unlock', W, { password: PW });
+      check('the right password unlocks; the workspace answers again', ok.status === 200 && ok.json.unlocked === true && (await ck('GET', '/api/me', W)).status === 200, JSON.stringify(ok.json));
+      const loose = await ck('POST', '/account/screen-lock', W, { idle: 0, reopen: true });
+      check('making the lock weaker without the password is refused and changes nothing', loose.status === 403 && (await ck('GET', '/account/screen-lock', W)).json.idle === 5, JSON.stringify(loose.json));
+      const swap = await ck('POST', '/account/screen-lock', W, { idle: 0, reopen: true, password: PW });
+      check('with the password it saves (idle off, lock on reopen on)', swap.status === 200 && swap.json.idle === 0 && swap.json.reopen === true, JSON.stringify(swap.json));
+      for (let i = 0; i < 6; i++) { await nap(250); await ck('POST', '/account/activity', W, { active: false }); }
+      check('an open page (presence reports, no input) keeps lock-on-reopen from locking', (await ck('GET', '/api/me', W)).status === 200);
+      await nap(5 * M);
+      const ro = await ck('GET', '/api/me', W);
+      check('T-0241: no page open for 3 minutes (closed, or a phone app in the background) locks it: reason reopen', ro.status === 423 && ro.json.reason === 'reopen', JSON.stringify(ro.json));
+      check('the command-line session still is not locked', (await call('GET', '/api/me', { token: C })).status === 200);
+      check('unlock again', (await ck('POST', '/account/unlock', W, { password: PW })).status === 200 && (await ck('GET', '/api/me', W)).status === 200);
+      const ctl = new AbortController(); const ev = await fetch(BASE + '/api/events', { headers: { Cookie: `chamber_session=${W}` }, signal: ctl.signal }); const rd = ev.body.getReader(); await rd.read();
+      const now = await ck('POST', '/account/lock', W, {});
+      const ended = await Promise.race([(async () => { for (;;) { const x = await rd.read(); if (x.done) return true; } })().catch(() => true), nap(3000).then(() => false)]); ctl.abort();
+      const mn = await ck('GET', '/api/me', W);
+      check('T-0241: Lock now locks at once and cuts the open live-update stream', now.status === 200 && ev.status === 200 && ended === true && mn.status === 423 && mn.json.reason === 'manual', JSON.stringify(mn.json));
+      const au = (await call('GET', '/account/workspace/audit', { token: A.token })).json.audit;
+      check('locks, failed unlocks, unlocks and setting changes are in the activity record', ['idle', 'reopen', 'manual'].every(r => au.some(a => a.action === 'screen-lock' && a.reason === r)) && au.some(a => a.action === 'screen-unlock-failed') && au.some(a => a.action === 'screen-unlock') && au.some(a => a.action === 'screen-lock-settings'));
+      check('sign-out works while locked', (await ck('POST', '/account/logout', W, {})).status === 200 && (await ck('GET', '/api/me', W)).status === 401);
+      check('cleanup: lock off again (weaker, so with the password)', (await call('POST', '/account/screen-lock', { token: C, body: { idle: 0, reopen: false, password: PW } })).status === 200);
+      const sl = fs.readFileSync(path.join(APP, 'public', 'screenlock.js'), 'utf8'); let slBad = null; try { new Function(sl); } catch (e) { slBad = e.message; }
+      check('public/screenlock.js parses and is on the app, Account and Requests pages', !slBad && ['index.html', 'landing.html', 'requests.html'].every(f => fs.readFileSync(path.join(APP, 'public', f), 'utf8').includes('<script src="/screenlock.js"></script>')), slBad);
+    }
+    console.log('signed-in devices and sign-in length (T-0241 part 2)');
+    {
+      const PW = 'password-for-tests';
+      const ck = async (method, p, tok, body) => { const r = await fetch(BASE + p, { method, headers: { 'Content-Type': 'application/json', Cookie: `chamber_session=${tok}` }, body: body === undefined ? undefined : JSON.stringify(body) }); let j = null; try { j = await r.json(); } catch {} return { status: r.status, json: j, cookie: r.headers.get('set-cookie') || '' }; };
+      const signInAs = async ua => { const r = await fetch(BASE + '/account/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': ua }, body: JSON.stringify({ email: 'j1@test.invalid', password: PW }) }); return { status: r.status, token: (await r.json()).token, cookie: r.headers.get('set-cookie') || '' }; };
+      const w1 = await signInAs('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'), W = w1.token;
+      check('a sign-in lasts 7 days by default (cookie Max-Age 604800)', /Max-Age=604800/.test(w1.cookie), w1.cookie);
+      const C = (await signInAs('chamber-cli/1.4')).token;
+      await ck('GET', '/api/me', W);
+      const L = await ck('GET', '/account/sessions', W), mine = L.json && L.json.sessions.find(s => s.current), cli = L.json && L.json.sessions.find(s => s.device === 'Chamber command-line tool');
+      check('T-0241: the devices list names this device and the command-line sign-in, with address and times, and never shows a token', L.status === 200 && mine && mine.device === 'Chrome on Windows' && mine.kind === 'browser' && mine.ip && mine.seen && cli && !cli.current
+        && !JSON.stringify(L.json).includes(W) && !JSON.stringify(L.json).includes(C) && /^[a-f0-9]{16}$/.test(cli.id), JSON.stringify(L.json).slice(0, 500));
+      const AL = (await call('GET', '/account/sessions', { token: A.token })).json.sessions;
+      check('another account\'s sign-in cannot be signed out from here (404), nor a made-up id', (await ck('POST', '/account/sessions/revoke', W, { id: AL[0].id })).status === 404 && (await ck('POST', '/account/sessions/revoke', W, { id: 'zz' })).status === 404 && (await call('GET', '/api/me', { token: A.token })).status === 200);
+      const rv = await ck('POST', '/account/sessions/revoke', W, { id: cli.id });
+      check('T-0241: Sign out on one device ends exactly that sign-in', rv.status === 200 && rv.json.current === false && (await call('GET', '/api/me', { token: C })).status === 401 && (await ck('GET', '/api/me', W)).status === 200);
+      const p0 = L.json.policy;
+      check('by default sign-ins last 7 days and survive closing the browser', p0.days === 7 && p0.remember === true, JSON.stringify(p0));
+      check('only 1, 7 or 30 days are accepted', (await ck('POST', '/account/session-policy', W, { days: 2 })).status === 400 && (await ck('POST', '/account/session-policy', W, { days: 1, remember: 'no' })).status === 400);
+      const sh = await ck('POST', '/account/session-policy', W, { days: 1, remember: false });
+      const L2 = (await ck('GET', '/account/sessions', W)).json.sessions;
+      check('T-0241: a shorter length needs no password and also shortens sign-ins already open', sh.status === 200 && sh.json.days === 1 && sh.json.shortened >= 1 && L2.every(s => s.expires <= Date.now() + 864e5 + 5000), JSON.stringify(sh.json));
+      const i1 = await signInAs('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1');
+      check('with "keep me signed in" off, a new sign-in gets a cookie that ends with the browser (no Max-Age)', i1.status === 200 && /chamber_session=[a-f0-9]+/.test(i1.cookie) && !/Max-Age/i.test(i1.cookie), i1.cookie);
+      const lo = await ck('POST', '/account/session-policy', W, { days: 30, remember: true });
+      check('a longer length without the password is refused and changes nothing', lo.status === 403 && (await ck('GET', '/account/sessions', W)).json.policy.days === 1);
+      const lp = await ck('POST', '/account/session-policy', W, { days: 30, remember: true, password: PW });
+      const m1 = await signInAs('Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15');
+      check('with the password it saves, and new sign-ins last 30 days', lp.status === 200 && /Max-Age=2592000/.test(m1.cookie), m1.cookie);
+      const L3 = (await ck('GET', '/account/sessions', W)).json.sessions;
+      check('devices are named from the browser (Safari on iPhone, Safari on Mac)', L3.some(s => s.device === 'Safari on iPhone') && L3.some(s => s.device === 'Safari on Mac'), JSON.stringify(L3.map(s => s.device)));
+      const self = await ck('POST', '/account/sessions/revoke', W, { id: L3.find(s => s.current).id });
+      check('signing out this device from the list ends it and clears its cookie', self.status === 200 && self.json.current === true && /chamber_session=;/.test(self.cookie) && (await ck('GET', '/api/me', W)).status === 401, self.cookie);
+      const au = (await call('GET', '/account/workspace/audit', { token: A.token })).json.audit;
+      check('device sign-outs and length changes are in the activity record', au.some(a => a.action === 'session-revoke') && au.some(a => a.action === 'session-policy' && a.days === 1));
+      check('cleanup: back to 7 days (shorter, so no password needed)', (await call('POST', '/account/session-policy', { token: m1.token, body: { days: 7, remember: true } })).status === 200);
+    }
+    console.log('rules for everyone (T-0241 part 3)');
+    {
+      const PW3 = 'password-for-tests', B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+      const b32dec = s => { let bits = 0, val = 0; const out = []; for (const c of s) { val = (val << 5) | B32.indexOf(c); bits += 5; if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; } } return Buffer.from(out); };
+      const totp = secret => { const msg = Buffer.alloc(8); msg.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000))); const h = crypto.createHmac('sha1', b32dec(secret)).update(msg).digest(); const o = h[19] & 15; return String(((h.readUInt32BE(o) & 0x7fffffff) % 1e6)).padStart(6, '0'); };
+      const vlink = u => (log.match(new RegExp(`\\[accounts\\] verify link for ${u}: (\\S+)`)) || [])[1];
+      const SO = (await call('POST', '/account/signup', { body: { email: 'secown@test.invalid', username: 'secown', password: PW3, invite: INVITE } })).json; await fetch(vlink('secown'), { redirect: 'manual' }); markPaid('secown@test.invalid');
+      const inv = (await call('GET', '/account/workspace', { token: SO.token })).json.inviteUrl.split('/join/')[1];
+      const SM = (await call('POST', '/account/signup', { body: { email: 'secmem@test.invalid', username: 'secmem', password: PW3, join: inv } })).json; await fetch(vlink('secmem'), { redirect: 'manual' });
+      const rules = (tok, security, password) => call('POST', '/account/workspace', { token: tok, body: { security, password } });
+      const no2fa = await rules(SO.token, { require2fa: true }), memSets = await rules(SM.token, { idleMax: 5 });
+      check('T-0241 p3: the owner cannot require two-factor before using it; a member cannot set the rules', no2fa.status === 400 && /yourself first/.test(no2fa.json?.error || '') && memSets.status === 403, JSON.stringify([no2fa.json, memSets.json]));
+      const set1 = await rules(SO.token, { idleMax: 15, reopen: true, daysMax: 1 });
+      const ml = (await call('GET', '/account/screen-lock', { token: SM.token })).json, ms = (await call('GET', '/account/sessions', { token: SM.token })).json;
+      check('T-0241 p3: the rules apply at once to a member who chose nothing: lock after 15 minutes, lock on return, sign-ins cut to 1 day', set1.status === 200 && set1.json.security.idleMax === 15 && ml.idle === 15 && ml.reopen === true && ml.own.idle === 0 && ml.rule.idleMax === 15 && ms.policy.days === 1 && ms.rule.daysMax === 1 && ms.sessions.every(s => s.expires <= Date.now() + 864e5 + 5000), JSON.stringify([ml, ms.policy, ms.rule]));
+      const weak1 = await call('POST', '/account/screen-lock', { token: SM.token, body: { idle: 0, reopen: true, password: PW3 } }), weak2 = await call('POST', '/account/screen-lock', { token: SM.token, body: { idle: 30, reopen: true, password: PW3 } }), weak3 = await call('POST', '/account/screen-lock', { token: SM.token, body: { idle: 15, reopen: false, password: PW3 } });
+      const strict = await call('POST', '/account/screen-lock', { token: SM.token, body: { idle: 5, reopen: true } });
+      check('T-0241 p3: a member cannot choose a weaker screen lock than the rule, even with the password, but can choose a stricter one', [weak1, weak2, weak3].every(r => r.status === 400 && /workspace requires/.test(r.json?.error || '')) && strict.status === 200 && (await call('GET', '/account/screen-lock', { token: SM.token })).json.idle === 5, JSON.stringify([weak1.json, strict.json]));
+      const long = await call('POST', '/account/session-policy', { token: SM.token, body: { days: 7, remember: true, password: PW3 } }), short = await call('POST', '/account/session-policy', { token: SM.token, body: { days: 1, remember: true } });
+      const relog = await call('POST', '/account/login', { body: { email: 'secmem@test.invalid', password: PW3 } }), rs = (await call('GET', '/account/sessions', { token: relog.json?.token })).json;
+      check('T-0241 p3: sign-ins: longer than the rule is refused, the rule length is fine, and a new sign-in lasts at most 1 day', long.status === 400 && /at most 1 day/.test(long.json?.error || '') && short.status === 200 && rs.sessions.find(s => s.current)?.expires <= Date.now() + 864e5 + 5000, JSON.stringify([long.json, short.json]));
+      const loosenNoPw = await rules(SO.token, { idleMax: 30, reopen: true, daysMax: 1 }), stricterNoPw = await rules(SO.token, { idleMax: 5, reopen: true, daysMax: 1 });
+      check('T-0241 p3: making the rules less strict needs the owner\'s password; stricter does not', loosenNoPw.status === 403 && /password/i.test(loosenNoPw.json?.error || '') && stricterNoPw.status === 200, JSON.stringify([loosenNoPw.json, stricterNoPw.json]));
+      const su = (await call('POST', '/account/totp/setup', { token: SO.token })).json; await call('POST', '/account/totp/confirm', { token: SO.token, body: { code: totp(su.secret) } });
+      const req2 = await rules(SO.token, { idleMax: 5, reopen: true, daysMax: 1, require2fa: true });
+      const memApi = await call('GET', '/api/messages', { token: relog.json.token }), memWs = await call('GET', '/account/workspace', { token: relog.json.token }), memMe = await call('GET', '/account/me', { token: relog.json.token });
+      check('T-0241 p3: with two-factor required, a member without it gets only their own account pages, told why', req2.status === 200 && memApi.status === 403 && memApi.json?.twoFactorRequired === true && memWs.status === 403 && memMe.status === 200 && memMe.json.security?.require2fa === true && memMe.json.totp === false, JSON.stringify([req2.json?.security, memApi.json, memMe.json?.security]));
+      const ownOff = await call('POST', '/account/totp/disable', { token: SO.token, body: { password: PW3, code: totp(su.secret) } });
+      const tk3 = await call('POST', '/account/workspace/tokens', { token: SO.token, body: { name: 'Sec bot', username: 'sec-bot' } }), agApi = await call('GET', '/api/messages', { token: tk3.json?.token });
+      check('T-0241 p3: the owner cannot turn their own two-factor off while the rule stands; the owner and agents are not stopped', ownOff.status === 400 && /cannot be turned off/.test(ownOff.json?.error || '') && (await call('GET', '/api/messages', { token: SO.token })).status === 200 && agApi.status === 200, JSON.stringify([ownOff.json, agApi.status]));
+      const msu = (await call('POST', '/account/totp/setup', { token: relog.json.token })).json, mcf = await call('POST', '/account/totp/confirm', { token: relog.json.token, body: { code: totp(msu.secret) } });
+      const memOff = await call('POST', '/account/totp/disable', { token: relog.json.token, body: { password: PW3, code: totp(msu.secret) } });
+      check('T-0241 p3: once the member turns two-factor on, the workspace opens; they cannot turn it off while the rule stands', msu?.secret && mcf.status === 200 && (await call('GET', '/api/messages', { token: relog.json.token })).status === 200 && memOff.status === 400, JSON.stringify([mcf.status, memOff.json]));
+      const off = await rules(SO.token, {}, PW3), after = (await call('GET', '/account/screen-lock', { token: relog.json.token })).json;   // turning two-factor on ended the member's other sign-ins
+      const au = ((await call('GET', '/account/workspace/audit?format=json', { token: SO.token })).json?.entries || []).filter(e => e.action === 'security-rules');
+      check('T-0241 p3: with the password the owner removes the rules; the member\'s own stricter choice stays; every change is on the record', off.status === 200 && !off.json.security.idleMax && !off.json.security.require2fa && after.idle === 5 && after.rule.idleMax === 0 && au.length >= 4, JSON.stringify([off.json?.security, after, au.length]));
+    }
+    console.log('ask again before sensitive actions (T-0241 part 4)');
+    {
+      const PW4 = 'password-for-tests', wait = ms => new Promise(r => setTimeout(r, ms));
+      const vl4 = u => (log.match(new RegExp(`\\[accounts\\] verify link for ${u}: (\\S+)`)) || [])[1];
+      const ck4 = async (method, p, tok, body) => { const r = await fetch(BASE + p, { method, headers: { 'Content-Type': 'application/json', Cookie: `chamber_session=${tok}` }, body: body === undefined ? undefined : JSON.stringify(body) }); let j = null; try { j = await r.json(); } catch {} return { status: r.status, json: j }; };
+      const RO = (await call('POST', '/account/signup', { body: { email: 'rcown@test.invalid', username: 'rcown', password: PW4, invite: INVITE } })).json; await fetch(vl4('rcown'), { redirect: 'manual' }); markPaid('rcown@test.invalid');
+      const W = (await call('POST', '/account/login', { body: { email: 'rcown@test.invalid', password: PW4 } })).json.token;   // a browser session (used with the cookie below)
+      const CLI = (await call('POST', '/account/login', { body: { email: 'rcown@test.invalid', password: PW4 } })).json.token; // a command-line session (never a cookie)
+      const prop = async t => ((await call('POST', '/api/tickets', { token: RO.token, body: { by: 'rcown', title: `${t} ${Date.now()}` } })).json?.message || '').match(/T-\d{4}/)[0];
+      const set5 = await ck4('POST', '/account/recheck-settings', W, { min: 5 }), t1 = await prop('fresh');
+      const fresh = await ck4('POST', `/api/tickets/${t1}/approve`, W, { by: 'rcown' });
+      check('T-0241 p4: choosing "ask again after 5 minutes" needs no password; right after, an approval goes through', set5.status === 200 && set5.json.min === 5 && fresh.status === 200, JSON.stringify([set5.json, fresh.json]));
+      await wait(1150); const t2 = await prop('stale');   // 5 test minutes = 1 second
+      const stale = await ck4('POST', `/api/tickets/${t2}/approve`, W, { by: 'rcown' }), cli = await call('POST', `/api/tickets/${t2}/reject`, { token: CLI, body: { by: 'rcown', reason: 'the command-line tool is not asked' } });
+      check('T-0241 p4: later, the browser session must confirm the password before approving; the command-line session is not asked', stale.status === 403 && stale.json?.recheckRequired === true && stale.json.minutes === 5 && cli.status === 200, JSON.stringify([stale.json, cli.status]));
+      const t3 = await prop('after check'), bad = await ck4('POST', '/account/recheck', W, { password: 'wrong-password-here' }), good = await ck4('POST', '/account/recheck', W, { password: PW4 }), again = await ck4('POST', `/api/tickets/${t3}/approve`, W, { by: 'rcown' });
+      check('T-0241 p4: a wrong password confirms nothing; the right one lets the action through', bad.status === 403 && good.status === 200 && again.status === 200, JSON.stringify([bad.json, good.json, again.json]));
+      await wait(1150);
+      const notSensitive = await ck4('GET', '/api/tickets', W), lockMenu = await ck4('POST', '/api/messages', W, { text: 'still talking' });
+      check('T-0241 p4: ordinary work is never interrupted: reading and chatting go on after the check is old', notSensitive.status === 200 && lockMenu.status === 201, JSON.stringify([notSensitive.status, lockMenu.status]));
+      const loosen = await ck4('POST', '/account/recheck-settings', W, { min: 0 });
+      await ck4('POST', '/account/recheck', W, { password: PW4 }); const loosenNoPw = await ck4('POST', '/account/recheck-settings', W, { min: 0 }), loosenPw = await ck4('POST', '/account/recheck-settings', W, { min: 0, password: PW4 });
+      check('T-0241 p4: changing the setting is itself checked; asking less often needs the password', loosen.status === 403 && loosen.json?.recheckRequired === true && loosenNoPw.status === 403 && !loosenNoPw.json?.recheckRequired && loosenPw.status === 200 && loosenPw.json.min === 0, JSON.stringify([loosen.json, loosenNoPw.json, loosenPw.json]));
+      const inv4 = (await call('GET', '/account/workspace', { token: RO.token })).json.inviteUrl.split('/join/')[1];
+      const RM = (await call('POST', '/account/signup', { body: { email: 'rcmem@test.invalid', username: 'rcmem', password: PW4, join: inv4 } })).json; await fetch(vl4('rcmem'), { redirect: 'manual' });
+      const rule = await call('POST', '/account/workspace', { token: CLI, body: { security: { recheckMax: 15 } } });
+      const ms4 = (await call('GET', '/account/recheck-settings', { token: RM.token })).json, mw = await call('POST', '/account/recheck-settings', { token: RM.token, body: { min: 0, password: PW4 } }), mf = await call('POST', '/account/recheck-settings', { token: RM.token, body: { min: 5 } });
+      check('T-0241 p4: the owner\'s rule applies to everyone at once; a member cannot choose weaker, can choose more often', rule.status === 200 && rule.json.security.recheckMax === 15 && ms4.min === 15 && ms4.rule.recheckMax === 15 && mw.status === 400 && /at most 15 minutes/.test(mw.json?.error || '') && mf.status === 200, JSON.stringify([rule.json?.security, ms4, mw.json]));
+      const au4 = ((await call('GET', '/account/workspace/audit?format=json', { token: CLI })).json?.entries || []).map(e => e.action);
+      check('T-0241 p4: checks, failed checks and setting changes are on the record', au4.includes('recheck') && au4.includes('recheck-failed') && au4.includes('recheck-settings'), JSON.stringify(au4.slice(-12)));
+      await call('POST', '/account/workspace', { token: CLI, body: { security: {}, password: PW4 } });
+    }
+    console.log('passkeys (T-0241 part 5)');
+    {
+      const PW5 = 'password-for-tests', wait = ms => new Promise(r => setTimeout(r, ms));
+      const vl5 = u => (log.match(new RegExp(`\\[accounts\\] verify link for ${u}: (\\S+)`)) || [])[1];
+      // a software passkey: a P-256 key pair that answers the way a phone or laptop does (relying party 'localhost' for a loopback copy)
+      const head = (mt, n) => n < 24 ? Buffer.from([mt << 5 | n]) : n < 256 ? Buffer.from([mt << 5 | 24, n]) : Buffer.from([mt << 5 | 25, n >> 8, n & 255]);
+      const cbor = v => Buffer.isBuffer(v) ? Buffer.concat([head(2, v.length), v]) : typeof v === 'string' ? Buffer.concat([head(3, Buffer.byteLength(v)), Buffer.from(v)]) : typeof v === 'number' ? (v >= 0 ? head(0, v) : head(1, -1 - v)) : Buffer.concat([head(5, v.size), ...[...v].flatMap(([k, x]) => [cbor(k), cbor(x)])]);
+      const kp = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }), jwk = kp.publicKey.export({ format: 'jwk' }), other = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+      const credId = crypto.randomBytes(16), rpHash = crypto.createHash('sha256').update('localhost').digest(); let counter = 0;
+      const authData = (flags, withCred, n) => { const c = Buffer.alloc(4); c.writeUInt32BE(n ?? ++counter); const base = Buffer.concat([rpHash, Buffer.from([flags]), c]); if (!withCred) return base; const len = Buffer.alloc(2); len.writeUInt16BE(credId.length); return Buffer.concat([base, Buffer.alloc(16), len, credId, cbor(new Map([[1, 2], [3, -7], [-1, 1], [-2, Buffer.from(jwk.x, 'base64url')], [-3, Buffer.from(jwk.y, 'base64url')]]))]); };
+      const cdj = (type, challenge, origin = BASE) => Buffer.from(JSON.stringify({ type, challenge, origin }));
+      const addBody = async (tok, o = {}) => { const opt = (await call('POST', '/account/passkeys/options', { token: tok, body: { kind: 'create' } })).json.publicKey; return { name: 'Test key', clientDataJSON: cdj('webauthn.create', opt.challenge, o.origin).toString('base64url'), attestationObject: cbor(new Map([['fmt', 'none'], ['attStmt', new Map()], ['authData', authData(o.flags ?? 0x45, true)]])).toString('base64url') }; };
+      const useBody = async (tok, purpose, o = {}) => { const opt = (await call('POST', '/account/passkeys/options', { token: tok, body: { kind: 'get' } })).json?.publicKey; const ad = authData(o.flags ?? 0x05, false, o.counter); const c = cdj('webauthn.get', opt?.challenge, o.origin); const sig = crypto.sign('sha256', Buffer.concat([ad, crypto.createHash('sha256').update(c).digest()]), o.key || kp.privateKey); return { purpose, id: (o.id || credId).toString('base64url'), clientDataJSON: c.toString('base64url'), authenticatorData: ad.toString('base64url'), signature: sig.toString('base64url') }; };
+      const ck5 = async (method, p, tok, body) => { const r = await fetch(BASE + p, { method, headers: { 'Content-Type': 'application/json', Cookie: `chamber_session=${tok}` }, body: body === undefined ? undefined : JSON.stringify(body) }); let j = null; try { j = await r.json(); } catch {} return { status: r.status, json: j }; };
+      const PO = (await call('POST', '/account/signup', { body: { email: 'pkown@test.invalid', username: 'pkown', password: PW5, invite: INVITE } })).json; await fetch(vl5('pkown'), { redirect: 'manual' }); markPaid('pkown@test.invalid');
+      const W = (await call('POST', '/account/login', { body: { email: 'pkown@test.invalid', password: PW5 } })).json.token;
+      const none = await call('POST', '/account/passkeys/options', { token: W, body: { kind: 'get' } });
+      const badOrigin = await call('POST', '/account/passkeys/add', { token: W, body: await addBody(W, { origin: 'https://evil.example' }) }), noUv = await call('POST', '/account/passkeys/add', { token: W, body: await addBody(W, { flags: 0x41 }) });
+      check('T-0241 p5: without a passkey there is nothing to use; an answer from another site, or without the person verified, adds nothing', none.status === 400 && badOrigin.status === 400 && /another site/.test(badOrigin.json?.error || '') && noUv.status === 400 && /check that it is you/.test(noUv.json?.error || '') && (await call('GET', '/account/passkeys', { token: W })).json.passkeys.length === 0, JSON.stringify([badOrigin.json, noUv.json]));
+      const good = await addBody(W), added = await call('POST', '/account/passkeys/add', { token: W, body: good }), replay = await call('POST', '/account/passkeys/add', { token: W, body: good }), list = (await call('GET', '/account/passkeys', { token: W })).json;
+      check('T-0241 p5: a passkey is added, listed by name (only its public half is kept), and the same answer cannot be sent twice', added.status === 200 && replay.status === 400 && /expired or was already used/.test(replay.json?.error || '') && list.passkeys.length === 1 && list.passkeys[0].name === 'Test key' && !JSON.stringify(list).includes('"d"'), JSON.stringify([added.json, replay.json, list]));
+      await ck5('POST', '/account/lock', W, { reason: 'manual' });
+      const lockedRead = await ck5('GET', '/api/tickets', W), wrongKey = await ck5('POST', '/account/passkeys/use', W, await useBody(W, 'unlock', { key: other.privateKey })), unlock = await ck5('POST', '/account/passkeys/use', W, await useBody(W, 'unlock')), after = await ck5('GET', '/api/tickets', W);
+      check('T-0241 p5: a locked session opens with the passkey (a different key does not), and the lock reply says a passkey is there', lockedRead.status === 423 && lockedRead.json?.passkeys === 1 && wrongKey.status === 403 && /does not match/.test(wrongKey.json?.error || '') && unlock.status === 200 && after.status === 200, JSON.stringify([lockedRead.json?.passkeys, wrongKey.json, unlock.json, after.status]));
+      await ck5('POST', '/account/recheck-settings', W, { min: 5 }); await wait(1150);
+      const tid = ((await call('POST', '/api/tickets', { token: PO.token, body: { by: 'pkown', title: 'passkey check ' + Date.now() } })).json?.message || '').match(/T-\d{4}/)[0];
+      const due = await ck5('POST', `/api/tickets/${tid}/approve`, W, { by: 'pkown' }), rc = await ck5('POST', '/account/passkeys/use', W, await useBody(W, 'recheck')), ok = await ck5('POST', `/api/tickets/${tid}/approve`, W, { by: 'pkown' });
+      check('T-0241 p5: "confirm it is you" takes the passkey instead of the password', due.status === 403 && due.json?.recheckRequired && due.json.passkeys === 1 && rc.status === 200 && ok.status === 200, JSON.stringify([due.json, rc.json, ok.status]));
+      const back = await ck5('POST', '/account/passkeys/use', W, await useBody(W, 'recheck', { counter: 1 })), stranger = await ck5('POST', '/account/passkeys/use', W, await useBody(W, 'recheck', { id: crypto.randomBytes(16) }));
+      check('T-0241 p5: a copied passkey (counter going back) and an unknown one are refused', back.status === 403 && /counter went back/.test(back.json?.error || '') && stranger.status === 403 && /not one of yours/.test(stranger.json?.error || ''), JSON.stringify([back.json, stranger.json]));
+      // T-0241 (a): the passkey as the second step of signing in
+      const pkLogin = async (mfaToken, o = {}) => { const opt = (await call('POST', '/account/login/passkey/options', { body: { mfaToken } })).json?.publicKey; const ad = authData(0x05, false); const c = cdj('webauthn.get', opt?.challenge);
+        const sig = crypto.sign('sha256', Buffer.concat([ad, crypto.createHash('sha256').update(c).digest()]), { key: o.key || kp.privateKey, dsaEncoding: 'der' });
+        return call('POST', '/account/login/passkey', { body: { mfaToken, id: credId.toString('base64url'), clientDataJSON: c.toString('base64url'), authenticatorData: ad.toString('base64url'), signature: sig.toString('base64url') } }); };
+      const lgn = () => call('POST', '/account/login', { body: { email: 'pkown@test.invalid', password: PW5 } });
+      await ck5('POST', '/account/recheck', W, { password: PW5 });
+      const offFirst = (await lgn()).json, onR = await ck5('POST', '/account/passkey-login', W, { on: true }), l1 = (await lgn()).json;
+      const codeTry = await call('POST', '/account/login/totp', { body: { mfaToken: l1.mfaToken, code: '123456' } });
+      const wrongK = await pkLogin(l1.mfaToken, { key: other.privateKey }), goodL = await pkLogin(l1.mfaToken), againL = await pkLogin(l1.mfaToken);
+      const meL = goodL.json?.token ? await call('GET', '/account/me', { token: goodL.json.token }) : { status: 0 };
+      check('T-0241 (a): with the passkey asked at sign-in, the password alone is not enough; the passkey finishes it (a wrong key or a code does not), once',
+        !!offFirst.token && !offFirst.mfa && onR.status === 200 && l1.mfa === true && l1.passkey === true && l1.totp === false && !l1.token && codeTry.status === 400 && /passkey/.test(codeTry.json?.error || '')
+        && wrongK.status === 401 && goodL.status === 200 && !!goodL.json?.token && meL.status === 200 && againL.status === 400, JSON.stringify([onR.json, l1, codeTry.json, wrongK.json, goodL.status, againL.json]));
+      const T2 = goodL.json?.token;
+      const req2 = await call('POST', '/account/workspace', { token: T2, body: { security: { require2fa: true } } });
+      await ck5('POST', '/account/recheck', W, { password: PW5 });
+      const lastRm = await ck5('POST', '/account/passkeys/remove', W, { id: credId.toString('base64url') }), offRule = await ck5('POST', '/account/passkey-login', W, { on: false, password: PW5 });
+      check('T-0241 (a): the passkey at sign-in counts for "two-step sign-in for everyone"; while that rule stands the last passkey stays and the step cannot be switched off',
+        req2.status === 200 && lastRm.status === 400 && /last passkey/.test(lastRm.json?.error || '') && offRule.status === 400 && /requires two-step/.test(offRule.json?.error || ''), JSON.stringify([req2.json, lastRm.json, offRule.json]));
+      const loosen = await call('POST', '/account/workspace', { token: T2, body: { security: {}, password: PW5 } });
+      await ck5('POST', '/account/recheck', W, { password: PW5 });
+      const offNoPw = await ck5('POST', '/account/passkey-login', W, { on: false }), offPw = await ck5('POST', '/account/passkey-login', W, { on: false, password: PW5 }), l2 = (await lgn()).json;
+      check('T-0241 (a): with the rule lifted, switching it off needs the password; then the password alone signs in again',
+        loosen.status === 200 && offNoPw.status === 403 && offPw.status === 200 && !!l2.token && !l2.mfa, JSON.stringify([loosen.json, offNoPw.json, offPw.json, l2.mfa]));
+      PO.token = l2.token;                                                   // the earlier sign-ins ended when the passkey step was switched on
+      await ck5('POST', '/account/recheck', W, { password: PW5 });
+      const rm = await ck5('POST', '/account/passkeys/remove', W, { id: credId.toString('base64url') }), gone = await call('POST', '/account/passkeys/options', { token: W, body: { kind: 'get' } });
+      const au5 = ((await call('GET', '/account/workspace/audit?format=json', { token: PO.token })).json?.entries || []);
+      check('T-0241 p5: a removed passkey is gone; adding, removing and each use are on the record', rm.status === 200 && gone.status === 400 && au5.some(e => e.action === 'passkey-add') && au5.some(e => e.action === 'passkey-remove') && au5.some(e => e.action === 'screen-unlock' && e.via === 'passkey') && au5.some(e => e.action === 'recheck' && e.via === 'passkey') && au5.some(e => e.action === 'screen-unlock-failed'), JSON.stringify(au5.slice(-8).map(e => e.action)));
     }
     console.log('relayed terminal across machines and workspaces (T-0121 B/C)');
     {
@@ -1240,13 +1566,298 @@ function markPaid(...emails) {                                   // simulate a p
       check('front page has the contact form, a Contact link and the ask-for-an-invite link on sign-up', /id="contact-form"/.test(lp) && /id="nav-contact"/.test(lp) && /Ask us for one/.test(lp)); }
     console.log('front page and demo (T-0158, T-0161)');
     { const lp = (await call('GET', '/')).text; const dm = await call('GET', '/demo'); const og = await fetch(BASE + '/og.png');
+      { const nf = await call('GET', '/no-such-page-here'), nfp = await call('GET', '/also/missing.png'), nfa = await call('GET', '/api/no-such-route');   // T-0257
+        check('T-0257: an unknown address gets the "page not found" page with status 404 and a way back; an unknown API route still answers JSON', nf.status === 404 && /Page not found/.test(nf.text) && /href="\/"/.test(nf.text) && nfp.status === 404 && [401, 404].includes(nfa.status) && /^\{/.test(nfa.text) && !/Page not found/.test(nfa.text), [nf.status, nfp.status, nfa.status, nfa.text.slice(0, 60)].join(' ')); }
       { const cp = await call('GET', '/compare'); check('T-0195: the comparison page is public, names each tool with a link to its own site, and says what Chamber does not do yet', cp.status === 200 && /Chamber compared/.test(cp.text) && /code\.claude\.com\/docs\/en\/remote-control/.test(cp.text) && /github\.com\/slopus\/happy/.test(cp.text) && /What Chamber does not do yet/.test(cp.text) && /href="\/compare"/.test(lp)); }
+      { const cp = await call('GET', '/compare'), part = id => (cp.text.split(`id="${id}"`)[1] || '').split('<h2')[0], CLAIM = /\b(the only|only (tool|one|product|platform|place)|the first|first (tool|to)|the best|best[- ]in)\b/i;   // T-0294
+        const want = { hilos: [/hilos\.sh/, /A human approves every merge/], 'slack-code': [/salesforce\.com\/introducing-slack-code/, /available on any Slack plan/], buzz: [/github\.com\/block\/buzz/, /Workflow approval gates \(infra exists, glue still drying\)/], joxo: [/joxo\.ai\/pricing/, /Audit log export/], lody: [/lody\.ai/, /approve permission requests, inspect diffs/] };
+        check('T-0294: the comparison page has hilos, Slack Code, Buzz, Joxo and Lody, each in the same honest format with its own link and its own words, the date they were read, and no claim that we are the only, the first or the best',
+          Object.entries(want).every(([id, res]) => { const s = part(id); return /Ahead of Chamber today/.test(s) && /How Chamber is different/.test(s) && /Choose it if/.test(s) && res.every(re => re.test(s)) && !CLAIM.test(s.replace(/<[^>]+>/g, ' ')); }) && /hilos, Slack Code, Buzz, Joxo and Lody on 19 November 2026/.test(cp.text) && cp.text.indexOf('id="lody"') < cp.text.indexOf('id="not-yet"') && /id="price"/.test(cp.text)); }
+      { const cp = await call('GET', '/compare'); const ag = (cp.text.split('id="antigravity"')[1] || '').split('<h2')[0];   // T-0282
+        check('T-0282: the comparison page has Google Antigravity in the same honest format (ahead of us, how we differ, sources on its own site), quotes it, and does not claim Chamber works with it before a person has tried', /Ahead of Chamber today/.test(ag) && /How Chamber is different/.test(ag) && /always halts and requests your explicit approval/.test(ag) && /antigravity\.google\/docs\/artifact-review/.test(ag) && /antigravity\.google\/pricing/.test(ag) && /not tried it ourselves yet/.test(ag) && /that is not proof it has none/.test(ag) && !/works with (Google )?Antigravity/i.test(cp.text) && !/\b(only|first|best)\b/i.test(ag.replace(/<[^>]+>/g, ' ')), ag.slice(0, 200)); }
       { const cp = await call('GET', '/compare'), hp = await call('GET', '/help'); const notYet = (cp.text.split('id="not-yet"')[1] || '').split('<h2')[0];   // T-0230: the page must not call built features missing
-        check('T-0230: the comparison page lists only what is really missing (end-to-end encryption, app stores, untried Mac and Windows), says what was added with its test status, and Help offers the trial and free plan before Subscribe', cp.status === 200 && /end-to-end encryption/.test(notYet) && /app stores/.test(notYet) && /Mac/.test(notYet) && /Windows/.test(notYet) && !/pull requests|several jobs|single lines|Codex|without admin/i.test(notYet) && /id="added"/.test(cp.text) && /not yet tried with a real OpenAI account/.test(cp.text) && /14 days free/.test(hp.text) && hp.text.indexOf('free for you alone') > 0 && hp.text.indexOf('free for you alone') < hp.text.indexOf('<b>subscribe</b>')); }
+        check('T-0230: the comparison page lists only what is really missing (end-to-end encryption, app stores, untried Mac and Windows), says what was added with its test status, and Help offers the trial and free plan before Subscribe', cp.status === 200 && /end-to-end encryption/.test(notYet) && /app stores/.test(notYet) && /Mac/.test(notYet) && /Windows/.test(notYet) && !/pull requests|several jobs|single lines|Codex|without admin/i.test(notYet) && /id="added"/.test(cp.text) && /not yet tried with a real OpenAI account/.test(cp.text) && /14 days free/.test(hp.text) && hp.text.indexOf('free for up to 3 people') > 0 && hp.text.indexOf('free for up to 3 people') < hp.text.indexOf('<b>subscribe</b>')); }
+      { const sec = id => (lp.split(`id="${id}"`)[1] || '').split('<h2')[0], plainText = h => h.replace(/<[^>]+>/g, ' '), tk = sec('two-keys'), ph = sec('phone-loop');   // T-0287, T-0292
+        check('T-0287: right under the headline the front page leads with two keys and a check: nobody approves their own work, the AI says what it checked (with the demo link), agents start with nothing; each once, and no claim to be the only, the first or the best',
+          lp.indexOf('id="two-keys"') > lp.indexOf('<h1>') && lp.indexOf('id="two-keys"') < lp.indexOf('id="how"') && /Nobody approves their own work/.test(tk) && /The AI says what it checked/.test(tk) && /href="\/demo"/.test(tk) && /Agents start with nothing/.test(tk) && (lp.match(/Agents start with nothing<\/h3>/g) || []).length === 1 && (lp.match(/A record you keep<\/h3>/g) || []).length === 1 && !/\b(the only|only (tool|one|product|platform|place)|the first|first (tool|to)|the best|best[- ]in)\b/i.test(plainText(tk)), tk.slice(0, 160));
+        check('T-0292: the front page says what the Terminal tab and its agent can do, in the words the browser check proved: Revert proposes the undo (not a one-tap undo), Allow or Deny in the app, no voice claim, no claim to be the only, the first or the best, nothing called tamper-proof',
+          /A terminal on your own machines/.test(ph) && /One tap proposes the undo as a new ticket/.test(ph) && /One more tap asks for the undo, and you approve that too/.test(ph) && /Allow or Deny in the app/.test(ph) && /a Stop button/.test(ph) && !/voice|dictat/i.test(ph) && !/undo it with one tap/i.test(lp) && !/\b(the only|only (tool|one|product|platform|place)|the first|first (tool|to)|the best|best[- ]in)\b/i.test(plainText(ph)) && !/tamper-proof/i.test(lp), ph.slice(0, 160)); }
       check('T-0195: the front page leads with AI speed for developers and approvals and a record for the business, not with the phone; links the demo and has link-preview tags', /<h1>Your developers move at AI speed\./.test(lp) && /Vet, log and review the work your AI agents do/.test(lp) && !/<h1>[^<]*phone/i.test(lp) && !/<title>[^<]*phone/i.test(lp) && !/og:title" content="[^"]*phone/i.test(lp) && /Works on your phone too/.test(lp) && /href="\/demo"/.test(lp) && /property="og:image"/.test(lp) && /summary_large_image/.test(lp) && /id="how"/.test(lp));
       check('the preview picture is served as a PNG', og.status === 200 && /image\/png/.test(og.headers.get('content-type') || ''));
       check('demo page is public and says it is sample data', dm.status === 200 && /Demo with sample data/.test(dm.text));
-      check('demo page talks to no API and has no form or input (nothing a visitor types can be sent)', !/fetch\(|XMLHttpRequest|EventSource|WebSocket|sendBeacon|<form|<input|<textarea|localStorage|document\.cookie/.test(dm.text)); }
+      // 18 Nov 2026: the demo now reads (never writes) the browser's theme choice, with the same one-line start-up script as the other pages
+      const THEME_READ = "<script>try{var h=document.documentElement,l=localStorage;h.dataset.theme=l.getItem('chamber-theme')||'dark'}catch(e){}</script>";
+      check('demo page talks to no API and has no form or input (nothing a visitor types can be sent); the only storage it touches is reading the theme choice', !/fetch\(|XMLHttpRequest|EventSource|WebSocket|sendBeacon|<form|<input|<textarea|localStorage|document\.cookie/.test(dm.text.replace(THEME_READ, '')) && !/setItem|removeItem/.test(dm.text)); }
+    console.log('pricing: builders pay, approvers are free (T-0295)');
+    { const callsP = []; const subP = { id: 'sub_p', object: 'subscription', customer: 'cus_p', status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 86400 * 300, cancel_at_period_end: false, items: { data: [{ id: 'si_plan', price: { id: 'price_dummy' }, quantity: 1 }] } };
+      const fakeP = require('http').createServer((rq, rs) => { let bd = ''; rq.on('data', c => bd += c); rq.on('end', () => {   // a stand-in Stripe on loopback
+        const u = rq.url.split('?')[0], q = Object.fromEntries(new URLSearchParams(rq.method === 'GET' ? (rq.url.split('?')[1] || '') : bd)); callsP.push({ m: rq.method, u, q });
+        const send = (c, o) => { rs.writeHead(c, { 'Content-Type': 'application/json' }); rs.end(JSON.stringify(o)); };
+        if (rq.method === 'POST' && u === '/v1/customers') return send(200, { id: 'cus_p' });
+        if (rq.method === 'POST' && u === '/v1/checkout/sessions') return send(200, { url: 'https://checkout.stripe.test/' + q['line_items[0][price]'] });
+        if (rq.method === 'GET' && u === '/v1/subscriptions/sub_p') return send(200, subP);
+        if (rq.method === 'POST' && u === '/v1/subscription_items/si_plan') { subP.items.data[0].price.id = q.price; return send(200, {}); }
+        send(404, { error: { message: 'no such thing' } }); }); });
+      const sportP = await freePort(); await new Promise(r => fakeP.listen(sportP, '127.0.0.1', r));
+      const portP = await freePort(), BP = `http://127.0.0.1:${portP}`; const dirP = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-plans-'));
+      const envP = { ...env, CHAMBER_TRIAL_DAYS: '14', CHAMBER_TRIAL_SIGNUPS_PER_IP_DAY: '10', CHAMBER_MAX_MEMBERS: '25', CHAMBER_STRIPE_PRICE_COMPANY: 'price_company', CHAMBER_STRIPE_COMPANY_YEAR: 'price_company', CHAMBER_STRIPE_COMPANY_MONTH: 'price_company_month', CHAMBER_STRIPE_TEST_PORT: String(sportP), CHAMBER_PUBLIC_URL: BP, CHAMBER_PORT: String(portP), CHAMBER_DATA: path.join(dirP, 'chamber.json'), CHAMBER_REVIEWS: path.join(dirP, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dirP, 'tickets.json') };
+      const srvP = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: envP, stdio: ['ignore', 'pipe', 'pipe'] }); let logP = ''; srvP.stdout.on('data', d => logP += d); srvP.stderr.on('data', d => logP += d);
+      const cP = async (method, pth, { token, body } = {}) => { const r = await fetch(BP + pth, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await cP('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', fP = path.join(dirP, 'accounts.json'), edP = fn => { const s = JSON.parse(fs.readFileSync(fP, 'utf8')); fn(s); fs.writeFileSync(fP, JSON.stringify(s)); };
+        const confirm = async name => { const l = (logP.match(new RegExp('\\[accounts\\] verify link for ' + name + ': (\\S+)')) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); };
+        const signup = async (name, join) => { const r = await cP('POST', '/account/signup', { body: { email: name + '@test.invalid', username: name, password: PW, ...(join ? { join } : {}) } }); await confirm(name); return r; };
+        const hook = async ev => { const raw = JSON.stringify(ev), ts = Math.floor(Date.now() / 1000), sig = crypto.createHmac('sha256', 'whsec_dummy').update(`${ts}.${raw}`).digest('hex'); return (await fetch(BP + '/webhooks/stripe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Stripe-Signature': `t=${ts},v1=${sig}` }, body: raw })).status; };
+        const O = (await signup('pown')).json.token, wsv = async () => (await cP('GET', '/account/workspace', { token: O })).json, mev = async tok => (await cP('GET', '/account/me', { token: tok || O })).json;
+        const link = async role => ((await cP('POST', '/account/workspace/invite-reset', { token: O, body: role ? { role } : {} })).json.inviteUrl || '').split('/join/')[1];
+        const cfg = (await cP('GET', '/account/config')).json;
+        check('T-0295: the pages are told the plans: Free for 3 people, Team for 5 builders, Company for 25, and 100 founding places (T-0310: yearly here)', cfg.freePlan?.people === 3 && cfg.plans?.team?.year === '$500 / year' && cfg.plans.team.builders === 5 && cfg.plans.company?.year === '$1,500 / year' && cfg.plans.company.builders === 25 && cfg.plans.company.storageMb === 51200 && cfg.plans.foundingLeft === 100, JSON.stringify(cfg.plans));
+        const inv = await link(); const T = {}; for (const n of ['pm1', 'pm2', 'pm3', 'pm4', 'pm5']) T[n] = (await signup(n, inv)).json?.token;
+        const w0 = await wsv();
+        check('T-0295: the trial is full size: six builders fit, and it says 25 builder seats', Object.values(T).every(Boolean) && w0.seats.full === 6 && w0.seats.maxFull === 25 && w0.seats.maxGuests === null && w0.sizePlan === 'trial', JSON.stringify(w0.seats));
+        const n0 = callsP.length, coTeam6 = await cP('POST', '/billing/checkout', { token: O, body: { plan: 'team', interval: 'year' } }), coCo = await cP('POST', '/billing/checkout', { token: O, body: { plan: 'company', interval: 'year' } });
+        check('T-0295: with 6 builders Team is refused before Stripe is asked for a checkout (and says what to do); Company opens checkout with the Company price', coTeam6.status === 409 && /has 6 builders and the Team plan covers 5/.test(coTeam6.json.error) && /approvers or viewers/.test(coTeam6.json.error) && !callsP.slice(n0).some(c => c.u === '/v1/checkout/sessions' && c.q['line_items[0][price]'] === 'price_dummy') && coCo.status === 200 && /price_company$/.test(coCo.json.url), coTeam6.text + ' ' + coCo.text);
+        const mkAppr = await cP('POST', '/account/workspace/role', { token: O, body: { username: 'pm5', role: 'approver' } }), coTeam5 = await cP('POST', '/billing/checkout', { token: O, body: { plan: 'team', interval: 'year' } });
+        check('T-0295: making one builder an approver frees the seat, and Team opens checkout with the Team price', mkAppr.status === 200 && mkAppr.json.role === 'approver' && coTeam5.status === 200 && /price_dummy$/.test(coTeam5.json.url) && (await wsv()).members.find(m => m.username === 'pm5').role === 'approver', mkAppr.text + ' ' + coTeam5.text);
+        const paid = await hook({ id: 'evt_p1', type: 'checkout.session.completed', data: { object: { mode: 'subscription', subscription: 'sub_p', customer: 'cus_p', client_reference_id: 'pown@test.invalid' } } });
+        const m1 = await mev(), w1 = await wsv();
+        check('T-0295: after paying, the workspace is on Team: $500 a year (T-0310), 5 builder seats, no limit on approvers and viewers, founding price number 1', paid === 200 && m1.billing.plan === 'team' && m1.price === '$500 / year' && m1.billing.founding === 1 && w1.sizePlan === 'team' && w1.seats.full === 5 && w1.seats.maxFull === 5 && w1.seats.maxGuests === null && (await cP('GET', '/account/config')).json.plans.foundingLeft === 99, JSON.stringify([m1.billing, w1.seats]));
+        const sixth = await signup('pm6', inv);
+        const al = await link('approver'), vl = await link('viewer'), ap1 = await signup('pap1', al), vw1 = await signup('pvw1', vl), w2 = await wsv();
+        check('T-0295: FAIL-IF a 6th builder can join a Team workspace: refused with the reason; an approver and a viewer join by their links and use no seat', sixth.status === 403 && /no free builder seat \(5 on its plan\)/.test(sixth.json.error) && /approver link/.test(sixth.json.error) && ap1.status === 200 && vw1.status === 200 && w2.seats.full === 5 && w2.seats.guests === 3 && w2.members.find(m => m.username === 'pap1').role === 'approver' && w2.members.find(m => m.username === 'pvw1').role === 'viewer', sixth.text + JSON.stringify(w2.seats));
+        const tid = ((await cP('POST', '/api/tickets', { token: T.pm1, body: { by: 'pm1', title: 'Add a health page', body: 'One page that says the service is up.', for: 'human' } })).text.match(/T-\d{4}/) || [])[0];
+        const vAppr = await cP('POST', `/api/tickets/${tid}/approve`, { token: vw1.json.token, body: { by: 'pvw1' } }), aPost = await cP('POST', '/api/messages', { token: ap1.json.token, body: { text: 'hello from an approver' } }), aAppr = await cP('POST', `/api/tickets/${tid}/approve`, { token: ap1.json.token, body: { by: 'pap1' } });
+        check('T-0295: an approver approves a ticket without using a seat and cannot post; a plain viewer cannot approve', !!tid && vAppr.status === 403 && aPost.status === 403 && aAppr.status === 200, [tid, vAppr.status, aPost.status, aAppr.text].join(' '));
+        const back = await cP('POST', '/account/workspace/role', { token: O, body: { username: 'pm5', role: 'member' } });
+        check('T-0295: an approver cannot be made a builder again while the 5 seats are taken', back.status === 409 && /plan covers 5 builders/.test(back.json.error), back.text);
+        const nUp = callsP.length, upNoPw = await cP('POST', '/billing/plan', { token: O, body: { plan: 'company' } }), upMember = await cP('POST', '/billing/plan', { token: T.pm1, body: { plan: 'company', password: PW } }), up = await cP('POST', '/billing/plan', { token: O, body: { plan: 'company', password: PW } });
+        const upCall = callsP.slice(nUp).find(c => c.m === 'POST' && c.u === '/v1/subscription_items/si_plan'), m2 = await mev(), w3 = await wsv(), q2 = (await cP('GET', '/api/files', { token: O })).json?.quota_mb;
+        check('T-0295: moving up to Company needs the owner and the password again, charges the difference at once, and gives 25 builder seats and 50 GB (T-0314); the founding number stays', upNoPw.status === 403 && upMember.status === 400 && up.status === 200 && upCall && upCall.q.price === 'price_company' && upCall.q.proration_behavior === 'always_invoice' && upCall.q.payment_behavior === 'error_if_incomplete' && m2.billing.plan === 'company' && m2.price === '$1,500 / year' && m2.billing.founding === 1 && w3.seats.maxFull === 25 && q2 === 51200 && /plan mail to pown@test\.invalid: team -> company/.test(logP), JSON.stringify([upNoPw.status, upMember.status, up.status, upCall, m2.billing, w3.seats, q2]));
+        const sixthNow = await signup('pm6', inv), down6 = await cP('POST', '/billing/plan', { token: O, body: { plan: 'team' } });
+        await cP('POST', '/account/workspace/role', { token: O, body: { username: 'pm6', role: 'approver' } });
+        const nDn = callsP.length, down = await cP('POST', '/billing/plan', { token: O, body: { plan: 'team' } }), dnCall = callsP.slice(nDn).find(c => c.m === 'POST' && c.u === '/v1/subscription_items/si_plan'), q3 = (await cP('GET', '/api/files', { token: O })).json?.quota_mb;
+        check('T-0295: on Company a 6th builder joins; moving down to Team is refused while 6 builders remain, then works with a credit and no password, back to 5 seats and 500 MB', sixthNow.status === 200 && down6.status === 409 && /has 6 builders and the Team plan covers 5/.test(down6.json.error) && down.status === 200 && dnCall && dnCall.q.price === 'price_dummy' && dnCall.q.proration_behavior === 'create_prorations' && (await mev()).billing.plan === 'team' && (await wsv()).seats.maxFull === 5 && q3 === 500, JSON.stringify([sixthNow.status, down6.text, down.status, dnCall, q3]));
+        // an earlier workspace keeps its deal: Team covers 25 builders, and its free plan stays one person until 30 days after the notice
+        edP(s => { for (const w of Object.values(s.workspaces)) w.createdAt = Date.parse('2026-11-01T00:00:00Z'); });
+        const wl = await wsv();
+        edP(s => { Object.assign(s.accounts['pown@test.invalid'], { subStatus: null, subscription: null, periodEnd: null, trialEndsAt: Date.now() - 1000 }); });
+        const lf = await mev(T.pm1), lpost = await cP('POST', '/api/messages', { token: T.pm1, body: { text: 'second person, earlier workspace' } }), lread = await cP('GET', '/api/messages', { token: T.pm1 }), lexp = await cP('GET', '/api/activity', { token: T.pm1 }), laud = await cP('GET', '/account/workspace/audit/verify', { token: O });
+        edP(s => { for (const w of Object.values(s.workspaces)) w.freeNoticeAt = Date.now() - 31 * 86400e3; });
+        const lf2 = await mev(T.pm1), lpost2 = await cP('POST', '/api/messages', { token: T.pm1, body: { text: 'second person, after the notice' } }), fourth = await cP('POST', '/api/messages', { token: T.pm3, body: { text: 'fourth person' } });
+        check('T-0295: a workspace from before the change keeps its deal: Team covers 25 builders for it, and its free plan stays one person until 30 days after the notice email, then covers 3', wl.seats.maxFull === 25 && wl.legacy === true && lf.billing.free === true && lf.billing.freePeople === 1 && lf.billing.access === 'readonly' && lpost.status === 402 && /which is for one person, pown/.test(lpost.json.error) && lf2.billing.freePeople === 3 && lf2.billing.access === 'full' && [200, 201].includes(lpost2.status) && fourth.status === 402 && /covers 3 people/.test(fourth.json.error), JSON.stringify([wl.seats, lf.billing, lpost.text, lf2.billing, fourth.text]));
+        { const { execFileSync } = require('child_process'); const run = args => { try { return { code: 0, out: execFileSync(process.execPath, [path.join(APP, 'tools', 'free-plan-notice.js'), ...args], { env: { ...envP, CHAMBER_ACCOUNTS_FILE: fP }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }; } catch (e) { return { code: e.status, out: String(e.stdout || '') + String(e.stderr || '') }; } };
+          edP(s => { for (const w of Object.values(s.workspaces)) delete w.freeNoticeAt; });
+          const dry = run([]), snd = run(['--send']), after = JSON.parse(fs.readFileSync(fP, 'utf8'));
+          check('T-0295: the notice tool lists the earlier workspaces without showing a whole address and sends nothing by itself; with mail switched off it refuses to mark anyone as told', dry.code === 0 && /1 earlier workspace\(s\).*1 not yet/.test(dry.out) && /owner p…@test\.invalid/.test(dry.out) && !/pown@test\.invalid/.test(dry.out) && /Nothing was sent/.test(dry.out) && snd.code === 1 && /nobody was marked as told/.test(snd.out) && Object.values(after.workspaces).every(w => !w.freeNoticeAt), dry.out + ' | ' + snd.out);
+          edP(s => { for (const w of Object.values(s.workspaces)) w.freeNoticeAt = Date.now() - 31 * 86400e3; }); }
+        check('T-0295: FAIL-IF a lapsed workspace cannot read or export its record: after the plan ended a read-only member still reads the chat and the activity record, and the owner can still check the record', lread.status === 200 && lexp.status === 200 && laud.status === 200, [lread.status, lexp.status, laud.status].join(' '));
+        // a second workspace pays: founding number 2; a workspace that never paid has none
+        const O2 = (await signup('pown2')).json.token; edP(s => { s.accounts['pown2@test.invalid'].stripeCustomer = 'cus_p2'; });
+        subP.customer = 'cus_p2'; subP.items.data[0].price.id = 'price_company';
+        const paid2 = await hook({ id: 'evt_p2', type: 'checkout.session.completed', data: { object: { mode: 'subscription', subscription: 'sub_p', customer: 'cus_p2', client_reference_id: 'pown2@test.invalid' } } }), m22 = await mev(O2);
+        check('T-0295: the next workspace to pay gets founding number 2 on the plan it bought (Company here); founding is given once', paid2 === 200 && m22.billing.plan === 'company' && m22.billing.founding === 2 && (await mev()).billing.founding === 1, JSON.stringify(m22.billing));
+        const lp2 = (await cP('GET', '/')).text, terms2 = fs.readFileSync(path.join(APP, 'public', 'legal', 'terms.html'), 'utf8'), help2 = fs.readFileSync(path.join(APP, 'public', 'help.html'), 'utf8');
+        check('T-0295: the pricing section shows the three sizes and only promises that are true in the code (no "per person" price; the renewal email is built since T-0310; no one-click cancel yet), and the Terms and Help say the same plans',
+          /id="pr-team"/.test(lp2) && /id="pr-company"/.test(lp2) && /Up to 5 builders/.test(lp2) && /Up to 25 builders/.test(lp2) && /never a price per person/.test(lp2) && /We never mark up your AI bill/.test(lp2) && /14 days before each renewal/.test(lp2) && !/cancel in one click/i.test(lp2) && !/up to 25 people and their agents/.test(lp2)
+          && /Team, US \$50 a month or US \$500 a year/.test(terms2) && /Company, US \$150 a month or US \$1,500 a year/.test(terms2) && /Founding price/.test(terms2) && /When a subscription ends/.test(terms2) && /at least twice and wait at least 90 days/.test(terms2) && /<td>Approver<\/td>/.test(help2) && /up to 5 builders and 10 GB/.test(help2));   // T-0314
+      } finally { srvP.kill(); fakeP.close(); await new Promise(r => setTimeout(r, 300)); fs.rmSync(dirP, { recursive: true, force: true }); }
+    }
+    console.log('monthly or yearly prices (T-0310)');
+    { const callsM = []; const subM = { id: 'sub_m', object: 'subscription', customer: 'cus_m', status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 86400 * 20, cancel_at_period_end: false, items: { data: [{ id: 'si_plan', price: { id: 'price_team_month' }, quantity: 1 }] } };
+      const fakeM = require('http').createServer((rq, rs) => { let bd = ''; rq.on('data', c => bd += c); rq.on('end', () => {   // a stand-in Stripe on loopback
+        const u = rq.url.split('?')[0], inUrl = rq.method === 'GET' || rq.method === 'DELETE', q = Object.fromEntries(new URLSearchParams(inUrl ? (rq.url.split('?')[1] || '') : bd)); callsM.push({ m: rq.method, u, q });
+        const send = (c, o) => { rs.writeHead(c, { 'Content-Type': 'application/json' }); rs.end(JSON.stringify(o)); };
+        if (rq.method === 'POST' && u === '/v1/customers') return send(200, { id: 'cus_new' + callsM.length });
+        if (rq.method === 'POST' && u === '/v1/checkout/sessions') return send(200, { url: 'https://checkout.stripe.test/' + q['line_items[0][price]'] });
+        if (rq.method === 'GET' && u === '/v1/subscriptions/sub_m') return send(200, subM);
+        if (rq.method === 'POST' && u === '/v1/subscription_items') { subM.items.data.push({ id: 'si_store', price: { id: q.price }, quantity: Number(q.quantity) }); return send(200, {}); }
+        const it = u.match(/^\/v1\/subscription_items\/(\w+)$/);
+        if (it && rq.method === 'POST') { const i = subM.items.data.find(x => x.id === it[1]); if (q.price) i.price.id = q.price; if (q.quantity) i.quantity = Number(q.quantity); return send(200, {}); }
+        send(404, { error: { message: 'no such thing' } }); }); });
+      const sportM = await freePort(); await new Promise(r => fakeM.listen(sportM, '127.0.0.1', r));
+      const portM = await freePort(), BM = `http://127.0.0.1:${portM}`; const dirM = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-period-'));
+      const envM = { ...env, CHAMBER_TRIAL_DAYS: '14', CHAMBER_TRIAL_SIGNUPS_PER_IP_DAY: '10', CHAMBER_MAX_MEMBERS: '25', CHAMBER_STRIPE_PRICE: 'price_legacy49', CHAMBER_STRIPE_PRICE_COMPANY: 'price_company199',
+        CHAMBER_STRIPE_TEAM_MONTH: 'price_team_month', CHAMBER_STRIPE_TEAM_YEAR: 'price_team_year', CHAMBER_STRIPE_COMPANY_MONTH: 'price_co_month', CHAMBER_STRIPE_COMPANY_YEAR: 'price_co_year',
+        CHAMBER_STRIPE_STORAGE_MONTH: 'price_st_month', CHAMBER_STRIPE_STORAGE_YEAR: 'price_st_year', CHAMBER_STRIPE_STORAGE_PRICE: 'price_st_old', CHAMBER_STORAGE_SELLABLE_GB: '100',
+        CHAMBER_STRIPE_TEST_PORT: String(sportM), CHAMBER_PUBLIC_URL: BM, CHAMBER_PORT: String(portM), CHAMBER_DATA: path.join(dirM, 'chamber.json'), CHAMBER_REVIEWS: path.join(dirM, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dirM, 'tickets.json') };
+      const srvM = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: envM, stdio: ['ignore', 'pipe', 'pipe'] }); let logM = ''; srvM.stdout.on('data', d => logM += d); srvM.stderr.on('data', d => logM += d);
+      const cM = async (method, pth, { token, body } = {}) => { const r = await fetch(BM + pth, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await cM('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', fM = path.join(dirM, 'accounts.json'), edM = fn => { const s = JSON.parse(fs.readFileSync(fM, 'utf8')); fn(s); fs.writeFileSync(fM, JSON.stringify(s)); };
+        const confirm = async name => { const l = (logM.match(new RegExp('\\[accounts\\] verify link for ' + name + ': (\\S+)')) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); };
+        const signup = async name => { const r = await cM('POST', '/account/signup', { body: { email: name + '@test.invalid', username: name, password: PW } }); await confirm(name); return r; };
+        const hook = async ev => { const raw = JSON.stringify(ev), ts = Math.floor(Date.now() / 1000), sig = crypto.createHmac('sha256', 'whsec_dummy').update(`${ts}.${raw}`).digest('hex'); return (await fetch(BM + '/webhooks/stripe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Stripe-Signature': `t=${ts},v1=${sig}` }, body: raw })).status; };
+        const cfg = (await cM('GET', '/account/config')).json;
+        check('T-0310: the pages are told both periods: Team $50 a month or $500 a year, Company $150 a month or $1,500 a year, storage $5 a month or $50 a year; no old price is offered',
+          cfg.plans?.team?.month === '$50 / month' && cfg.plans.team.year === '$500 / year' && cfg.plans.team.label === '$50 / month' && cfg.plans.company?.month === '$150 / month' && cfg.plans.company.year === '$1,500 / year' && cfg.plans.yearNote === '2 months free'
+          && cfg.storage?.month === '$5 / month' && cfg.storage.year === '$50 / year' && !/\$49|\$199/.test(JSON.stringify(cfg)), JSON.stringify([cfg.plans, cfg.storage]));
+        const O = (await signup('mown')).json.token, mev = async tok => (await cM('GET', '/account/me', { token: tok || O })).json;
+        const n0 = callsM.length, co = {};
+        for (const [k, b] of Object.entries({ tm: { plan: 'team' }, tmx: { plan: 'team', interval: 'month' }, ty: { plan: 'team', interval: 'year' }, cm: { plan: 'company', interval: 'month' }, cy: { plan: 'company', interval: 'year' }, bad: { plan: 'team', interval: 'weekly' } })) co[k] = await cM('POST', '/billing/checkout', { token: O, body: b });
+        const sessions = callsM.slice(n0).filter(c => c.u === '/v1/checkout/sessions'), sold = sessions.map(c => c.q['line_items[0][price]']);
+        check('T-0310: a new workspace checks out monthly by default, or yearly when it asks, Team or Company, each at its own price; a period that does not exist is refused',
+          [co.tm, co.tmx, co.ty, co.cm, co.cy].every(r => r.status === 200) && /price_team_month$/.test(co.tm.json.url) && /price_team_month$/.test(co.tmx.json.url) && /price_team_year$/.test(co.ty.json.url) && /price_co_month$/.test(co.cm.json.url) && /price_co_year$/.test(co.cy.json.url)
+          && co.bad.status === 400 && sold.length === 5 && sessions[0].q['subscription_data[metadata][chamber_period]'] === 'month' && sessions[2].q['subscription_data[metadata][chamber_period]'] === 'year', JSON.stringify([sold, co.bad.text]));
+        check('T-0310: FAIL-IF a new workspace can still buy $49 or $199: no checkout for it names an old price, and its page offers none', !sold.some(p => ['price_legacy49', 'price_company199'].includes(p)) && !/\$49|\$199/.test(JSON.stringify((await mev()).plans)), JSON.stringify(sold));
+        const paid = await hook({ id: 'evt_m1', type: 'checkout.session.completed', data: { object: { mode: 'subscription', subscription: 'sub_m', customer: 'cus_m', client_reference_id: 'mown@test.invalid' } } }), m1 = await mev();
+        check('T-0310: paying monthly puts the workspace on Team, monthly, $50 a month; FAIL-IF the founding counter does not record the new price: founding number 1 keeps "$50 / month" and its Stripe price',
+          paid === 200 && m1.billing.plan === 'team' && m1.billing.interval === 'month' && m1.price === '$50 / month' && m1.billing.founding === 1 && m1.billing.foundingLabel === '$50 / month'
+          && JSON.parse(fs.readFileSync(fM, 'utf8')).accounts['mown@test.invalid'].founding.price === 'price_team_month' && (await cM('GET', '/account/config')).json.plans.foundingLeft === 99, JSON.stringify(m1.billing));
+        const st = await cM('POST', '/billing/storage', { token: O, body: { packs: 1, password: PW } }), stCall = callsM.filter(c => c.m === 'POST' && c.u === '/v1/subscription_items').pop();
+        check('T-0310: on a monthly plan extra storage is monthly: the pack goes on with the $5-a-month price, and the page says "$5 / month"', st.status === 200 && stCall?.q.price === 'price_st_month' && st.json.storage?.label === '$5 / month' && st.json.storage.period === 'month' && st.json.storage.packs === 1, st.text.slice(0, 300));
+        const up = await cM('POST', '/billing/plan', { token: O, body: { plan: 'company', password: PW } }), upCall = callsM.filter(c => c.m === 'POST' && c.u === '/v1/subscription_items/si_plan').pop(), m2 = await mev();
+        check('T-0310: moving up from Team monthly goes to Company monthly ($150 a month), charged at once; the founding record stays as bought', up.status === 200 && upCall?.q.price === 'price_co_month' && upCall.q.proration_behavior === 'always_invoice' && m2.billing.plan === 'company' && m2.billing.interval === 'month' && m2.price === '$150 / month' && m2.billing.foundingLabel === '$50 / month', JSON.stringify([up.status, upCall, m2.billing]));
+        const inv = { id: 'in_1', object: 'invoice', customer: 'cus_m', amount_paid: 15000, currency: 'usd', number: 'ABC-0001', hosted_invoice_url: 'https://invoice.stripe.com/i/acct_x/test_1', status_transitions: { paid_at: Math.floor(Date.now() / 1000) } };
+        const r1 = await hook({ id: 'evt_in1', type: 'invoice.paid', data: { object: inv } }), r2 = await hook({ id: 'evt_in1b', type: 'invoice.payment_succeeded', data: { object: inv } }), r3 = await hook({ id: 'evt_in1c', type: 'invoice.paid', data: { object: inv } }), r4 = await hook({ id: 'evt_in0', type: 'invoice.paid', data: { object: { ...inv, id: 'in_0', amount_paid: 0 } } });
+        const receipts = logM.match(/\[accounts\] receipt mail to mown@test\.invalid: [^\n]*/g) || [];
+        check('T-0310: every payment gets one receipt by email (so a monthly plan gets one each month); the same invoice again, or as payment_succeeded, gives no second one, and a $0 invoice none', [r1, r2, r3, r4].every(s => s === 200) && receipts.length === 1 && /\$150\.00 ABC-0001$/.test(receipts[0]), JSON.stringify(receipts));
+        const O2 = (await signup('mold')).json.token;
+        edM(s => { s.workspaces[s.accounts['mold@test.invalid'].workspace].createdAt = Date.parse('2026-11-01T00:00:00Z'); });
+        const ly = await cM('POST', '/billing/checkout', { token: O2, body: { plan: 'team', interval: 'year' } }), lm = await cM('POST', '/billing/checkout', { token: O2, body: { plan: 'team', interval: 'month' } }), lc = await cM('POST', '/billing/checkout', { token: O2, body: { plan: 'company', interval: 'year' } }), lme = await mev(O2);
+        check('T-0310: FAIL-IF the trial workspace\'s email promise is broken: a workspace from before 19 Nov still gets Team yearly at $49 (with room for 25 builders); its monthly and Company prices are the new ones',
+          ly.status === 200 && /price_legacy49$/.test(ly.json.url) && /price_team_month$/.test(lm.json?.url) && /price_co_year$/.test(lc.json?.url) && lme.plans.team.year === '$49 / year' && lme.plans.team.month === '$50 / month' && lme.plans.team.builders === 25, JSON.stringify([ly.text, lm.text, lc.text, lme.plans]));
+        edM(s => { s.accounts['mold@test.invalid'].stripeCustomer = 'cus_old'; });
+        const subOld = { id: 'sub_old', object: 'subscription', customer: 'cus_old', status: 'active', current_period_end: Math.floor(Date.now() / 1000) + 86400 * 10, cancel_at_period_end: false, items: { data: [{ id: 'si_o', price: { id: 'price_company199' }, quantity: 1 }, { id: 'si_os', price: { id: 'price_st_old' }, quantity: 2 }] } };
+        const ro = await hook({ id: 'evt_old1', type: 'customer.subscription.updated', data: { object: subOld } }), mo = await mev(O2);
+        check('T-0310: a subscription on a retired price ($199 a year; storage at $49.99) is still read right: Company, yearly, "$199 / year", 2 packs', ro === 200 && mo.billing.plan === 'company' && mo.billing.interval === 'year' && mo.price === '$199 / year' && mo.storage?.packs === 2, JSON.stringify([mo.billing, mo.storage]));
+        const hk = async at => (await cM('GET', '/api/_test/trial-housekeeping?at=' + Math.round(at))).json, h1 = await hk(Date.now()), h2 = await hk(Date.now() + 60e3);
+        check('T-0310: a yearly plan gets one email 14 days before it renews (once per renewal date); a monthly plan gets none', JSON.stringify(h1.renewals) === '["mold"]' && Array.isArray(h2.renewals) && h2.renewals.length === 0 && /trial mail to mold@test\.invalid: Chamber: your plan renews on/.test(logM), JSON.stringify([h1.renewals, h2.renewals]));
+        const rd = f => fs.readFileSync(path.join(APP, 'public', f), 'utf8'), lp = (await cM('GET', '/')).text, help = rd('help.html'), compare = rd('compare.html'), dl = rd('download.html'), terms = rd('legal/terms.html'), refunds = rd('legal/refunds.html');
+        check('T-0310: FAIL-IF a page still shows the old prices: the front page, Help, Compare, Download, the Terms and the refund policy show the monthly and yearly prices; none shows $199 or $49.99, and $49 is only the kept deal in the Terms',
+          /\$50 <small>\/ month<\/small>/.test(lp) && /or \$500 a year/.test(lp) && /\$150 <small>\/ month<\/small>/.test(lp) && /or \$1,500 a year/.test(lp) && /14 days before each renewal/.test(lp) && /receipt by email/.test(lp)
+          && [lp, help, compare, dl, refunds].every(t => !/\$49|\$199/.test(t)) && !/\$199|\$49\.99/.test(terms) && (terms.match(/\$49\b/g) || []).length === 1 && /can subscribe to Team yearly at US \$49 a year/.test(terms)
+          && /Team, US \$50 a month or US \$500 a year/.test(terms) && /Company, US \$150 a month or US \$1,500 a year/.test(terms) && /US \$5 a month on a monthly plan or US \$50 a year/.test(terms) && /Monthly and yearly renewals/.test(refunds) && /\$50 a month or \$500 a year/.test(help) && /\$5 a month \(or \$50 a year\) per 10 GB/.test(compare) && /\$50 a month for up to 5 builders/.test(dl));
+      } finally { srvM.kill(); fakeM.close(); await new Promise(r => setTimeout(r, 300)); fs.rmSync(dirM, { recursive: true, force: true }); }
+    }
+    console.log('the Billing tab (T-0311)');
+    { const callsB = []; const DAY = 86400, now0 = Math.floor(Date.now() / 1000);
+      const subB = { id: 'sub_b', object: 'subscription', customer: 'cus_b', status: 'active', current_period_end: now0 + 20 * DAY, cancel_at_period_end: false, items: { data: [{ id: 'si_plan', price: { id: 'price_team_month' }, quantity: 1 }] } };
+      const fakeB = require('http').createServer((rq, rs) => { let bd = ''; rq.on('data', c => bd += c); rq.on('end', () => {   // a stand-in Stripe on loopback
+        const u = rq.url.split('?')[0], inUrl = rq.method === 'GET' || rq.method === 'DELETE', q = Object.fromEntries(new URLSearchParams(inUrl ? (rq.url.split('?')[1] || '') : bd)); callsB.push({ m: rq.method, u, q });
+        const send = (c, o) => { rs.writeHead(c, { 'Content-Type': 'application/json' }); rs.end(JSON.stringify(o)); };
+        if (rq.method === 'POST' && u === '/v1/customers') return send(200, { id: 'cus_new' + callsB.length });
+        if (rq.method === 'POST' && u === '/v1/checkout/sessions') return send(200, { url: 'https://checkout.stripe.test/' + q['line_items[0][price]'] });
+        if (rq.method === 'POST' && u === '/v1/billing_portal/sessions') return send(200, { url: 'https://billing.stripe.test/p?back=' + encodeURIComponent(q.return_url || '') });
+        if (rq.method === 'GET' && u === '/v1/invoices/upcoming') return send(200, { object: 'invoice', amount_due: q['subscription_items[0][price]'] ? 9999 : 5000, total: q['subscription_items[0][price]'] ? 9999 : 5000, currency: 'usd', next_payment_attempt: now0 + 20 * DAY });
+        if (rq.method === 'GET' && u === '/v1/subscriptions/sub_b') return send(200, subB);
+        if (rq.method === 'POST' && u === '/v1/subscriptions/sub_b') {
+          if (q.cancel_at_period_end) subB.cancel_at_period_end = q.cancel_at_period_end === 'true';
+          for (let i = 0; q[`items[${i}][id]`] || q[`items[${i}][price]`]; i++) { const id = q[`items[${i}][id]`], it = id && subB.items.data.find(x => x.id === id);
+            if (q[`items[${i}][deleted]`] === 'true') subB.items.data = subB.items.data.filter(x => x.id !== id);
+            else if (it) { if (q[`items[${i}][price]`]) it.price.id = q[`items[${i}][price]`]; if (q[`items[${i}][quantity]`]) it.quantity = Number(q[`items[${i}][quantity]`]); }
+            else subB.items.data.push({ id: 'si_new' + i, price: { id: q[`items[${i}][price]`] }, quantity: Number(q[`items[${i}][quantity]`] || 1) }); }
+          return send(200, subB); }
+        if (rq.method === 'POST' && u === '/v1/subscription_items') { subB.items.data.push({ id: 'si_store', price: { id: q.price }, quantity: Number(q.quantity) }); return send(200, {}); }
+        const it = u.match(/^\/v1\/subscription_items\/(\w+)$/);
+        if (it && rq.method === 'POST') { const i = subB.items.data.find(x => x.id === it[1]); if (q.price) i.price.id = q.price; if (q.quantity) i.quantity = Number(q.quantity); return send(200, {}); }
+        if (it && rq.method === 'DELETE') { subB.items.data = subB.items.data.filter(x => x.id !== it[1]); return send(200, {}); }
+        send(404, { error: { message: 'no such thing' } }); }); });
+      const sportB = await freePort(); await new Promise(r => fakeB.listen(sportB, '127.0.0.1', r));
+      const portB = await freePort(), BB = `http://127.0.0.1:${portB}`; const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-billtab-'));
+      const envB = { ...env, CHAMBER_TRIAL_DAYS: '14', CHAMBER_TRIAL_SIGNUPS_PER_IP_DAY: '20', CHAMBER_MAX_MEMBERS: '25', CHAMBER_FILES_QUOTA_MB: '1', CHAMBER_STORAGE_PACK_GB: '1', CHAMBER_STORAGE_SELLABLE_GB: '3',
+        CHAMBER_STRIPE_TEAM_MONTH: 'price_team_month', CHAMBER_STRIPE_TEAM_YEAR: 'price_team_year', CHAMBER_STRIPE_COMPANY_MONTH: 'price_co_month', CHAMBER_STRIPE_COMPANY_YEAR: 'price_co_year',
+        CHAMBER_STRIPE_STORAGE_MONTH: 'price_st_month', CHAMBER_STRIPE_STORAGE_YEAR: 'price_st_year',
+        CHAMBER_STRIPE_TEST_PORT: String(sportB), CHAMBER_PUBLIC_URL: BB, CHAMBER_PORT: String(portB), CHAMBER_DATA: path.join(dirB, 'chamber.json'), CHAMBER_REVIEWS: path.join(dirB, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dirB, 'tickets.json') };
+      const srvB = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: envB, stdio: ['ignore', 'pipe', 'pipe'] }); let logB = ''; srvB.stdout.on('data', d => logB += d); srvB.stderr.on('data', d => logB += d);
+      const cB = async (method, pth, { token, body, raw, headers } = {}) => { const r = await fetch(BB + pth, { method, headers: { ...(raw ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(headers || {}) }, body: raw !== undefined ? raw : body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await cB('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const PW = 'password-for-tests', since = () => callsB.length, posts = n => callsB.slice(n).filter(c => c.m !== 'GET');
+        const confirm = async name => { const l = (logB.match(new RegExp('\\[accounts\\] verify link for ' + name + ': (\\S+)')) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); };
+        const signup = async (name, join) => { const r = await cB('POST', '/account/signup', { body: { email: name + '@test.invalid', username: name, password: PW, ...(join ? { join } : {}) } }); await confirm(name); return r.json?.token; };
+        const hook = async ev => { const raw = JSON.stringify(ev), ts = Math.floor(Date.now() / 1000), sig = crypto.createHmac('sha256', 'whsec_dummy').update(`${ts}.${raw}`).digest('hex'); return (await fetch(BB + '/webhooks/stripe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Stripe-Signature': `t=${ts},v1=${sig}` }, body: raw })).status; };
+        const O = await signup('bown'), link = async role => ((await cB('POST', '/account/workspace/invite-reset', { token: O, body: role ? { role } : {} })).json?.inviteUrl || '').split('/join/')[1];
+        await cB('POST', '/billing/checkout', { token: O, body: { plan: 'team', interval: 'month' } });
+        await hook({ id: 'evt_b1', type: 'checkout.session.completed', data: { object: { mode: 'subscription', subscription: 'sub_b', customer: 'cus_b', client_reference_id: 'bown@test.invalid' } } });
+        const T = { owner: O, admin: await signup('badm', await link()), member: await signup('bmem', await link()) };
+        await cB('POST', '/account/workspace/role', { token: O, body: { username: 'badm', role: 'admin' } });
+        T.viewer = await signup('bview', await link('viewer')); T.approver = await signup('bappr', await link('approver')); T.requester = await signup('breq', await link('requester'));
+        const ov = async role => cB('GET', '/billing/overview', { token: T[role] });
+        const oo = await ov('owner'), oa = await ov('admin'), others = {}; for (const r of ['member', 'viewer', 'approver', 'requester']) others[r] = await ov(r);
+        check('T-0311: the owner\'s Billing tab shows the plan (Team, monthly, $50 / month), the next charge from Stripe ($50.00), founding, the storage bar, and that they may change, cancel and open the card page',
+          oo.status === 200 && oo.json.plan === 'team' && oo.json.interval === 'month' && oo.json.price === '$50 / month' && oo.json.next?.amount === 5000 && oo.json.founding?.label === '$50 / month' && oo.json.storage.offered && oo.json.storage.limitMb === 1 && oo.json.storage.usedBytes === 0
+          && oo.json.canChange && oo.json.canCancel && oo.json.canPortal && oo.json.isOwner, JSON.stringify(oo.json).slice(0, 600));
+        check('T-0311: an admin sees the same tab but may change nothing (the owner\'s answer, 20 Nov): no plan or storage change, no cancel, no card page', oa.status === 200 && oa.json.plan === 'team' && oa.json.canChange === false && !oa.json.canCancel && !oa.json.canPortal && oa.json.isOwner === false && oa.json.owner === 'bown', JSON.stringify(oa.json).slice(0, 300));
+        const triesOf = async role => [await cB('POST', '/billing/preview', { token: T[role], body: { plan: 'company' } }), await cB('POST', '/billing/plan', { token: T[role], body: { plan: 'company', password: PW } }), await cB('POST', '/billing/storage', { token: T[role], body: { packs: 1, password: PW } }), await cB('POST', '/billing/cancel', { token: T[role], body: {} }), await cB('POST', '/billing/portal', { token: T[role], body: {} })];
+        const n0 = since(), seen = {}; for (const r of ['member', 'viewer', 'approver', 'requester']) seen[r] = await triesOf(r);
+        check('T-0311: FAIL-IF a viewer or approver can see or change billing: members, viewers, approvers and requesters get no Billing tab data (403, no price in the answer) and every change is refused before Stripe is asked',
+          Object.values(others).every(r => r.status === 403 && !/\$\d/.test(r.text)) && Object.values(seen).every(rs => rs.every(r => [400, 403].includes(r.status) && !/\$\d/.test(r.text))) && posts(n0).length === 0 && !callsB.slice(n0).some(c => c.u === '/v1/invoices/upcoming'),
+          JSON.stringify(Object.fromEntries(Object.entries(seen).map(([k, v]) => [k, v.map(r => r.status)]))));
+        const nA = since(), triesA = await triesOf('admin');   // T-0311 (the owner's answer, 20 Nov): only the owner changes the plan or the storage
+        check('T-0311: an admin cannot preview or change the plan, the period or the storage, cancel or open the card page: every try is refused before Stripe is asked, even with their password',
+          triesA.every(r => [400, 403].includes(r.status)) && triesA.slice(0, 4).every(r => /Only the workspace owner/.test(r.json?.error || '')) && posts(nA).length === 0 && !callsB.slice(nA).some(c => c.u === '/v1/invoices/upcoming'),
+          JSON.stringify(triesA.map(r => [r.status, (r.json?.error || '').slice(0, 60)])));
+        const n1 = since(), pv = await cB('POST', '/billing/preview', { token: T.owner, body: { plan: 'company' } }), pq = callsB.slice(n1).find(c => c.u === '/v1/invoices/upcoming')?.q || {};
+        check('T-0311: before a change the tab asks Stripe what it would charge today (Company monthly, prorated) and shows it with what follows; nothing is changed', pv.status === 200 && pv.json.dueNow === 9999 && pv.json.needsPassword === true && /\$150 \/ month/.test(pv.json.then)
+          && pq['subscription_items[0][price]'] === 'price_co_month' && pq.subscription_proration_behavior === 'always_invoice' && posts(n1).length === 0, JSON.stringify([pv.json, pq]));
+        const nY = since(), py = await cB('POST', '/billing/preview', { token: T.owner, body: { interval: 'year' } }), pyq = callsB.slice(nY).find(c => c.u === '/v1/invoices/upcoming')?.q || {};
+        const noPw = await cB('POST', '/billing/plan', { token: T.owner, body: { interval: 'year' } }), badPw = await cB('POST', '/billing/plan', { token: T.owner, body: { interval: 'year', password: 'not-the-owners-password' } });
+        const n2 = since(), toYear = await cB('POST', '/billing/plan', { token: T.owner, body: { interval: 'year', password: PW } }), yc = posts(n2).find(c => c.u === '/v1/subscriptions/sub_b')?.q || {}, oy = (await ov('owner')).json;
+        check('T-0311: the owner moves the plan from monthly to yearly: priced first (the new period starts today), the password is needed, the plan line moves to the yearly price in one call, and the owner is emailed',
+          py.status === 200 && py.json.newPeriod === true && pyq.subscription_billing_cycle_anchor === 'now' && pyq['subscription_items[0][price]'] === 'price_team_year' && noPw.status === 403 && badPw.status === 403
+          && toYear.status === 200 && yc['items[0][price]'] === 'price_team_year' && yc.billing_cycle_anchor === 'now' && yc.proration_behavior === 'always_invoice' && yc.payment_behavior === 'error_if_incomplete'
+          && oy.interval === 'year' && oy.price === '$500 / year' && /plan mail to bown@test\.invalid: team -> team \(month -> year, by bown\)/.test(logB), JSON.stringify([noPw.status, badPw.status, toYear.text.slice(0, 120), yc, oy.interval]));
+        const n3 = since(), addNo = await cB('POST', '/billing/storage', { token: T.owner, body: { packs: 1 } }), add = await cB('POST', '/billing/storage', { token: T.owner, body: { packs: 1, password: PW } }), ac = posts(n3).find(c => c.u === '/v1/subscription_items')?.q || {};
+        const quota = async () => (await cB('GET', '/api/files', { token: T.owner })).json?.quota_mb;
+        check('T-0311: FAIL-IF a pack can be added without a charge: adding storage needs a password and goes on the owner\'s subscription charged at once (yearly pack, the plan\'s period); the limit grows',
+          addNo.status === 403 && add.status === 200 && ac.price === 'price_st_year' && ac.quantity === '1' && ac.proration_behavior === 'always_invoice' && ac.payment_behavior === 'error_if_incomplete' && ac.subscription === 'sub_b' && (await quota()) === 1 + 1024, JSON.stringify([addNo.status, add.status, ac]));
+        const upF = await cB('POST', '/api/files?room=general', { token: T.owner, raw: Buffer.alloc(2 * 1048576, 7), headers: { 'X-File-Name': 'big-report.bin', 'Content-Type': 'application/octet-stream' } }), fid = upF.json?.file?.id;
+        await cB('POST', '/api/messages', { token: T.owner, body: { username: 'bown', text: 'the big report', room: 'general', attachments: [fid] } });   // shared the way a person does, so it is listed in Files
+        const n4 = since(), rm = await cB('POST', '/billing/storage', { token: T.owner, body: { packs: 0 } });
+        check('T-0311: FAIL-IF a removal leaves a workspace over its limit: with 2 MB of files and 1 MB on the plan, removing the pack is refused, says what to delete (the biggest file by name) and Stripe is not asked',
+          upF.status === 201 && !!fid && rm.status === 409 && rm.json.overFiles === true && /big-report\.bin/.test(rm.json.error) && rm.json.biggest?.[0]?.name === 'big-report.bin' && posts(n4).length === 0 && (await quota()) === 1025, rm.text.slice(0, 300));
+        const up2 = await cB('POST', '/billing/plan', { token: T.owner, body: { plan: 'company', password: PW } }), rm2 = await cB('POST', '/billing/storage', { token: T.owner, body: { packs: 0 } });
+        const n5 = since(), dn = await cB('POST', '/billing/plan', { token: T.owner, body: { plan: 'team' } }), dnPosts = posts(n5).length, dnOk = await cB('POST', '/billing/plan', { token: T.owner, body: { plan: 'team', confirmOver: true } });
+        check('T-0311: FAIL-IF a downgrade leaves a workspace over its limit without a warning: Company to Team with 2 MB of files over Team\'s 1 MB is answered with a warning and nothing changes; confirmed, it goes through',
+          up2.status === 200 && rm2.status === 200 && dn.status === 409 && dn.json.overFiles === true && /nobody can add files/.test(dn.json.error) && dnPosts === 0 && dnOk.status === 200 && (await ov('owner')).json.plan === 'team', JSON.stringify([up2.status, rm2.status, dn.text.slice(0, 200), dnOk.status]));
+        const over = await cB('POST', '/api/files?room=general', { token: T.member, raw: Buffer.from('one more'), headers: { 'X-File-Name': 'note.txt', 'Content-Type': 'text/plain' } }), readBack = await cB('GET', `/api/files/${fid}`, { token: T.member });
+        check('T-0311: FAIL-IF an upload over the limit goes in: refused with "Add storage in Billing"; the files already there stay readable', over.status === 413 && /Add storage in Billing/.test(over.json?.error || '') && readBack.status === 200, (over.json?.error || over.text).slice(0, 200));
+        await cB('POST', '/billing/storage', { token: T.owner, body: { packs: 1, password: PW } });
+        const subPastDue = { ...subB, status: 'past_due', items: { data: subB.items.data.map(x => ({ ...x, price: { ...x.price } })) } };
+        const h1 = await hook({ id: 'evt_b_fail', type: 'customer.subscription.updated', data: { object: subPastDue } }), qFail = await quota(), oFail = (await ov('owner')).json;
+        const upFail = await cB('POST', '/api/files?room=general', { token: T.owner, raw: Buffer.from('x'), headers: { 'X-File-Name': 'x.txt', 'Content-Type': 'text/plain' } }), readFail = await cB('GET', `/api/files/${fid}`, { token: T.owner });
+        const h2 = await hook({ id: 'evt_b_ok', type: 'customer.subscription.updated', data: { object: { ...subPastDue, status: 'active' } } }), qOk = await quota();
+        check('T-0311: a failed card payment pauses the extra storage: the limit drops to the plan\'s own, the tab says so, new uploads are refused, the files stay readable; paid again, the storage is back',
+          h1 === 200 && qFail === 1 && oFail.paymentFailed === true && oFail.storage.paused === true && upFail.status === 413 && readFail.status === 200 && h2 === 200 && qOk === 1025, JSON.stringify([qFail, oFail.paymentFailed, oFail.storage?.paused, upFail.status, readFail.status, qOk]));
+        const n6 = since(), cA = await cB('POST', '/billing/cancel', { token: T.admin, body: {} }), cAPosts = posts(n6).length;
+        const cO = await cB('POST', '/billing/cancel', { token: T.owner, body: {} }), cq = posts(n6).find(c => c.u === '/v1/subscriptions/sub_b')?.q || {}, oc = (await ov('owner')).json, chWhile = await cB('POST', '/billing/plan', { token: T.owner, body: { plan: 'company', password: PW } });
+        const keep = await cB('POST', '/billing/cancel', { token: T.owner, body: { undo: true } }), ok2 = (await ov('owner')).json;
+        check('T-0311: FAIL-IF cancel takes more than one confirmation: the owner cancels with one call (no password); an admin cannot; the tab then says it ends, changes wait, and "keep my plan" undoes it',
+          cA.status === 400 && cAPosts === 0 && cO.status === 200 && cq.cancel_at_period_end === 'true' && oc.cancelAtPeriodEnd === true && chWhile.status === 400 && /set to cancel/.test(chWhile.json.error) && keep.status === 200 && ok2.cancelAtPeriodEnd === false
+          && /cancel mail to bown@test\.invalid: cancelled/.test(logB), JSON.stringify([cA.status, cO.status, cq, oc.cancelAtPeriodEnd, chWhile.status, keep.status]));
+        const pa = await cB('POST', '/billing/portal', { token: T.admin, body: { from: 'app' } }), po = await cB('POST', '/billing/portal', { token: T.owner, body: { from: 'app' } });
+        check('T-0311: the card and invoices page (Stripe) opens for the owner only and comes back to the Billing tab', pa.status === 400 && po.status === 200 && decodeURIComponent(po.json.url).endsWith('/app#billing'), JSON.stringify([pa.status, po.json]));
+        await cB('POST', '/billing/storage', { token: T.owner, body: { packs: 3, password: PW } });
+        const full = (await ov('owner')).json, more = await cB('POST', '/billing/storage', { token: T.owner, body: { packs: 4, password: PW } });
+        check('T-0311: when the disk cap is reached the tab says "more storage is coming soon" and a bigger pack count is refused, nothing charged', full.storage.packs === 3 && full.storage.soldOut === true && more.status === 409 && /More storage is coming soon/.test(more.json.error) && more.json.soldOut === true, JSON.stringify([full.storage.packs, full.storage.soldOut, more.text.slice(0, 160)]));
+        const app = (await cB('GET', '/app', { token: T.owner })).text, me1 = (await cB('GET', '/api/me', { token: T.owner })).json;
+        check('T-0311: the app has a Billing tab that only the owner and admins are shown, and Help describes it', /id="tab-billing"[^>]*hidden/.test(app) && /\['owner', 'admin'\]\.includes\(currentWsRole\)/.test(app) && me1.selfHosted === false
+          && /id="billing-tab"/.test(fs.readFileSync(path.join(APP, 'public', 'help.html'), 'utf8')));
+      } finally { srvB.kill(); fakeB.close(); await new Promise(r => setTimeout(r, 300)); fs.rmSync(dirB, { recursive: true, force: true }); }
+    }
+    console.log('agent keys are not shown in full (T-0320)');
+    { const land = fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8'), app = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8');
+      check('T-0320: the Account page shows a new token masked with Copy and Show (never ${d.token} in the text), and the setup block masks it too; idle keys are marked',
+        !/textContent = `Token for[^`]*\$\{d\.token\}/.test(land) && /maskKey\(d\.token\)/.test(land) && /id="tok-copy"/.test(land) && /id="tok-reveal"/.test(land) && /maskKey\(aiTok\)/.test(land) && /key-idle/.test(land));
+      check('T-0315: all 15 pop-up windows close on the backdrop only when the press started there (T-0329 moved the notifications window to Settings)', (app.match(/onclick="if\(event\.target===this&&backdropDown===this\)/g) || []).length === 15 && !/onclick="if\(event\.target===this\)/.test(app)); }
+    console.log('settings groups (T-0313)');
+    { const land = fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8'), a = land.indexOf('data-view="/billing"'), acct = land.slice(a, land.indexOf('</section>', a));
+      const heads = [...acct.matchAll(/<h2 class="sec"[^>]*>/g)].map(m => m[0]), groups = [...acct.matchAll(/data-group="([a-z]+)"/g)].map(m => m[1]);
+      check('T-0313/T-0329: every section of the Settings page belongs to one of its ten groups (a section without one would land in the wrong group), and every group has a section',
+        heads.length >= 13 && heads.every(h => /data-group="(you|display|notify|team|ai|rules|data|billing|routers|advanced)"/.test(h)) && ['you', 'display', 'notify', 'team', 'ai', 'rules', 'data', 'billing', 'routers', 'advanced'].every(g => groups.includes(g)) && /function setupSettings\(\)/.test(land),
+        JSON.stringify(heads.filter(h => !/data-group=/.test(h)))); }
+    console.log('one Settings page (T-0329)');
+    { const app = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8'), land = fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8'), help = fs.readFileSync(path.join(APP, 'public', 'help.html'), 'utf8');
+      const short = (app.match(/<div id="menu-short" hidden>([\s\S]*?)<\/div>\n        <button class="mi" id="menu-lock"/) || [])[1] || '', page = await call('GET', '/settings');
+      check('T-0329: with accounts on, the gear menu is Settings and Help (then Lock now and Sign out); the full menu stays only for a Chamber without accounts; /settings serves the Settings page',
+        (short.match(/class="mi"/g) || []).length === 2 && /href="\/settings"/.test(short) && /href="\/help"/.test(short) && /getElementById\('menu-full'\)\.hidden = true/.test(app)
+          && page.status === 200 && /id="billing-box"/.test(page.text) && /id="set-extra"/.test(page.text), JSON.stringify({ short: short.slice(0, 160), status: page.status }));
+      const opens = [...new Set([...land.matchAll(/href="\/app\?open=([a-z-]+)/g)].map(m => m[1]))], handler = (app.match(/async function openFromLink[\s\S]*?\n}\n/) || [''])[0];
+      check('T-0329: rooms and quiet hours live in Settings (the window in the app is gone); every link from Settings into the app has a handler there; Help points to Settings, not the gear menu or the Account page',
+        !/notify-modal|openNotify/.test(app) && /id="nt-quiet-on"/.test(land) && /'\/account\/quiet'/.test(land) && opens.length >= 6 && opens.every(o => handler.includes(`'${o}'`) || handler.includes(` ${o}:`))
+          && !/[Aa]ccount page|gear menu &gt; <b>(?!Lock now)|Gear menu/.test(help), JSON.stringify({ opens })); }
     console.log('storage add-on');
     { check('with no storage price configured nothing is offered and nothing can be bought', (await call('GET', '/account/me', { token: A.token })).json.storage === null && (await call('POST', '/billing/storage', { token: A.token, body: { packs: 1 } })).status === 404 && (await call('GET', '/account/config')).json.storage === null);
       { const terms = fs.readFileSync(path.join(APP, 'public', 'legal', 'terms.html'), 'utf8'), refunds = fs.readFileSync(path.join(APP, 'public', 'legal', 'refunds.html'), 'utf8'), help = fs.readFileSync(path.join(APP, 'public', 'help.html'), 'utf8');
@@ -1265,7 +1876,7 @@ function markPaid(...emails) {                                   // simulate a p
         send(404, { error: { message: 'no such thing' } }); }); });
       const sport = await freePort(); await new Promise(r => fake.listen(sport, '127.0.0.1', r));
       const port5 = await freePort(), B5 = `http://127.0.0.1:${port5}`; const dir5 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-stor-'));
-      const env5 = { ...env, CHAMBER_STRIPE_STORAGE_PRICE: 'price_storage', CHAMBER_STORAGE_PRICE_LABEL: '$24 / year', CHAMBER_STORAGE_SELLABLE_GB: '30', CHAMBER_STRIPE_TEST_PORT: String(sport), CHAMBER_PUBLIC_URL: B5, CHAMBER_PORT: String(port5), CHAMBER_DATA: path.join(dir5, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir5, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir5, 'tickets.json') };
+      const env5 = { ...env, CHAMBER_STRIPE_STORAGE_YEAR: 'price_storage', CHAMBER_STRIPE_STORAGE_MONTH: 'price_storage_month', CHAMBER_STORAGE_SELLABLE_GB: '30', CHAMBER_STRIPE_TEST_PORT: String(sport), CHAMBER_PUBLIC_URL: B5, CHAMBER_PORT: String(port5), CHAMBER_DATA: path.join(dir5, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir5, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir5, 'tickets.json') };
       const srv5 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env5, stdio: ['ignore', 'pipe', 'pipe'] }); let log5 = ''; srv5.stdout.on('data', d => log5 += d); srv5.stderr.on('data', d => log5 += d);
       const c5 = async (method, p, { token, body } = {}) => { const r = await fetch(B5 + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
       for (let i = 0; i < 50; i++) { try { if ((await c5('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
@@ -1278,7 +1889,7 @@ function markPaid(...emails) {                                   // simulate a p
         check('an owner without a subscription cannot buy storage', (await buy(1)).status === 400 && calls.length === 0);
         ed5(s => Object.assign(s.accounts['stor@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 200, subscription: 'sub_s', stripeCustomer: 'cus_s' }));
         const m0 = (await c5('GET', '/account/me', { token: S })).json;
-        check('a paying owner is offered storage: 0 packs, 10 GB each, the price in words', m0.storage?.packs === 0 && m0.storage.packGb === 10 && m0.storage.label === '$24 / year' && m0.storage.canChange === true && m0.storage.isPayer === true && (await c5('GET', '/account/config')).json.storage?.packGb === 10 && (await quota()) === 500, JSON.stringify(m0.storage));
+        check('a paying owner is offered storage: 0 packs, 10 GB each, the price in words', m0.storage?.packs === 0 && m0.storage.packGb === 10 && m0.storage.label === '$50 / year' && m0.storage.canChange === true && m0.storage.isPayer === true && (await c5('GET', '/account/config')).json.storage?.packGb === 10 && (await quota()) === 500, JSON.stringify(m0.storage));
         let badOk = true; for (const bad of [-1, 1.5, '2', 99, null]) badOk = badOk && (await buy(bad)).status === 400;
         check('a pack count that is not a whole number from 0 to 10 is refused before Stripe is asked', badOk && calls.length === 0);
         const np = await buy(2, null), wp = await buy(2, 'not-the-password');
@@ -1333,7 +1944,7 @@ function markPaid(...emails) {                                   // simulate a p
         const memberCode = ((await c6('GET', '/account/workspace', { token: O.token })).json?.inviteUrl || '').split('/join/')[1];
         const M1 = await su6('mem1', { join: memberCode }), M2 = await su6('mem2', { join: memberCode });
         const full = await c6('POST', '/account/signup', { body: { email: 'mem3@test.invalid', username: 'mem3', password: PW, join: memberCode } });
-        check('T-0199: full seats still run out at the limit (3 here)', !!M1.token && !!M2.token && full.status === 403 && /full/.test(full.json?.error || ''), full.text);
+        check('T-0199: full seats still run out at the limit (3 here)', !!M1.token && !!M2.token && full.status === 403 && /no free builder seat \(3 on its plan\)/.test(full.json?.error || ''), full.text);
         check('T-0199: a member cannot make viewer or requester links', (await c6('POST', '/account/workspace/invite-reset', { token: M1.token, body: { role: 'viewer' } })).status === 403);
         const vl = await c6('POST', '/account/workspace/invite-reset', { token: O.token, body: { role: 'viewer' } }), rl = await c6('POST', '/account/workspace/invite-reset', { token: O.token, body: { role: 'requester' } });
         const vCode = (vl.json?.inviteUrl || '').split('/join/')[1], rCode = (rl.json?.inviteUrl || '').split('/join/')[1], vi = await c6('GET', `/account/invite/${vCode}`);
@@ -1475,6 +2086,18 @@ function markPaid(...emails) {                                   // simulate a p
           check('T-0218: what a connector reports is cut to size and to the known fields; a report Chamber does not know is dropped', r2 && r2.names.length === 12 && r2.names.every(n => n.length === 60) && r2.private === 999 && r2.cmd === true && !('extra' in r2) && r3 && r3.reach === undefined, JSON.stringify({ r2, r3 }).slice(0, 300)); }
         const bg = sh(['--url', B7, '--workdir', proj, '--background']), unit = path.join(home, '.config', 'systemd', 'user', 'chamber-agent.service'), ut = fs.existsSync(unit) ? fs.readFileSync(unit, 'utf8') : '';
         check('T-0186: --background on Linux writes a user service that runs the agent with its own settings file in the project folder', bg.status === 0 && ut.includes('--env') && ut.includes(conf) && ut.includes(`WorkingDirectory=${proj}`) && /Environment="PATH=/.test(ut), bg.stderr.slice(0, 200));
+        const nosd = sh(['--url', B7, '--workdir', proj, '--background'], { CHAMBER_NO_SYSTEMD: '1' }), loop = path.join(adir, 'run-loop.sh'), lt = fs.existsSync(loop) ? fs.readFileSync(loop, 'utf8') : '';
+        check('T-0319: with no service manager (Termux on a phone, a container) --background writes a keep-alive loop that runs the agent with its own settings, restarts it, stops it on TERM, and says it does not come back after a restart',
+          nosd.status === 0 && lt.includes(`chamber-agent.py" --env "${conf}"`) && /sleep 10/.test(lt) && /trap .kill/.test(lt) && /does not start again by itself after a restart/.test(nosd.stdout), (nosd.stdout + nosd.stderr).slice(0, 300));
+        { const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+          const procs = () => fs.readdirSync('/proc').filter(d => /^\d+$/.test(d)).map(d => { try { return { pid: +d, cmd: fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').replace(/\0/g, ' ') }; } catch { return null; } }).filter(Boolean);
+          const live19 = sh(['--url', B7, '--workdir', proj, '--background'], { CHAMBER_NO_SYSTEMD: '1', CHAMBER_NO_START: '0' }); await new Promise(r => setTimeout(r, 1500));
+          const pidf = path.join(adir, 'agent.pid'), lp = fs.existsSync(pidf) ? Number(fs.readFileSync(pidf, 'utf8')) : 0, agentPy = path.join(adir, 'chamber-agent.py');
+          const before = { loop: !!lp && alive(lp) && procs().some(p => p.pid === lp && /run-loop\.sh/.test(p.cmd)), agent: procs().some(p => p.cmd.includes(agentPy)) };
+          const st19 = sh(['--stop'], { CHAMBER_NO_SYSTEMD: '1' }); await new Promise(r => setTimeout(r, 1200));
+          const after = { loop: !!lp && alive(lp), agent: procs().some(p => p.cmd.includes(agentPy)), pidFile: fs.existsSync(pidf) };
+          check('T-0319: the loop really starts the agent in the background, and --stop ends the loop and the agent', live19.status === 0 && before.loop && before.agent && st19.status === 0 && !after.loop && !after.agent && !after.pidFile, JSON.stringify({ before, after, out: live19.stdout.slice(-200) }));
+          for (const p of procs()) if (p.cmd.includes(adir)) try { process.kill(p.pid, 'SIGKILL'); } catch {} }
         const un = sh(['--uninstall']);
         check('T-0186: --uninstall removes the agent, its settings with the key, and the service, and reminds you to delete the key in Chamber', un.status === 0 && !fs.existsSync(adir) && !fs.existsSync(conf) && !fs.existsSync(unit) && /delete its key in Chamber/.test(un.stdout), un.stdout.slice(0, 200));
       } finally { if (agent) { try { process.kill(-agent.pid, 'SIGTERM'); } catch {} } srv7.kill(); try { fs.rmSync(dir7, { recursive: true, force: true }); } catch {} }
@@ -1663,7 +2286,7 @@ function markPaid(...emails) {                                   // simulate a p
         const tf = path.join(dir10, 'ws', fs.readdirSync(path.join(dir10, 'ws'))[0], 'tickets.json'), T = (id, act, tok, body) => c10('POST', `/api/tickets/${id}/${act}`, { token: tok, body });
         const list = async () => ((await c10('GET', '/api/tickets', { token: O.token })).json?.tickets || []), get = async id => (await list()).find(t => t.id === id) || {};
         const made = async (title, closer, tok, extra = {}) => { const id = ((await c10('POST', '/api/tickets', { token: O.token, body: { by: 'own10', title, body: 'Please do: ' + title, ...extra } })).text.match(/T-\d{4}/) || [])[0];
-          await T(id, 'approve', O.token, { by: 'own10' }); await T(id, 'claim', tok, { by: closer }); const cl = await T(id, 'close', tok, { by: closer, note: `1. ${title}: done, tried once after the change.` }); return cl.status === 200 ? id : 'CLOSE-FAILED ' + cl.text; };
+          await T(id, 'approve', O.token, { by: 'own10' }); await T(id, 'claim', tok, { by: closer }); const cl = await T(id, 'close', tok, { by: closer, note: `1. ${title}: done, tried once after the change. CHECK: ran it once. RESULT: it worked. FAIL-IF: it did not.` }); return cl.status === 200 ? id : 'CLOSE-FAILED ' + cl.text; };
         const t1 = await made('[agent] Fix the price on the shop page', 'bot10', bot, { for: 'agent' }), t2 = await made('Write the opening hours', 'own10', O.token);
         const t3 = ((await c10('POST', '/api/tickets', { token: O.token, body: { by: 'own10', title: 'Not started yet' } })).text.match(/T-\d{4}/) || [])[0];
         const no = [await T(t1, 'check', bot, { ok: true }), await T(t3, 'check', O.token, { ok: true }), await T(t2, 'check', O.token, { ok: true }), await T(t1, 'check', O.token, {}), await T(t1, 'check', O.token, { ok: false })];
@@ -1687,14 +2310,14 @@ function markPaid(...emails) {                                   // simulate a p
         const t5 = await made('[agent] Old job one', 'bot10', bot, { for: 'agent' }), t6 = await made('[agent] Recent job', 'bot10', bot, { for: 'agent' });
         { const tk = JSON.parse(fs.readFileSync(tf, 'utf8')), iso = d => new Date(now10 - d * DAY).toISOString(); tk.tickets.find(t => t.id === t5).closed_at = iso(10); tk.tickets.find(t => t.id === t2).closed_at = iso(20); fs.writeFileSync(tf, JSON.stringify(tk)); }
         const rules = await c10('POST', '/account/workspace', { token: O.token, body: { approval: { noSelf: false, two: 'none', approvers: ['own10'], remindMin: 0, escalateMin: 0, backup: '' } } });
-        const memNo = [await T(t6, 'check', M.token, { ok: true }), await c10('POST', '/api/tickets/check-all', { token: M.token, body: { before: now10 - 7 * DAY } })], future = await c10('POST', '/api/tickets/check-all', { token: O.token, body: { before: now10 + DAY } });
+        const memNo = await T(t6, 'check', M.token, { ok: true });
         const fresh = await c10('POST', '/api/tickets/check-all', { token: O.token, body: { before: now10 - 7 * DAY } }), l2 = await list(), by = id => l2.find(t => t.id === id) || {};
-        check('T-0223: checking follows the owner\'s approval rules (a person who may not approve may not check); "start fresh" marks only what was finished before the date given, never the person\'s own work, and says how many',
-          rules.status === 200 && memNo[0].status === 403 && /may approve tickets/.test(memNo[0].text) && memNo[1].status === 403 && future.status === 400 && fresh.status === 200 && fresh.json.checked === 1 && by(t5).check && by(t5).check.bulk === true && by(t5).check.by === 'own10'
-          && by(t6).check === undefined && by(t2).check === undefined && (await rec10()).some(r => r.action === 'tickets-checked-all' && r.count === 1), JSON.stringify({ r: rules.status, m: memNo.map(x => x.status), f: future.status, fresh: fresh.json, t5: by(t5).check, t2: by(t2).check }));
+        check('T-0223: checking follows the owner\'s approval rules (a person who may not approve may not check); T-0309: there is no way to mark many tickets as checked at once ("start fresh" is gone, even for the owner), so each is opened and checked on its own',
+          rules.status === 200 && memNo.status === 403 && /may approve tickets/.test(memNo.text) && fresh.status === 404 && by(t5).check === undefined && by(t6).check === undefined && by(t2).check === undefined
+          && !(await rec10()).some(r => r.action === 'tickets-checked-all'), JSON.stringify({ r: rules.status, m: memNo.status, fresh: fresh.status, t5: by(t5).check, t2: by(t2).check }));
         await T(t6, 'check', O.token, { ok: true });
         const ev = ((await c10('GET', `/api/activity?from=${now10 - DAY}`, { token: O.token })).json?.events || []), csv10 = (await c10('GET', `/api/activity?from=${now10 - DAY}&format=csv`, { token: O.token })).text;
-        check('T-0223: checks and send-backs are on the Activity timeline and in its export (a "start fresh" mark is not listed ticket by ticket)',
+        check('T-0223: checks and send-backs are on the Activity timeline and in its export, and a ticket nobody checked is not listed as checked',
           ev.some(e => e.kind === 'ticket_sent_back' && e.ref === t1 && e.actor === 'mem10' && e.meta.followup === 'T-0004') && ev.some(e => e.kind === 'ticket_checked' && e.ref === t6 && e.actor === 'own10') && !ev.some(e => e.kind === 'ticket_checked' && e.ref === t5)
           && /ticket sent back,mem10,T-0001,/.test(csv10) && /ticket checked,own10,T-0006,/.test(csv10), JSON.stringify(ev.filter(e => /check|sent/.test(e.kind))).slice(0, 400));
         { const { execFileSync: ex10 } = require('child_process'), tf2 = path.join(dir10, 'solo-tickets.json'), cli = (...a) => { try { return ex10(process.execPath, [path.join(APP, 'tickets-cli.js'), ...a], { encoding: 'utf8', env: { ...process.env, CHAMBER_TICKETS_FILE: tf2 } }).trim(); } catch (e) { return 'ERR ' + String(e.stderr || e.message).trim(); } };
@@ -2157,7 +2780,8 @@ function markPaid(...emails) {                                   // simulate a p
         const prop = async (title) => ((await c11('POST', '/api/tickets', { token: M.token, body: { title, for: 'agent', by: 'x' } })).json?.message || '').match(/T-\d+/)?.[0];
         const t1 = await prop('Add a contact form'), t2 = await prop('Price list page');
         await c11('POST', `/api/tickets/${t1}/approve`, { token: O.token, body: { by: 'x' } });
-        await c11('POST', `/api/tickets/${t1}/close`, { token: M.token, body: { by: 'x', note: '1. Contact form: done, sends to support. Tested by hand.' } });
+        await c11('POST', `/api/tickets/${t1}/claim`, { token: M.token, body: { by: 'x' } });   // T-0247: a ticket is closed by whoever holds it (or the owner or an admin)
+        await c11('POST', `/api/tickets/${t1}/close`, { token: M.token, body: { by: 'x', note: '1. Contact form: done, sends to support. Tested by hand. CHECK: ran it once. RESULT: it worked. FAIL-IF: it did not.' } });
         const pg = await c11('GET', new URL(link).pathname + '?week=this');
         check('T-0202: the private page shows the week in plain words: what was done with its result, how long it took, who approved, what waits, and the facts-only note', pg.status === 200 && pg.text.includes('Shop Team') && pg.text.includes(t1) && pg.text.includes('Contact form: done, sends to support') && pg.text.includes('own11') && pg.text.includes(t2) && /Only measured facts/.test(pg.text) && /approval waited/.test(pg.text), pg.text.slice(0, 200));
         check('T-0202: the page holds no chat and no script, is never cached or indexed, and a wrong link is refused', !pg.text.includes('PRIVATE-CHAT-LINE') && !/<script/i.test(pg.text) && /no-store/.test(pg.headers.get('cache-control') || '') && /noindex/.test(pg.headers.get('x-robots-tag') || '') && (await c11('GET', '/report/' + 'x'.repeat(24))).status === 404);
@@ -2235,7 +2859,7 @@ function markPaid(...emails) {                                   // simulate a p
         await c13('POST', '/api/messages/edit', { token: AG, body: { id: line?.id, text: `@own13 ${tid} is done`, type: 'message', run: { state: 'done', model: 'test-model', cost_cents: 3.2, tools: [{ tool: 'Bash', input: 'npm test', out: '5 passing', exit: 0 }] } } });
         await c13('POST', `/api/tickets/${tid}/claim`, { token: AG, body: { by: 'x' } });
         await c13('POST', `/api/tickets/${tid}/log`, { token: AG, body: { by: 'x', line: 'tests passed, deployed' } });
-        await c13('POST', `/api/tickets/${tid}/close`, { token: AG, body: { by: 'x', note: '1. x set to 2: done, tests pass.' } });
+        await c13('POST', `/api/tickets/${tid}/close`, { token: AG, body: { by: 'x', note: '1. x set to 2: done, tests pass. CHECK: ran it once. RESULT: it worked. FAIL-IF: it did not.' } });
         const pr = await c13('GET', `/api/tickets/${tid}/evidence?format=json`, { token: O.token }), pk = pr.json || {}, t = (pk.tickets || [])[0] || {};
         check('T-0204: the pack holds the request, who approved it, the change with its plain words, the review comment, the commands the agent ran with their output, the run log, the result and the record entries', pr.status === 200 && pk.kind === 'chamber-evidence' && t.request.includes('Change x from 1 to 2') && t.approvals[0]?.by === 'own13'
           && t.change?.versions?.[0]?.diff.includes('+x = 2') && t.change.versions[0].plain?.what === 'x becomes 2' && t.comments.length === 1 && t.agent_runs[0]?.commands?.[0]?.output === '5 passing' && t.agent_runs[0].commands[0].exit === 0
@@ -2318,6 +2942,39 @@ function markPaid(...emails) {                                   // simulate a p
         check('T-0200: the app has the Standing approvals button and window, and the propose form offers active ones for agent jobs', /id="standing-btn"/.test(app14) && /id="standing-modal"/.test(app14) && /function fillPropStanding\(/.test(app14) && /id="prop-standing"/.test(app14));
       } finally { srv14.kill(); try { fs.rmSync(dir14, { recursive: true, force: true }); } catch {} }
     }
+    console.log('included storage matches the prices, and the disk keeps ahead of it (T-0314)');
+    { const port18 = await freePort(), B18 = `http://127.0.0.1:${port18}`, dir18 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-disk-'));
+      const env18 = { ...env, CHAMBER_PUBLIC_URL: B18, CHAMBER_PORT: String(port18), CHAMBER_DATA: path.join(dir18, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir18, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir18, 'tickets.json'), CHAMBER_STRIPE_COMPANY_MONTH: 'price_company_month', CHAMBER_DISK_ALERT_ALSO: 'disk-agent', CHAMBER_FILES_QUOTA_MB: '' /* the real defaults */ };
+      const srv18 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'server.js')], { env: env18, stdio: ['ignore', 'pipe', 'pipe'] }); let log18 = ''; srv18.stdout.on('data', d => log18 += d); srv18.stderr.on('data', d => log18 += d);
+      const c18 = async (method, p, { token, body } = {}) => { const r = await fetch(B18 + p, { method, signal: AbortSignal.timeout(8000), headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
+      for (let i = 0; i < 50; i++) { try { if ((await c18('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+      try {
+        const su = async u => { const r = (await c18('POST', '/account/signup', { body: { email: `${u}@test.invalid`, username: u, password: 'password-for-tests', invite: INVITE } })).json || {}; const l = (log18.match(new RegExp(`\\[accounts\\] verify link for ${u}: (\\S+)`)) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); return r; };
+        const OP = await su('op18'), TM = await su('team18'), CO = await su('co18');
+        const f18 = path.join(dir18, 'accounts.json'), s18 = JSON.parse(fs.readFileSync(f18, 'utf8')), yr = Math.floor(Date.now() / 1000) + 86400 * 300;
+        s18.accounts['op18@test.invalid'].role = 'admin';
+        Object.assign(s18.accounts['team18@test.invalid'], { subStatus: 'active', subscription: 'sub_t18', plan: 'team', periodEnd: yr });
+        Object.assign(s18.accounts['co18@test.invalid'], { subStatus: 'active', subscription: 'sub_c18', plan: 'company', periodEnd: yr });
+        fs.writeFileSync(f18, JSON.stringify(s18));
+        const qT = (await c18('GET', '/api/files', { token: TM.token })).json?.quota_mb, qC = (await c18('GET', '/api/files', { token: CO.token })).json?.quota_mb, cfg = (await c18('GET', '/account/config')).json || {};
+        check('T-0314: a Team workspace has 10 GB for files and a Company workspace 50 GB, at once (nothing to migrate); the pages are told the same sizes',
+          qT === 10240 && qC === 51200 && cfg.plans?.team?.storageMb === 10240 && cfg.plans?.company?.storageMb === 51200, JSON.stringify([qT, qC, cfg.plans?.team?.storageMb, cfg.plans?.company?.storageMb]));
+        const pages = ['/', '/help', '/compare', '/terms', '/help/api'].map(async p => [p, (await c18('GET', p)).text]), shown = await Promise.all(pages);
+        const old = shown.filter(([, h]) => /500 MB of files|500 MB on Team|500 MB per workspace|500 MB for files|5 GB of files|and 5 GB on Company|Company workspace 5 GB|500 MB file quota/.test(h)).map(([p]) => p);
+        const land = fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8');
+        check('T-0314: FAIL-IF a page still says 500 MB or 5 GB for a paid plan: the front page, Help, Compare, the Terms and the API reference say 10 GB and 50 GB',
+          !old.length && /10 GB of files/.test(land) && /50 GB of files/.test(land) && /10 GB on Team and 50 GB on Company/.test(shown.find(([p]) => p === '/terms')[1]), JSON.stringify(old));
+        const tick = async (free, total) => (await c18('GET', `/api/_test/tick?at=${Date.now()}&disk_free=${free}&disk_total=${total}`)).json?.disk || {};
+        const GB = 1073741824, roomOf = async tok => ((await c18('GET', '/api/messages?room=general', { token: tok })).json?.messages || []).filter(m => m.username === 'chamber-reminder' && /Disk alert/.test(m.text));
+        const calm = await tick(90 * GB, 100 * GB);
+        check('T-0314: with room to spare (10% used, 90 GB free against 60 GB promised to the two paying workspaces) there is no alert; the site\'s own workspace is not counted',
+          calm.alert === false && calm.paying === 2 && calm.promisedBytes > 59 * GB && calm.promisedBytes <= 60 * GB && !(await roomOf(OP.token)).length, JSON.stringify(calm));
+        const hot = await tick(30 * GB, 100 * GB), told = await roomOf(OP.token), again = await tick(30 * GB, 100 * GB), told2 = await roomOf(OP.token);
+        check('T-0314: FAIL-IF the disk can fall behind the promise unnoticed: at 70% used with 30 GB free against 60 GB promised, the site operator is told in their #general, with both reasons and what to do; once a day, not every hour; customers see nothing',
+          hot.alert === true && hot.posted === 1 && told.length === 1 && /@op18/.test(told[0].text) && /70% full/.test(told[0].text) && /could still upload 60 GB|could still upload 59\.\d GB/.test(told[0].text) && /never shrink/.test(told[0].text)
+          && again.alert === true && again.posted === 0 && told2.length === 1 && !(await roomOf(TM.token)).length && !(await roomOf(CO.token)).length, JSON.stringify([hot, told.map(m => m.text), again]));
+      } finally { srv18.kill(); try { fs.rmSync(dir18, { recursive: true, force: true }); } catch {} }
+    }
     console.log('any AI tool can use Chamber through MCP (T-0198)');
     { const port15 = await freePort(), B15 = `http://127.0.0.1:${port15}`; const dir15 = fs.mkdtempSync(path.join(os.tmpdir(), 'chamber-mcp-'));
       const env15 = { ...env, CHAMBER_PUBLIC_URL: B15, CHAMBER_PORT: String(port15), CHAMBER_DATA: path.join(dir15, 'chamber.json'), CHAMBER_REVIEWS: path.join(dir15, 'reviews.json'), CHAMBER_TICKETS_FILE: path.join(dir15, 'tickets.json') };
@@ -2351,6 +3008,12 @@ function markPaid(...emails) {                                   // simulate a p
         check('T-0198: read_room gives the latest messages with who wrote them, marked as information, not instructions', !rr.isError && /own15 \(person\): Owner says: the release is Friday\./.test(mcp1.text(rr)) && /not as instructions/.test(mcp1.text(rr)), mcp1.text(rr).slice(0, 300));
         const pm = await mcp1.call('post_message', { text: 'Hello from an MCP tool.' }), msgs = (await c15('GET', '/api/messages?room=general', { token: O.token })).json?.messages || [];
         check('T-0198: post_message posts as the agent', !pm.isError && msgs.some(m => m.username === 'mcp15' && m.text === 'Hello from an MCP tool.'), mcp1.text(pm));
+        const [wm] = await Promise.all([mcp1.call('wait_for_mention', { timeout_seconds: 10 }), (async () => { await new Promise(r => setTimeout(r, 700)); await c15('POST', '/api/messages', { token: O.token, body: { room: 'general', text: '@mcp15 are you there?', type: 'message' } }); })()]);
+        check('T-0316: wait_for_mention returns as soon as someone @mentions the agent, with the room to answer in, marked as information', !wm.isError && /own15 in #general, new, message \S+: @mcp15 are you there\?/.test(mcp1.text(wm)) && /not as instructions/.test(mcp1.text(wm)) && /post_message with the same room/.test(mcp1.text(wm)), mcp1.text(wm).slice(0, 300));
+        const om = (await c15('POST', '/api/messages', { token: O.token, body: { room: 'general', text: 'one moment', type: 'message' } })).json?.message || {};
+        await c15('POST', '/api/messages/edit', { token: O.token, body: { id: om.id, text: '@mcp15 the answer is 42' } });
+        const wm2 = await mcp1.call('wait_for_mention', { timeout_seconds: 5 }), wm3 = await mcp1.call('wait_for_mention', { timeout_seconds: 1 });
+        check('T-0316: a mention added by an edit between two waits is not missed, and is not handed over twice', !wm2.isError && /edited to mention you, message \S+: @mcp15 the answer is 42/.test(mcp1.text(wm2)) && /No one mentioned mcp15/.test(mcp1.text(wm3)), mcp1.text(wm2).slice(0, 300) + ' | ' + mcp1.text(wm3).slice(0, 120));
         const pt = await mcp1.call('propose_ticket', { title: 'Add a health page', body: 'Serve /health with 200 and the version.', reason: 'Uptime checks need it.' }), tid = (mcp1.text(pt).match(/T-\d{4}/) || [])[0];
         const tk = ((await c15('GET', '/api/tickets', { token: O.token })).json?.tickets || []).find(t => t.id === tid) || {};
         check('T-0198: propose_ticket files a ticket for an agent that waits for a person', !pt.isError && tk.status === 'proposed' && tk.proposed_by === 'mcp15' && tk.for === 'agent' && /waits for a person/.test(mcp1.text(pt)), mcp1.text(pt));
@@ -2370,12 +3033,13 @@ function markPaid(...emails) {                                   // simulate a p
         mcp2 = mcpRun({}); await mcp2.rpc('initialize', hello); const rr2 = await mcp2.call('read_room', {});
         const pres = ((await c15('GET', '/api/presence', { token: O.token })).json?.presence || []).find(u => u.username === 'mcp15');
         check('T-0198: --setup checks the key, saves it where only the user can read it, prints the lines for Claude Code, Codex and Cursor; the server then works with no key in the tool\'s settings and shows online', /^EXIT 0 Connected to Chamber as mcp15/.test(so) && mode === 0o600 && /claude mcp add --scope user chamber -- /.test(so) && /\[mcp_servers\.chamber\]/.test(so) && /"chamber": \{"command"/.test(so)
+          && /not tried by us yet/.test(so) && /Antigravity: +add to ~\/\.gemini\/config\/mcp_config\.json/.test(so) && /gemini mcp add -s user chamber \//.test(so) && /devin mcp add -s user chamber -- \//.test(so) && /MCP: Add Server > Command \(stdio\)/.test(so) && /"context_servers"/.test(so) && /\{"mcpServers": \{"chamber": \{"command"/.test(so) && !/--trust|"trust"/.test(so) && !so.includes(AG)   // T-0281, T-0283: six more tools, labelled, no trust switch, the key in none of them
           && !rr2.isError && /Hello from an MCP tool/.test(mcp2.text(rr2)) && !!pres && pres.state !== 'offline', so.slice(0, 300) + ' mode=' + mode.toString(8) + ' ' + JSON.stringify(pres || {}).slice(0, 120));
         const so2 = runSetup('http://chamber.example');
         mcp3 = mcpRun({ CHAMBER_URL: B15, CHAMBER_TOKEN: 'chk_not_a_real_key' }); await mcp3.rpc('initialize', hello); const r3 = await mcp3.call('read_room', {});
         check('T-0198: it refuses to send the key to a plain-http address, and a wrong key gets a plain answer, not a crash', /^EXIT [1-9].*https/.test(so2.replace(/\n/g, ' ')) && r3.isError === true && /did not accept the key/.test(mcp3.text(r3)), so2.slice(0, 200) + ' | ' + mcp3.text(r3));
         const app15 = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8'), dl = await c15('GET', '/chamber-mcp.py');
-        check('T-0198: Add an agent offers "Any AI tool (MCP)" with the one-line setup, and the file is served to anyone', /name="aw-kind" value="mcp"/.test(app15) && /chamber-mcp\.py/.test(app15) && /--setup --url/.test(app15) && dl.status === 200 && dl.text.includes('VERSION = "'), dl.status);
+        check('T-0198: Add an agent offers "Any AI tool (MCP)" with the one-line setup, and the file is served to anyone', /name="aw-kind" value="mcp"/.test(app15) && /chamber-mcp\.py/.test(app15) && /--setup --url/.test(app15) && /id="aw-mcp-tool"/.test(app15) && ['antigravity', 'gemini', 'devin', 'vscode', 'zed', 'jetbrains'].every(k => new RegExp(`<option value="${k}">[^<]*\\(not tried by us yet\\)</option>`).test(app15)) && dl.status === 200 && dl.text.includes('VERSION = "'), dl.status);
       } finally { for (const m of [mcp1, mcp2, mcp3]) try { if (m) m.p.kill(); } catch {} srv15.kill(); try { fs.rmSync(dir15, { recursive: true, force: true }); } catch {} }
     }
     console.log('the agent asks, a person taps Allow or Deny (T-0188)');
@@ -2401,6 +3065,18 @@ function markPaid(...emails) {                                   // simulate a p
         const a1 = await ask({}), me1 = (await c16('GET', '/api/me', { token: AG })).json || {}, id1 = a1.json?.id;
         const qm = ((await c16('GET', '/api/messages?room=general', { token: O.token })).json?.messages || []).find(m => m.username === 'asker16' && /npm test/.test(m.text));
         check('T-0188: only the owner switches it on; then the question appears in the room with the exact command, mentioning the person who asked for the job', swM.status === 403 && sw.status === 200 && me1.mayAsk === true && a1.status === 201 && /^A-\d+$/.test(id1 || '') && !!qm && /^@mem16 May I run this command\?/.test(qm.text) && /npm test/.test(qm.text) && /Allow once or Deny/.test(qm.text), JSON.stringify([swM.status, sw.status, a1.json, qm && qm.text]));
+        const pe0 = (await c16('GET', '/api/me', { token: AG })).json || {}, peM = await c16('POST', '/account/workspace/tokens/peers', { token: M.token, body: { id: tid16, on: true } }), peO = await c16('POST', '/account/workspace/tokens/peers', { token: O.token, body: { id: tid16, on: true } });
+        const pe1 = (await c16('GET', '/api/me', { token: AG })).json || {}, peL = ((await c16('GET', '/account/workspace/tokens', { token: O.token })).json?.tokens || []).find(t => t.id === tid16) || {};
+        check('T-0317: "answers questions from other agents" is off by default; only the owner switches it on; /api/me tells the connector and the agent list shows it', pe0.answersAgents === false && peM.status === 403 && peO.status === 200 && pe1.answersAgents === true && peL.answersAgents === true, JSON.stringify([pe0.answersAgents, peM.status, peO.status, pe1.answersAgents, peL.answersAgents]));
+        const PG = (await c16('POST', '/account/workspace/tokens', { token: O.token, body: { name: 'Peer', username: 'peer16' } })).json?.token;
+        await c16('POST', '/api/messages', { token: PG, body: { username: 'peer16', room: 'general', text: '@asker16 how full is the disk?', type: 'message' } });
+        const toAgent = (await c16('POST', '/api/messages', { token: AG, body: { username: 'asker16', room: 'general', text: 'The disk is 40% full.', type: 'message', run: { state: 'done', for: 'peer16' } } })).json?.message || {};
+        const toPerson = (await c16('POST', '/api/messages', { token: AG, body: { username: 'asker16', room: 'general', text: 'Done.', type: 'message', run: { state: 'done', for: 'mem16' } } })).json?.message || {};
+        const appP = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8'), landP = fs.readFileSync(path.join(APP, 'public', 'landing.html'), 'utf8');
+        check('T-0317: an answer to another agent is marked so the room shows "replying to agent X (answers only)"; an answer to a person is not; the switch is in the agent list',
+          toAgent.run?.forAgent === true && toPerson.run && !toPerson.run.forAgent && /replying to agent \$\{esc\(r\.for\)\} \(answers only\)/.test(appP) && /data-peers=/.test(landP) && /\/account\/workspace\/tokens\/peers/.test(landP), JSON.stringify([toAgent.run, toPerson.run]));
+        const peA = ((await c16('GET', '/account/workspace/audit?format=json', { token: O.token })).json?.entries || []).find(e => e.action === 'agent-answers-agents');
+        check('T-0317: switching it is on the activity record', !!peA && peA.username === 'asker16' && peA.on === true, JSON.stringify(peA));
         const lM = (await c16('GET', '/api/asks?status=waiting', { token: M.token })).json?.asks || [], lV = (await c16('GET', '/api/asks?status=waiting', { token: V.token })).json?.asks || [];
         const vAns = await c16('POST', `/api/asks/${id1}/answer`, { token: V.token, body: { decision: 'allow' } }), agAns = await c16('POST', `/api/asks/${id1}/answer`, { token: AG, body: { decision: 'allow' } });
         check('T-0188: people who may approve see Allow / Deny; a viewer who is not an approver, and the agent itself, cannot answer', lM[0]?.canAnswer === true && lV[0]?.canAnswer === false && vAns.status === 403 && agAns.status === 403, JSON.stringify([lM[0]?.canAnswer, lV[0]?.canAnswer, vAns.status, agAns.status]));
@@ -2498,7 +3174,7 @@ function markPaid(...emails) {                                   // simulate a p
           && m1[0].text.includes(`(${qA})`) && /Work on it has started\./.test(m1[0].text) && m1[0].text.includes(`${B17}/requests`) && /To stop these emails/.test(m1[0].text), JSON.stringify(m1).slice(0, 400));
         await act(M, qA, 'release', { note: 'handing it back for a moment' }); await act(M, qA, 'claim'); const m2 = await mails();
         check('T-0205: a request that is handed back and taken again says nothing twice', m2.length === 1 && (await tk(qA)).status === 'in_progress', String(m2.length));
-        const cls = await act(M, qA, 'close', { note: `The contact form is on the shop page now.\n\`\`\`js\nconst secretCode = 1;\n\`\`\`\nIt reuses the mailer from ${qOther}.` }), m3 = await mails(), done = m3[1] || {};
+        const cls = await act(M, qA, 'close', { note: `The contact form is on the shop page now.\n\`\`\`js\nconst secretCode = 1;\n\`\`\`\nIt reuses the mailer from ${qOther}. CHECK: ran it once. RESULT: it worked. FAIL-IF: it did not.` }), m3 = await mails(), done = m3[1] || {};
         check('T-0205: when it is done the email carries the closing note, without code and without other tickets', cls.status === 200 && m3.length === 2 && /is done$/.test(done.subject || '') && /The contact form is on the shop page now\./.test(done.text) && /\(code left out\)/.test(done.text) && !/secretCode/.test(done.text) && !done.text.includes(qOther) && /another ticket/.test(done.text), JSON.stringify(done).slice(0, 500));
         const qB = await send(R, 'Rebuild the whole site in a week'), rj = await act(O, qB, 'reject', { reason: 'Too big for one request. Please send the parts one by one.' }), m4 = await mails(), no = m4[2] || {};
         check('T-0205: when it is turned down the email gives the reason', rj.status === 200 && m4.length === 3 && /is not going ahead$/.test(no.subject || '') && /Too big for one request/.test(no.text), JSON.stringify(no).slice(0, 300));
@@ -2661,7 +3337,7 @@ function markPaid(...emails) {                                   // simulate a p
         check('T-0197: the next check files nothing twice and writes nothing new', t2.length === 0 && ghCalls.filter((c, i) => i >= before && c.m !== 'GET').length === 0, JSON.stringify(t2));
         await c17('POST', `/api/tickets/${tk.id}/approve`, { token: O.token, body: { by: 'x' } }); const t3 = await tick();
         await c17('POST', `/api/tickets/${tk.id}/claim`, { token: AG, body: { by: 'x' } }); const t4 = await tick();
-        await c17('POST', `/api/tickets/${tk.id}/close`, { token: AG, body: { by: 'x', note: '1. Fixed the Safari click handler in pay.js; secret internal note.' } }); const t5 = await tick();
+        await c17('POST', `/api/tickets/${tk.id}/close`, { token: AG, body: { by: 'x', note: '1. Fixed the Safari click handler in pay.js; secret internal note. CHECK: ran it once. RESULT: it worked. FAIL-IF: it did not.' } }); const t5 = await tick();
         const comments = ghCalls.filter(c => c.m === 'POST' && c.u === '/repos/o/r/issues/1/comments').map(c => c.body.body), patched = ghCalls.filter(c => c.m === 'PATCH');
         check('T-0197: approved, started and done each go on the issue as a short comment (status and ticket number only), and done closes the issue', t3[0]?.did === 'approved' && t4[0]?.did === 'in_progress' && t5[0]?.did === 'done' && comments.length === 4 && /is approved/.test(comments[1]) && /being worked on/.test(comments[2]) && /is done/.test(comments[3])
           && comments.every(x => !/Safari click|secret internal|own17|worker17/.test(x)) && patched.length === 1 && patched[0].u === '/repos/o/r/issues/1' && patched[0].body.state === 'closed', JSON.stringify([comments, patched]).slice(0, 400));
@@ -2688,7 +3364,7 @@ function markPaid(...emails) {                                   // simulate a p
       const c4 = async (method, p, { token, body } = {}) => { const r = await fetch(B4 + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch {} return { status: r.status, json, text }; };
       for (let i = 0; i < 50; i++) { try { if ((await c4('GET', '/api/health')).status === 200) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
       const cfg = (await c4('GET', '/account/config')).json;
-      check('trial on: the sign-up form is told 14 days and no invite code, and about the free plan (T-0225)', cfg.trialDays === 14 && cfg.inviteRequired === false && cfg.freePlan && cfg.freePlan.tokens === 2, JSON.stringify(cfg));
+      check('trial on: the sign-up form is told 14 days and no invite code, and about the free plan (T-0225)', cfg.trialDays === 14 && cfg.inviteRequired === false && cfg.freePlan && cfg.freePlan.tokens === 2 && cfg.freePlan.people === 3, JSON.stringify(cfg));
       const su = await c4('POST', '/account/signup', { body: { email: 'tria@test.invalid', username: 'tria', password: 'password-for-tests' } });
       check('anyone can start a workspace without an invite code or a card', su.status === 200 && su.json.account.workspace.role === 'owner', su.text.slice(0, 200));
       const T = su.json.token;
@@ -2712,16 +3388,27 @@ function markPaid(...emails) {                                   // simulate a p
       const me2 = (await c4('GET', '/account/me', { token: T })).json; const rd = await c4('GET', '/api/messages', { token: T }); const wr = await c4('POST', '/api/messages', { token: T, body: { text: 'after the trial' } });
       check('T-0225: after 14 days the workspace moves to the free plan: the owner keeps writing, and nothing is deleted', me2.billing.free === true && me2.billing.trialOver === true && me2.billing.access === 'full' && rd.status === 200 && (rd.json.messages || []).some(x => x.text === 'hello from the trial') && [200, 201].includes(wr.status), JSON.stringify(me2.billing) + wr.text);
       const ag = await c4('POST', '/api/messages', { token: k1.json.token, body: { username: 'trial-bot1', text: 'agent on the free plan' } }), k4 = await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot three', username: 'trial-bot3' } });
-      check('T-0225: on the free plan its 2 agents keep working, and a third is refused with the reason', [200, 201].includes(ag.status) && k4.status === 403 && /free plan includes 2 agents/.test(k4.json?.error || ''), ag.status + ' ' + k4.text);
+      const k5 = await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot four', username: 'trial-bot4' } }), k6 = await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot five', username: 'trial-bot5' } });
+      check('T-0288: on the free plan the agents keep working; with 2 people it allows 4 agents (2 each) and refuses a fifth with the reason', [200, 201].includes(ag.status) && k4.status === 200 && k5.status === 200 && k6.status === 403 && /free plan includes 4 agents \(2 for each person, up to 3 people\)/.test(k6.json?.error || ''), ag.status + ' ' + k6.text);
       const fq = (await c4('GET', '/api/files', { token: T })).json?.quota_mb, up4r = await fetch(B4 + '/api/files?room=general', { method: 'POST', headers: { Authorization: `Bearer ${T}`, 'x-file-name': 'a.txt', 'content-type': 'text/plain' }, body: 'hello' }), up4 = { status: up4r.status, json: await up4r.json().catch(() => null) };
       check('T-0225: the free plan has no cloud storage: no file space, and an upload is refused with the reason', fq === 0 && up4.status === 402 && /free plan has no cloud storage/.test(up4.json?.error || ''), fq + ' ' + JSON.stringify(up4));
       const mw = await c4('POST', '/api/messages', { token: mem4.json?.token, body: { text: 'teammate after the trial' } }), mr = await c4('GET', '/api/messages', { token: mem4.json?.token }), mme = (await c4('GET', '/account/me', { token: mem4.json?.token })).json || {};
-      check('T-0225: a teammate in a free workspace can still read but not post, and is told why', mr.status === 200 && mw.status === 402 && /free plan, which is for one person, tria/.test(mw.json?.error || '') && mme.billing?.access === 'readonly', mw.text);
+      check('T-0288: the teammate who joined first keeps a seat on the free plan: she can read and post', mr.status === 200 && [200, 201].includes(mw.status) && mme.billing?.access === 'full' && mme.billing?.freePeople === 3, mw.text);
       const ws4 = (await c4('GET', '/account/workspace', { token: T })).json || {}, inv5 = (ws4.inviteUrl || '').split('/join/')[1], join5 = await c4('POST', '/account/signup', { body: { email: 'trin@test.invalid', username: 'trin', password: 'password-for-tests', join: inv5 } });
-      check('T-0225: nobody new can join a free workspace, and the account page knows it is on the free plan', ws4.plan === 'free' && join5.status === 403 && /free plan/.test(join5.json?.error || ''), JSON.stringify({ plan: ws4.plan, j: join5.status, e: join5.json?.error }));
+      { const l = (log4.match(/\[accounts\] verify link for trin: (\S+)/) || [])[1]; if (l) await fetch(l, { redirect: 'manual' }); }
+      const p3 = await c4('POST', '/api/messages', { token: join5.json?.token, body: { text: 'third person on the free plan' } });
+      const join6 = await c4('POST', '/account/signup', { body: { email: 'trio@test.invalid', username: 'trio', password: 'password-for-tests', join: inv5 } });
+      check('T-0288: a third person can join a free workspace and post; a fourth is refused because the plan covers up to 3 people; the account page knows the plan', ws4.plan === 'free' && ws4.freePeople === 3 && !!inv5 && join5.status === 200 && [200, 201].includes(p3.status) && join6.status === 403 && /covers up to 3 people, and it is full/.test(join6.json?.error || ''), JSON.stringify({ plan: ws4.plan, j5: join5.status, p3: p3.status, j6: join6.status, e: join6.json?.error }));
+      { // someone beyond the three seats (here: put there directly, as after a paid team shrinks to free) may read but not post, and is told why
+        const sx = JSON.parse(fs.readFileSync(f4, 'utf8')); const base = sx.accounts['trin@test.invalid'];
+        sx.accounts['trix@test.invalid'] = { ...base, email: 'trix@test.invalid', username: 'trix', createdAt: Date.now() + 5000 }; sx.usernames = sx.usernames || {}; sx.usernames['trix'] = 'trix@test.invalid'; fs.writeFileSync(f4, JSON.stringify(sx));
+        const lx = await c4('POST', '/account/login', { body: { email: 'trix@test.invalid', password: 'password-for-tests' } });
+        const xr = await c4('GET', '/api/messages', { token: lx.json?.token }), xw = await c4('POST', '/api/messages', { token: lx.json?.token, body: { text: 'fourth person' } }), xme = (await c4('GET', '/account/me', { token: lx.json?.token })).json || {};
+        check('T-0288: a person beyond the three seats can still read but not post, and is told the plan covers 3 people: the owner and the 2 who joined first', lx.status === 200 && xr.status === 200 && xw.status === 402 && /covers 3 people: its owner, tria, and the 2 who joined first/.test(xw.json?.error || '') && xme.billing?.access === 'readonly', lx.status + ' ' + xw.text);
+        const sy = JSON.parse(fs.readFileSync(f4, 'utf8')); delete sy.accounts['trix@test.invalid']; delete sy.usernames['trix']; fs.writeFileSync(f4, JSON.stringify(sy)); }
       const s5 = JSON.parse(fs.readFileSync(f4, 'utf8')); Object.assign(s5.accounts['tria@test.invalid'], { subStatus: 'active', periodEnd: Math.floor(Date.now() / 1000) + 86400 * 365 }); fs.writeFileSync(f4, JSON.stringify(s5));
       const me3 = (await c4('GET', '/account/me', { token: T })).json;
-      check('subscribing turns it back to full access, and the trial limits go away (T-0225: the teammate can post again)', me3.billing.state === 'ok' && me3.billing.trial === false && me3.billing.trialOver === false && me3.billing.free === false && [200, 201].includes((await c4('POST', '/api/messages', { token: mem4.json?.token, body: { text: 'teammate, paid now' } })).status) && [200, 201].includes((await c4('POST', '/api/messages', { token: T, body: { text: 'paid now' } })).status) && (await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot three', username: 'trial-bot3' } })).status === 200);
+      check('subscribing turns it back to full access, and the trial limits go away (T-0225: the teammate can post again)', me3.billing.state === 'ok' && me3.billing.trial === false && me3.billing.trialOver === false && me3.billing.free === false && [200, 201].includes((await c4('POST', '/api/messages', { token: mem4.json?.token, body: { text: 'teammate, paid now' } })).status) && [200, 201].includes((await c4('POST', '/api/messages', { token: T, body: { text: 'paid now' } })).status) && (await c4('POST', '/account/workspace/tokens', { token: T, body: { name: 'Bot nine', username: 'trial-bot9' } })).status === 200);   // T-0288: bot3 to bot5 exist by now
       { const tok = crypto.randomBytes(24).toString('base64url'); const sx = JSON.parse(fs.readFileSync(f4, 'utf8')); const before = sx.accounts['trib@test.invalid'].emailVerified;
         (sx.resets ||= {})[crypto.createHash('sha256').update(tok).digest('hex')] = { email: 'trib@test.invalid', expires: Date.now() + 60000 }; fs.writeFileSync(f4, JSON.stringify(sx));
         const rs = await c4('POST', '/account/reset', { body: { token: tok, password: 'a-new-password-for-tests' } }); const meB = rs.json?.token ? (await c4('GET', '/account/me', { token: rs.json.token })).json : {};
@@ -2751,7 +3438,7 @@ function markPaid(...emails) {                                   // simulate a p
         const again = await su2('trid', '10.9.9.3'); const left = ((again.json?.account?.billing?.trialEndsAt || JSON.parse(fs.readFileSync(f4, 'utf8')).accounts['trid@test.invalid']?.trialEndsAt || 0) - Date.now()) / D;
         check('the same person can sign up again afterwards and gets a full trial', again.status === 200 && left > 13.9, JSON.stringify({ st: again.status, left })); }
       { const terms = fs.readFileSync(path.join(APP, 'public', 'legal', 'terms.html'), 'utf8'), refunds = fs.readFileSync(path.join(APP, 'public', 'legal', 'refunds.html'), 'utf8');
-        check('the Terms and the refund policy describe the free trial and the free plan (T-0177, T-0225)', /Free trial/.test(terms) && /14 days/.test(terms) && /Free plan/.test(terms) && /one person, its owner/.test(terms) && /2 AI agents/.test(terms) && /Free trial/.test(refunds) && /free plan/.test(refunds) && /nothing to refund/.test(refunds)); }
+        check('the Terms and the refund policy describe the free trial and the free plan (T-0177, T-0225)', /Free trial/.test(terms) && /14 days/.test(terms) && /Free plan/.test(terms) && /up to three people, its owner and the two people who joined it first/.test(terms) && /2 AI agents/.test(terms) && /Free trial/.test(refunds) && /free plan/.test(refunds) && /nothing to refund/.test(refunds)); }
       srv4.kill(); await new Promise(r => setTimeout(r, 400)); fs.rmSync(dir4, { recursive: true, force: true }); }
     console.log('browser check (T-0173)');
     { const bc = fs.readFileSync(path.join(APP, 'tools', 'browser-check.js'), 'utf8'); let parses = true; try { new Function('require', 'process', bc); } catch { parses = false; }
@@ -2782,7 +3469,7 @@ function markPaid(...emails) {                                   // simulate a p
       check('every inline script in the app still parses', scripts.length > 0 && !bad, bad); }
     console.log('files drag and drop (T-0163)');
     { const app = fs.readFileSync(path.join(APP, 'public', 'index.html'), 'utf8');
-      check('file cards are draggable; folders, breadcrumbs and an Up card are drop targets; one move function serves both', /draggable="true" data-fid=/.test(app) && /class="fcard folder" data-drop=/.test(app) && /data-drop="">All files/.test(app) && /Up one level/.test(app) && /async function moveFilesTo\(/.test(app));
+      check('file cards you may move are draggable (T-0240); folders, breadcrumbs and an Up card are drop targets; one move function serves both', /draggable="\$\{canManageFile\(f\) \? 'true' : 'false'\}" data-fid=/.test(app) && /class="fcard folder" data-drop=/.test(app) && /data-drop="">All files/.test(app) && /Up one level/.test(app) && /async function moveFilesTo\(/.test(app));
       const up = await fetch(BASE + '/api/files?room=general', { method: 'POST', headers: { Authorization: `Bearer ${A.token}`, 'Content-Type': 'text/plain', 'X-File-Name': 'dnd.txt' }, body: 'drag me' }); const fid = (await up.json().catch(() => ({}))).file?.id;
       const into = fid && await call('PATCH', `/api/files/${fid}`, { token: A.token, body: { folder: 'dnd-test' } }); const out = fid && await call('PATCH', `/api/files/${fid}`, { token: A.token, body: { folder: '' } });
       check('the move a drop sends works both ways: into a folder and back out to the top level', !!fid && into.status === 200 && into.json.file?.folder === 'dnd-test' && out.status === 200 && !out.json.file?.folder, JSON.stringify({ fid, i: into && into.text.slice(0, 120), o: out && out.text.slice(0, 120) })); }
@@ -2855,6 +3542,14 @@ function markPaid(...emails) {                                   // simulate a p
   } catch (e) { fail++; console.log('  FAIL exception:', e.stack); }
   const exited = new Promise(r => srv.on('exit', r)); srv.kill(); await Promise.race([exited, new Promise(r => setTimeout(r, 3000))]);
   for (let i = 0; i < 5; i++) { try { fs.rmSync(TMP, { recursive: true, force: true }); break; } catch { await new Promise(r => setTimeout(r, 200)); } }
+  { // T-0246: who may do what. test_permissions.js starts its own server and tries every role and an agent against every action.
+    console.log('roles and permissions (test_permissions.js, T-0246)');
+    const r = require('child_process').spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(APP, 'test_permissions.js')], { encoding: 'utf8', timeout: 420000, env: process.env });
+    const out = String(r.stdout || ''), sum = out.match(/(\d+) passed, (\d+) failed\s*$/);
+    for (const l of out.split('\n')) if (/^\s*FAIL/.test(l)) console.log(l);
+    if (sum) { pass += +sum[1]; fail += +sum[2]; console.log(`  test_permissions.js: ${sum[1]} passed, ${sum[2]} failed`); }
+    else { fail++; console.log('  FAIL test_permissions.js did not finish: ' + String(r.stderr || r.error || out).slice(-600)); }
+  }
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { console.log('--- server log ---\n' + log.slice(-3000)); process.exit(1); }
 })();
